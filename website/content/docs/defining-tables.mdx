@@ -1,0 +1,161 @@
+---
+title: Defining local-first tables
+description: The server DSL — lf.table, the query/insert/patch/remove specs, scopes, conflict policies, and indexes.
+---
+
+Local-first tables are declared with the `lf` factory from
+[`createLocalFirst`](/docs/getting-started#3-create-the-lf-factory). Each table
+maps to a real Convex table in your schema and exposes typed query/mutation
+functions that your React code calls.
+
+## `lf.table(name, options)`
+
+```ts
+import { lf } from "./localfirst";
+
+const todos = lf.table("todos", {
+  scope: lf.byUser("ownerId"),       // required
+  idField: "localId",                // optional, default "localId"
+  conflict: lf.fieldLww(),           // optional, default "fieldLww"
+  indexes: {                         // optional
+    byList: ["ownerId", "listId", "createdAt"]
+  }
+});
+```
+
+| Option | Meaning |
+| --- | --- |
+| `scope` | **Required.** How rows are isolated and authorized — see [Scopes](#scopes). |
+| `idField` | The stable, client-generated id column. Default `"localId"`. |
+| `conflict` | Conflict policy — see [Conflict policies](#conflict-policies). |
+| `indexes` | Named indexes (field lists) your queries read from; mirror these in your Convex schema. |
+
+The returned object has four builders: `query`, `insert`, `patch`, `remove`.
+Export each one — that export is the function your client references.
+
+<Callout type="warn">
+Local-first table functions are **not** directly callable on the server. They
+exist in the deployment so the client can reference them by name and codegen can
+read their metadata, but invoking the handler throws. Reads and writes flow
+through the generated client and sync via `sync.push` / `sync.pull`.
+</Callout>
+
+## `query`
+
+```ts
+export const list = todos.query({
+  args: { listId: v.string() },
+  index: "byList",
+  key: ({ auth, args }) => [auth.userId, args.listId],
+  order: "asc",        // optional: "asc" | "desc"
+  initial: []          // optional: value before the first local read resolves
+});
+```
+
+`key` builds the index prefix to read — typically the scope value plus query
+args. `auth.userId` is the resolved identity. The query runs **locally** against
+the engine's derived view; it never executes on the server.
+
+Because the table knows its row type (from your schema), `useQuery(api.todos.list, …)`
+on the client infers `Doc<"todos">[]` automatically — no client-side generics.
+The `args` validators likewise type the `key` / `value` / `patch` closures.
+
+## `insert`
+
+```ts
+export const create = todos.insert({
+  args: { listId: v.string(), text: v.string() },
+  value: ({ auth, args, now, localId }) => ({
+    ownerId: auth.userId,
+    listId: String(args.listId),
+    text: String(args.text),
+    done: false,
+    createdAt: now,
+    updatedAt: now
+  })
+});
+```
+
+`value` returns the new row. It receives `auth`, `args`, `now` (a timestamp), and
+`localId` (the generated id for this row). Always set the scope field (here
+`ownerId`) from `auth`/`args`, never from untrusted input — the server
+re-enforces it anyway.
+
+## `patch`
+
+```ts
+export const toggle = todos.patch({
+  args: { id: v.string(), done: v.boolean() },
+  id: ({ args }) => String(args.id),
+  patch: ({ args, now }) => ({ done: Boolean(args.done), updatedAt: now })
+});
+```
+
+`id` selects the row (by its local id); `patch` returns the changed fields only.
+
+## `remove`
+
+```ts
+export const remove = todos.remove({
+  args: { id: v.string() },
+  id: ({ args }) => String(args.id)
+});
+```
+
+## Scopes
+
+A scope is **required** and defines both client-side partitioning and
+server-side authorization.
+
+### `lf.byUser(field)`
+
+```ts
+scope: lf.byUser("ownerId")
+```
+
+Rows belong to one user. The server forces `ownerId` to the authenticated user
+on every push and only returns that user's rows on pull. The simplest, safest
+default for personal data.
+
+### `lf.byWorkspace({ workspaceIdField, membershipTable })`
+
+```ts
+scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" })
+```
+
+Rows belong to a workspace. Before accepting a write or returning a change, the
+server checks the **same** `membershipTable` (read and write use one table) for a
+row linking the user to the workspace. You provide that table and its membership
+logic — see [Syncing](/docs/syncing#membership).
+
+### `lf.byProject({ projectIdField, membershipTable })`
+
+The same shape as `byWorkspace`, keyed by a project id. Use whichever name fits
+your domain.
+
+## Conflict policies
+
+Set per table via `conflict` (or globally via `defaults.conflict`):
+
+| Policy | Behavior |
+| --- | --- |
+| `lf.fieldLww()` | **Default.** Last-writer-wins per field. Concurrent edits to different fields both survive; same-field collisions resolve by arrival order at the server. |
+| `lf.timestampLww()` | Same per-field merge, but same-field collisions resolve by the op's logical timestamp (+ clientId tiebreaker) — a **newer** edit wins regardless of arrival order (the offline-first fix). Backed by per-field write clocks on the server. |
+
+Only these two are offered — both are real and server-enforced. (An option that
+silently did nothing would be a footgun, so it isn't in the type.)
+
+For convergent merges of specific fields, declare them per field instead of as a
+whole-row policy: `setFields` (array add/remove merge) and `counterFields`
+(numeric increments accumulate). Both compose with either policy above. For real
+collaborative editing of the *same* rich-text field (ordered lists, text), reach
+for [document mode](/docs/document-mode).
+
+## Mixing with plain Convex
+
+Any function **not** declared via `lf.table` is ordinary Convex. The same
+`useQuery` / `useMutation` hooks call straight through to it (the
+[fallback path](/docs/react-hooks#fallback)). Use plain Convex for server-only
+actions, cross-tenant reads, and anything with heavy validation or side effects.
+
+Next: [React hooks](/docs/react-hooks).

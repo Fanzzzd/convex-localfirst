@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+website/.next/
+website/out/
+
+# convex local backend
+.convex/
+
+# test / coverage
+coverage/
+*.tgz
+
+# secrets & local env (never commit)
+.npmrc
+.env
+.env.*
+!.env.example
+
+# agent / process artifacts (not part of the shipped project)
+.codex-review/
+
+# logs & OS cruft
+*.log
+.DS_Store

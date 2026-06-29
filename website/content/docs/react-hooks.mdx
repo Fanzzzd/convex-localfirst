@@ -1,0 +1,198 @@
+---
+title: React hooks
+description: The drop-in ConvexProvider plus useQuery, useMutation, useSyncStatus, and useQueryMeta — same signatures as Convex.
+---
+
+Import everything from `@convex-localfirst/react`. It re-exports Convex's own
+client and auth helpers (`ConvexReactClient`, `Authenticated`, `useConvexAuth`,
+…) so it's a true drop-in for `convex/react`.
+
+## The provider
+
+`ConvexProvider` is the Convex provider plus an optional `localFirst` prop. Pass
+`localFirst` to enable local-first tables; omit it and you get plain Convex.
+
+```tsx
+import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
+import { IndexedDbStore, createClientId, createConvexTransport } from "@convex-localfirst/core";
+
+const clientId = createClientId();
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+<ConvexProvider
+  client={convex}
+  localFirst={{
+    manifest: localFirstManifest,                                   // from codegen
+    store: new IndexedDbStore({ databaseName: "my-app", namespace: userId }),
+    transport: createConvexTransport({ client: convex, push: api.sync.push, pull: api.sync.pull, clientId, userId }),
+    clientId,
+    userId
+  }}
+>
+  {children}
+</ConvexProvider>
+```
+
+The `localFirst` config:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `manifest` | ✓ | The generated client manifest (`localFirstManifest`). |
+| `store` | – | Local persistence. Defaults to in-memory; pass `IndexedDbStore` in the browser. |
+| `transport` | – | Online sync. Omit for a purely offline app. |
+| `clientId` | – | Stable id per device/tab. Defaults to a generated one. |
+| `userId` | – | Current user; scopes and store namespacing key off it. |
+| `nameOf` | – | Function-name resolver. Defaults to Convex's `getFunctionName`. |
+
+The provider also wires browser connectivity: it reflects `navigator.onLine`
+into the sync status and flushes the outbox automatically on the `online` event.
+
+## Type inference
+
+Both hooks infer argument and result types from the Convex function reference —
+**no explicit generics**, exactly like `convex/react`:
+
+```ts
+const todos = useQuery(api.todos.list, { listId });  // todos: Doc<"todos">[] | undefined
+const create = useMutation(api.todos.create);        // create: (args: { listId; text }) => …
+create({ listId, text: "x" });                       // args type-checked
+create({ listId, oops: 1 });                         // ✗ compile error
+```
+
+The result type of a local-first query is the row array declared by your
+[`lf.table`](/docs/defining-tables) (derived from your schema), so list pages are
+typed end-to-end without restating shapes on the client.
+
+## Queries
+
+```ts
+const todos = useQuery(api.todos.list, { listId }, { initial: [] });
+```
+
+Same signature as Convex `useQuery`. If the reference is a declared local-first
+query, it reads from the engine's derived view and re-renders on local changes;
+otherwise it falls through to Convex. Options:
+
+| Option | Meaning |
+| --- | --- |
+| `initial` | Value returned before the first local read resolves. |
+| `sync` | `"auto"` (default) pulls from the server on mount and subscribes to live changes; `"off"` reads local data only and never syncs this query. |
+
+Pass `"skip"` as the args to disable the query, exactly like Convex.
+
+## Client queries — `collection` + `useLiveQuery`
+
+`useQuery` runs a query you **declared** on the server. When you just want to
+read the local data in a new shape, skip the round-trip and the extra function:
+write the query on the client with the chainable builder.
+
+```ts
+import { collection, useLiveQuery } from "@convex-localfirst/react";
+
+const issues = useLiveQuery(
+  collection<Doc<"issues">>("issues")
+    .scope({ workspaceId })            // which authorized scope to read + pull
+    .where((i) => i.status !== "done") // a plain, fully-typed JS predicate
+    .order("createdAt", "desc")
+    .limit(50)
+);
+// issues: Doc<"issues">[] | undefined
+```
+
+It reads straight off the local derived view (canonical + pending replay), so
+results are optimistic and re-render on every local change; `.scope(...)` also
+drives the background pull (and the server still enforces membership on it).
+
+Because sync is **scope-based** — the whole authorized scope is already on the
+device — `where` takes a normal typed predicate instead of a serializable filter
+DSL. That is strictly more expressive (any JS expression, full type inference)
+with nothing lost: the query refines local rows, it is never sent to the server,
+so it can only narrow what you are already allowed to see, never widen it.
+
+| Method | Meaning |
+| --- | --- |
+| `.scope(values)` | Scope fields to read/pull (e.g. `{ workspaceId }`). Omit for `byUser` tables. |
+| `.where(row => boolean)` | Keep matching rows. Chains as AND. |
+| `.order(field, "asc" \| "desc")` | Sort by a field (default `"asc"`). |
+| `.limit(n)` | Cap the result count. |
+
+Pass `"skip"` to disable it. Use `useQuery` when you want a named, reusable
+server query; use `useLiveQuery` for ad-hoc, component-local read shapes.
+
+### Real-time
+
+`useLiveQuery` is reactive across clients out of the box. With the default
+`ConvexReactClient` transport, the engine subscribes to the query's scope, so a
+change another client commits is **pushed** to every mounted client and lands the
+instant the server has it — no polling, no reload, no manual refetch.
+
+```ts
+// Two browsers on the same workspace: a create in one appears in the other live.
+const issues = useLiveQuery(collection<Doc<"issues">>("issues").scope({ workspaceId }));
+```
+
+If you run against a transport with no reactive channel (e.g. a bare HTTP client),
+pass `pollMs` as a fallback to re-pull the scope on an interval:
+
+```ts
+useLiveQuery(collection<Doc<"doc_updates">>("doc_updates").scope({ workspaceId }), {
+  pollMs: 800, // ignored when the transport is reactive (the default)
+});
+```
+
+## Mutations
+
+```ts
+const create = useMutation(api.todos.create);
+
+// Fire-and-forget optimistic write:
+create({ listId, text });
+
+// Or use the hybrid call:
+const call = create({ listId, text });
+await call;          // server result (like Convex)
+await call.local;    // local commit landed
+await call.server;   // server round-trip
+call.opId;           // operation id
+call.status();       // MutationStatus
+```
+
+`useMutation` always returns a function whose return value is the hybrid call —
+for both local-first functions **and** the Convex fallback — so `.local` /
+`.server` work uniformly.
+
+## `useSyncStatus`
+
+```ts
+const sync = useSyncStatus();
+```
+
+Returns a `SyncStatus`:
+
+```ts
+{
+  online: boolean;
+  syncing: boolean;
+  pendingMutations: number;
+  lastPushAt: number | null;
+  lastPullAt: number | null;
+  lastError: string | null;
+  blockedBySchemaMismatch: boolean;
+  partial: boolean; // still catching up to the server (a large cold start drained past the per-pull cap)
+}
+```
+
+Status flows on its own notification channel, so updating the indicator never
+re-renders your data queries. Use `blockedBySchemaMismatch` to disable writes
+when the client manifest is older than the deployed schema.
+
+## Fallback
+
+A reference that is **not** a declared local-first function is passed straight to
+Convex. The same `useQuery` / `useMutation` work unchanged, and the mutation
+return value is still the hybrid shape (`.local` resolves immediately, `.server`
+is the Convex promise) so existing call sites never break. This is how you mix
+plain Convex functions into a local-first app — see the
+[`workspaces.join`](/docs/reference/example) example.
+
+Next: [Syncing & the component](/docs/syncing).

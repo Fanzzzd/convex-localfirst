@@ -1,0 +1,71 @@
+---
+title: "Example: Linear-lite"
+description: A workspace-scoped kanban board that exercises membership, optimistic moves, offline, and the plain-Convex fallback — with live and browser tests.
+---
+
+The repo ships a complete example at `examples/todo-perfect-dx`: a **Linear-lite**
+board plus a per-user todos list. It's the reference for every setup step in
+[Getting started](/docs/getting-started), and it's exercised by live scripts and
+a real-browser Playwright suite.
+
+## What it demonstrates
+
+- **`byUser` todos** — the simplest local-first table.
+- **`byWorkspace` issues** — a kanban board (`backlog` / `in_progress` / `done`)
+  where the server enforces **workspace membership** (I7) on push and pull.
+- **Plain-Convex fallback** — `workspaces.join` / `workspaces.memberCount` are
+  ordinary Convex functions called through the same hooks ([I11](/docs/reference/invariants)).
+- **Optimistic moves & deletes**, an offline → reconnect flush, and a second
+  device pulling the first's changes.
+
+```tsx title="src/App.tsx (excerpt)"
+const issues = useQuery(api.issues.list, { workspaceId: WORKSPACE }, { initial: [] }) ?? [];
+const setStatus = useMutation(api.issues.setStatus);
+const sync = useSyncStatus();
+
+// move a card between columns — optimistic, offline-capable
+void setStatus({ id: issue._id, status: next }).local;
+```
+
+## Run it offline-first
+
+No backend required — the app works fully offline against IndexedDB:
+
+```bash
+cd examples/todo-perfect-dx
+pnpm dev
+```
+
+## Run it with live sync
+
+Stand up a local, anonymous Convex backend (no cloud account):
+
+```bash
+cd examples/todo-perfect-dx
+npx convex dev --once --configure new --project todoperfectdx --dev-deployment local
+npx convex dev &                  # deploys app + component, keeps the backend running
+pnpm dev                          # the app, now syncing to 127.0.0.1:3210
+```
+
+## Verify it
+
+```bash
+# protocol + full-stack live scripts (need the backend running)
+node scripts/live-sync-check.mjs    # push → pull → idempotent → scope-isolated
+node scripts/live-engine-e2e.mjs    # two engines sync through the real sync fns
+
+# real-browser end-to-end in Chromium
+pnpm test:e2e                       # 5 Playwright tests
+```
+
+The browser suite covers optimistic create + sync, patch/move across columns,
+IndexedDB persistence across reload, offline create → reconnect flush, and a
+fresh-device client pulling another's issue.
+
+<Callout>
+This browser pass is how several integration bugs were found that unit tests
+missed — an infinite render loop (the Convex `api` proxy returns a fresh object
+per access, so effects key on the resolved function *name*), a stale online
+indicator, and a row-version field that broke Convex schema validation. Bugs
+surface in real usage.
+</Callout>

@@ -1,0 +1,73 @@
+---
+title: Document mode (Yjs CRDT)
+description: Collaborative rich text and ordered structures over the local-first log, via @convex-localfirst/yjs.
+---
+
+Per-field [`fieldLww`](/docs/defining-tables#conflict-policies) handles most
+optimistic editing, and the opt-in convergent merges — `setFields`,
+`counterFields`, and [`timestampLww`](/docs/defining-tables#conflict-policies) —
+cover concurrent edits to array, counter, and scalar fields without clobbering.
+
+What field-level merge can't do is **concurrent edits to the same rich text or
+ordered list** (two people typing in one paragraph). For that, reach for a real
+sequence CRDT: `@convex-localfirst/yjs`.
+
+## Yjs rich text — `@convex-localfirst/yjs`
+
+`@convex-localfirst/yjs` rides a Yjs CRDT on the local-first log: every Yjs binary
+update is one insert-only row, and Yjs updates are commutative + idempotent, so
+edits converge with **zero conflict handling**. `react` and `yjs` are peer deps.
+
+Declare an insert-only updates table plus append/prune mutations:
+
+```ts title="convex/docUpdates.ts"
+const docUpdates = lf.table("doc_updates", {
+  scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
+  idField: "localId",
+  indexes: { byDoc: ["workspaceId", "docId", "createdAt"] }
+});
+
+export const append = docUpdates.insert({
+  args: { workspaceId: v.string(), docId: v.string(), update: v.string() },
+  value: ({ args, now }) => ({ ...args, createdAt: now })
+});
+export const prune = docUpdates.remove({ args: { id: v.string() } }); // used for compaction
+```
+
+`useCollaborativeDoc` owns the Y.Doc lifecycle, dedup, apply, compaction, and the
+echo-guard; you supply the live rows and the append/prune callbacks (backend-agnostic):
+
+```tsx
+import { useCollaborativeDoc } from "@convex-localfirst/yjs";
+
+const updates =
+  useLiveQuery(collection("doc_updates").scope({ workspaceId }).where((u) => u.docId === docId)) ?? [];
+const appendRow = useMutation(api.docUpdates.append);
+const pruneRow = useMutation(api.docUpdates.prune);
+
+const doc = useCollaborativeDoc({
+  docId,                                   // must uniquely identify the doc across scopes
+  updates,
+  append: (update) => appendRow({ workspaceId, docId, update }).local,
+  prune: (id) => pruneRow({ id }).local    // omit to disable compaction (log grows unbounded)
+});
+// bind to an editor: BlockNote → doc.getXmlFragment("blocknote"); TipTap → a y-prosemirror binding
+```
+
+## Compaction
+
+Each edit appends a row, so a long-lived doc accumulates updates. Pass `prune` and
+`useCollaborativeDoc` periodically writes a single squashed snapshot row and deletes
+the rows it subsumes (`compactThreshold` rows, default 50). The snapshot is written
+**before** the prune, and Yjs merge is a CRDT, so a peer that races the two mutations
+sees at worst a transient partial state that self-heals on the next update — never
+permanent loss. Omit `prune` to disable compaction (the log then grows unbounded).
+
+## Other sequence CRDTs
+
+**Automerge** is a heavier dependency that is deliberately not bundled. It rides the
+same pattern as Yjs — append each binary change as one insert-only row over the
+local-first log — so it can be added as a parallel optional package when needed (see
+the [roadmap](/docs/reference/invariants#roadmap)).
+
+Next: [API reference](/docs/reference/api).

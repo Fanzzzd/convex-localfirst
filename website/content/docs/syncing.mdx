@@ -1,0 +1,180 @@
+---
+title: Syncing & the component
+description: The mountable Convex component plus createSyncFunctions — the whole server sync surface in a dozen lines.
+---
+
+The server side has two parts: a **component** you mount (no code), and your
+**`sync.ts`** that calls `createSyncFunctions` (a dozen lines).
+
+## The component
+
+`@convex-localfirst/component` is a real, mountable Convex component. It owns all
+the sync bookkeeping so you never define those tables yourself:
+
+- the **ledger** (idempotency — dedupes re-pushed ops),
+- the append-only **change log** (the source of versions and pulls; deletes ride it
+  too, as `kind: "delete"` changes — there is no separate tombstone table),
+- the **id map** (local id ↔ server id),
+- per-field **write clocks** (the `timestampLww` registers).
+
+Pull position (the cursor) is tracked **client-side** and sent on each pull — the
+component keeps no per-client cursor state.
+
+Mount it once:
+
+```ts title="convex/convex.config.ts"
+import { defineApp } from "convex/server";
+import localfirst from "@convex-localfirst/component/convex.config.js";
+
+const app = defineApp();
+app.use(localfirst);
+
+export default app;
+```
+
+The parent app calls only the component's **public** functions via
+`components.convexLocalFirst.*`. Convex codegen generates both your app's
+`_generated` and the component's own `_generated`.
+
+## `createSyncFunctions`
+
+This builds the `push` mutation and `pull` query local-first clients sync
+against. You declare which app tables are local-first and how they're scoped;
+the helper wires app rows to `ctx.db` and every bookkeeping operation to the
+mounted component.
+
+```ts title="convex/sync.ts"
+import { createSyncFunctions } from "@convex-localfirst/server";
+import { components } from "./_generated/api";
+import { mutation, query } from "./_generated/server";
+
+export const { push, pull } = createSyncFunctions({
+  component: components.convexLocalFirst,
+  mutation,
+  query,
+  tables: {
+    todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" },
+    issues: {
+      scope: { kind: "byWorkspace", workspaceIdField: "workspaceId", membershipTable: "ws_members" },
+      idField: "localId",
+      conflict: "fieldLww"
+    }
+  },
+  // Required only when a table is byWorkspace / byProject — see below.
+  async isMember(ctx, { userId, scopeValue, membershipTable }) {
+    const row = await ctx.db
+      .query(membershipTable)
+      .withIndex("by_user_ws", (q) => q.eq("userId", userId).eq("workspaceId", scopeValue))
+      .unique();
+    return row !== null;
+  }
+});
+```
+
+To add a local-first table later, add one entry to `tables`.
+
+### Prefer `collectTables` — one source of truth
+
+Restating each table's `scope` / `idField` / `conflict` here duplicates what you already
+declared in your `lf.table(...)` modules — and the two can silently drift. `collectTables`
+derives the `tables` config straight from those modules, so the definition lives in **one**
+place. Import your local-first modules and pass them in:
+
+```ts title="convex/sync.ts"
+import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
+import { components } from "./_generated/api";
+import { mutation, query } from "./_generated/server";
+import * as todos from "./todos";
+import * as issues from "./issues";
+
+export const { push, pull } = createSyncFunctions({
+  component: components.convexLocalFirst,
+  mutation,
+  query,
+  tables: collectTables({ todos, issues }), // scope/idField/conflict come from the lf.table defs
+  async isMember(ctx, { userId, scopeValue, membershipTable }) {
+    const row = await ctx.db
+      .query(membershipTable)
+      .withIndex("by_user_ws", (q) => q.eq("userId", userId).eq("workspaceId", scopeValue))
+      .unique();
+    return row !== null;
+  }
+});
+```
+
+Now adding a local-first table is just one more `import` + one key in `collectTables`; its
+config tags along automatically. Use the explicit `tables: {...}` form above only if you
+need a config that differs from the `lf.table` definition.
+
+| Option | Meaning |
+| --- | --- |
+| `component` | `components.convexLocalFirst` from your generated api. |
+| `mutation` / `query` | The constructors from your `_generated/server`. |
+| `tables` | Which app tables are local-first, and how each is scoped. |
+| `isMember` | **Required if any table is `byWorkspace`/`byProject`.** The server-side membership check. |
+| `schemaVersion` / `now` | Optional. |
+
+## Membership (I7)
+
+For `byWorkspace` / `byProject` tables, **the server** decides access — never the
+client. Your `isMember` callback runs before any workspace write is accepted or
+any change is returned. If a `byWorkspace`/`byProject` table is declared without
+an `isMember`, `createSyncFunctions` throws a clear error rather than silently
+allowing access.
+
+## Trust model & current limitations
+
+Be explicit about what the server does and does not guarantee — this is a
+client-authoritative local-first design, like Replicache, not a server that
+re-runs your mutations.
+
+**The server enforces (the security boundary):**
+
+- **Identity** from `ctx.auth` (never the client), per [I7](/docs/reference/invariants).
+- **Scope / membership**: a write is accepted only for a scope the caller owns
+  (`byUser`) or is a member of (`byWorkspace`/`byProject`); for a patch/delete the
+  scope is read from the **stored row**, never from client-supplied values.
+- **Partition integrity**: a patch may not move a row across scopes (change its
+  `workspaceId`/`ownerId`/`projectId`) or rewrite its id field.
+- **Schema/types**: writes go through Convex's own schema validators, so a field
+  can't be the wrong type or undeclared (if your schema is strict).
+
+**The server does *not* (yet) enforce — design these around it:**
+
+- **Business rules.** A local-first mutation's `plan()` runs on the *client*; the
+  server applies the resulting insert value / patch after the checks above — it
+  does **not** re-run your mutation body. So within an authorized scope a client
+  can write any *schema-valid* field value. Encode hard invariants as Convex schema
+  validators; server-side mutation re-execution is a future milestone. Treat the
+  schema as your server-side validation surface.
+- **Concurrent-write conflict policy.** With the default `fieldLww`, same-field
+  writes are last-writer-wins by **arrival order**, so a stale offline write can
+  overwrite a newer server edit. To fix that, declare `conflict: lf.timestampLww()`:
+  same-field collisions then resolve by the op's logical timestamp (+ clientId
+  tiebreaker), so the **newer** edit wins regardless of arrival order — enforced
+  server-side via per-field write clocks. Convergent per-field merges (`setFields`,
+  `counterFields`) never clobber. Client-side rebase
+  ([I1](/docs/reference/invariants)) keeps each device's *local* view consistent
+  throughout. Only `fieldLww` and `timestampLww` exist — both are real and
+  server-enforced; there are no silent-no-op policies to mistake for working.
+
+## What runs underneath
+
+`createSyncFunctions` is a thin adapter over the pure `serverSync` engine —
+`handlePush` / `handlePull`, driven by a `SyncConfig` and a `ServerStore`
+interface. The engine is deliberately runtime-agnostic (no direct `ctx.db`
+dependency) so it stays testable and portable; the adapter binds it to `ctx.db`
+plus the component.
+
+If you need full control (custom storage, batching component writes, extra
+validation), you can implement `ServerStore` yourself and call `handlePush` /
+`handlePull` directly — `createSyncFunctions` is the turnkey path, not the only
+one. Both are exported from `@convex-localfirst/server`.
+
+<Callout title="Auth in production">
+The helper derives identity from `ctx.auth` and falls back to a supplied id only
+for local demo backends with no auth provider. In production, auth is what
+enforces [invariant I7](/docs/reference/invariants).
+</Callout>
+
+Next: [Codegen & the CLI](/docs/codegen-and-cli).

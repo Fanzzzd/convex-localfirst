@@ -1,0 +1,62 @@
+{
+  "name": "@convex-localfirst/yjs",
+  "version": "0.1.0",
+  "description": "Yjs CRDT over the convex-localfirst append-only log: base64 codec, snapshot compaction, useCollaborativeDoc hook.",
+  "license": "MIT",
+  "keywords": [
+    "convex",
+    "local-first",
+    "yjs",
+    "crdt",
+    "collaborative"
+  ],
+  "author": "Fanzzzd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fanzzzd/convex-localfirst.git",
+    "directory": "packages/yjs"
+  },
+  "homepage": "https://github.com/Fanzzzd/convex-localfirst#readme",
+  "bugs": {
+    "url": "https://github.com/Fanzzzd/convex-localfirst/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --emitDeclarationOnly false",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "yjs": ">=13.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "jsdom": "^29.1.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
+    "yjs": "^13.6.31"
+  }
+}

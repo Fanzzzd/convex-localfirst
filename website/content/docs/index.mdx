@@ -1,0 +1,106 @@
+---
+title: Convex Local-First
+description: Optimistic, offline-capable collections for Convex. Keep writing Convex queries, mutations, and React hooks — declared tables read and write locally and sync in the background, while Convex stays authoritative.
+---
+
+`@convex-localfirst/*` adds **local-first collections** to Convex. You keep
+writing Convex the normal way — schema, query/mutation modules, `useQuery` /
+`useMutation` in React. For the specific tables you opt in, reads and writes
+happen **locally and optimistically first**, persist to IndexedDB, work
+**offline**, and sync to Convex in the background. Convex stays the source of
+truth.
+
+## The contract
+
+> Users keep writing Convex-style functions and React hooks. Tables declared
+> local-first read and write locally by default. Convex stays authoritative.
+> Ordinary Convex functions keep working through fallback.
+
+Concretely:
+
+- **Drop-in hooks.** `useQuery` / `useMutation` keep Convex's exact signatures.
+  A reference to a declared local-first function is served from the local
+  engine; any other reference falls through to plain Convex untouched.
+- **Optimistic local writes.** A mutation commits to the local store and updates
+  the UI immediately, then pushes to the server. You can `await` it for the
+  server result, or read `.local` / `.server` separately.
+- **Offline-capable.** Local reads/writes need no network. Queued writes flush
+  automatically when connectivity returns.
+- **Convex stays authoritative.** The server enforces auth, ownership, workspace
+  membership, idempotency, and canonical ordering. The client never decides who
+  may read or write what.
+
+## The client you write
+
+```tsx
+import { useMutation, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { api } from "../convex/_generated/api";
+
+export function Todos({ listId }: { listId: string }) {
+  const todos = useQuery(api.todos.list, { listId }, { initial: [] });
+  const create = useMutation(api.todos.create);
+  const sync = useSyncStatus();
+
+  return (
+    <>
+      <span>{sync.online ? "online" : "offline"} · {sync.pendingMutations} pending</span>
+      {/* commits to IndexedDB + UI immediately; syncs in the background */}
+      <button onClick={() => create({ listId, text: "Ship a better DX" })}>
+        Add ({todos.length})
+      </button>
+    </>
+  );
+}
+```
+
+## The Convex you write
+
+```ts
+import { v } from "convex/values";
+import { lf } from "./localfirst";
+
+const todos = lf.table("todos", {
+  scope: lf.byUser("ownerId"),       // server enforces per-user isolation
+  conflict: lf.fieldLww(),           // last-writer-wins per field
+  indexes: { byList: ["ownerId", "listId", "createdAt"] }
+});
+
+export const list = todos.query({
+  args: { listId: v.string() },
+  index: "byList",
+  key: ({ auth, args }) => [auth.userId, args.listId],
+  initial: []
+});
+
+export const create = todos.insert({
+  args: { listId: v.string(), text: v.string() },
+  value: ({ auth, args, now }) => ({
+    ownerId: auth.userId, listId: args.listId, text: args.text,
+    done: false, createdAt: now, updatedAt: now
+  })
+});
+```
+
+That's the whole surface. Continue with [Getting started](/docs/getting-started).
+
+## What it is *not*
+
+It does not run a Convex backend in the browser, and it does not turn arbitrary
+Convex functions into local-first ones. Only tables you explicitly declare with
+the [server DSL](/docs/defining-tables) — and that appear in the generated
+manifest — become local-first. Everything else is ordinary Convex.
+
+It also does not sync your whole database. Local-first tables require an explicit
+**scope** (per-user, per-workspace, or per-project) so a client only ever holds
+data it is allowed to see.
+
+## The packages
+
+| Package | Role |
+| --- | --- |
+| `@convex-localfirst/react` | Drop-in `ConvexProvider`, `useQuery`, `useMutation`, `useSyncStatus`. |
+| `@convex-localfirst/core` | The local engine, store contract, sync protocol, IndexedDB store, transport. |
+| `@convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`handlePush` / `handlePull`). |
+| `@convex-localfirst/component` | A mountable Convex component holding all sync bookkeeping (ledger, change log, id map, field clocks). |
+| `@convex-localfirst/cli` | `codegen`, `check`, `dev`, `init`. |
+| `@convex-localfirst/yjs` | Yjs rich-text CRDT over the local-first log (`useCollaborativeDoc`). |

@@ -1,0 +1,51 @@
+{
+  "name": "@convex-localfirst/cli",
+  "version": "0.1.0",
+  "description": "CLI for convex-localfirst: codegen (client manifest from lf.table), check (catch direct LF-table writes), dev.",
+  "license": "MIT",
+  "keywords": [
+    "convex",
+    "local-first",
+    "cli",
+    "codegen"
+  ],
+  "author": "Fanzzzd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fanzzzd/convex-localfirst.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Fanzzzd/convex-localfirst#readme",
+  "bugs": {
+    "url": "https://github.com/Fanzzzd/convex-localfirst/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "bin": {
+    "convex-localfirst": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --emitDeclarationOnly false",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "devDependencies": {
+    "@convex-localfirst/core": "workspace:^",
+    "@convex-localfirst/server": "workspace:^",
+    "@types/node": "^22.10.0",
+    "convex": ">=1.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

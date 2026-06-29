@@ -1,0 +1,50 @@
+{
+  "name": "@convex-localfirst/component",
+  "version": "0.1.0",
+  "description": "Mountable Convex component for convex-localfirst: sync ledger, append-only change log, id map, field clocks.",
+  "license": "MIT",
+  "keywords": [
+    "convex",
+    "convex-component",
+    "local-first",
+    "sync"
+  ],
+  "author": "Fanzzzd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fanzzzd/convex-localfirst.git",
+    "directory": "packages/component"
+  },
+  "homepage": "https://github.com/Fanzzzd/convex-localfirst#readme",
+  "bugs": {
+    "url": "https://github.com/Fanzzzd/convex-localfirst/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "./convex/convex.config.ts",
+  "exports": {
+    "./convex.config.js": "./convex/convex.config.ts",
+    "./_generated/component.js": "./convex/_generated/component.ts",
+    "./_generated/api.js": "./convex/_generated/api.ts"
+  },
+  "files": [
+    "convex"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "convex": ">=1.0.0"
+  },
+  "scripts": {
+    "build": "echo component package is built by Convex codegen",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'component functions are validated by Convex codegen + exercised end-to-end by the example live-sync scripts; pure engine logic is covered by @convex-localfirst/server serverSync tests'"
+  },
+  "devDependencies": {
+    "convex": ">=1.0.0",
+    "typescript": "^5.7.0"
+  }
+}

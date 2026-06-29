@@ -1,0 +1,106 @@
+---
+title: How it works
+description: The local engine, the canonical-derived view, server authority, scopes, and offline sync — the model behind the hooks.
+---
+
+You don't need this page to ship, but it explains why local-first writes are safe
+and why the server stays in control.
+
+## The local engine
+
+The provider creates one **engine** per app. It owns:
+
+- a **local store** (IndexedDB in the browser, in-memory in tests),
+- an **outbox** of pending mutations not yet acknowledged by the server,
+- a **canonical** snapshot of what the server has confirmed,
+- a **transport** that pushes the outbox and pulls server changes.
+
+Hooks never touch the engine type directly — `useQuery` reads a derived view,
+`useMutation` appends to the outbox, `useSyncStatus` subscribes to status. The
+engine is intentionally absent from the public type surface.
+
+## The canonical-derived view (invariant I1)
+
+The single most important rule: **the live view is derived, never stored.**
+
+```
+liveView = deriveView(canonical + replay(pendingOps))
+```
+
+When you make a local write, the engine appends an operation to the outbox and
+recomputes the view. When the server sends back confirmed changes, they update
+the **canonical** layer — and the pending ops are **replayed on top** again. A
+late server change can never clobber a local edit you haven't synced yet; it just
+changes the base that your pending ops rebase onto. This "rebase on the hot path"
+is what makes optimistic writes correct rather than merely fast.
+
+## Hybrid mutations
+
+A local-first mutation returns a hybrid call so one return type serves every
+need:
+
+```ts
+const call = create({ listId, text });
+
+await call;          // resolves to the server result (like a normal Convex mutation)
+await call.local;    // resolves the instant the local commit lands (optimistic)
+await call.server;   // the server round-trip explicitly
+call.opId;           // the operation id (for status tracking)
+call.status();       // current MutationStatus
+```
+
+The UI updates from `.local` immediately; `.server` (or `await call`) resolves
+when Convex confirms. See [React hooks](/docs/react-hooks#mutations).
+
+## Server authority & scopes (invariant I7)
+
+The client is never trusted to decide what it may read or write. Every
+local-first table declares a **scope**, and the server enforces it on both push
+and pull:
+
+- **`byUser`** — rows belong to one user. The server forces the owner field to
+  the authenticated user; a client can't write or read another user's rows.
+- **`byWorkspace`** / **`byProject`** — rows belong to a workspace/project. The
+  server checks a **membership table** before accepting a write or returning a
+  change. Membership lives on the server; the client only sends a workspace id.
+
+Pushes that violate scope are rejected; pulls only ever return changes within
+scopes the user belongs to. See [Defining tables → Scopes](/docs/defining-tables#scopes).
+
+## Idempotency, ordering & versions
+
+- Each operation carries a client-unique **opId**. The server keeps a **ledger**;
+  re-pushing the same op is a no-op, so retries (after a flaky network) never
+  double-apply.
+- Operations get a deterministic order so replays are stable even within the same
+  millisecond.
+- Every confirmed change has a monotonic **version** derived from an append-only
+  change log — never stored on the user row, so it can't collide with your schema.
+- The client tracks a **cursor** per scope; pulls are incremental.
+
+## Offline & reconnect
+
+Local reads and writes never need the network. While offline, mutations queue in
+the outbox and `useSyncStatus().pendingMutations` rises. When the browser fires
+`online`, the provider flips the engine back online and flushes the outbox
+automatically — no reload, no manual retry. Data persisted to IndexedDB survives
+a refresh or a closed tab.
+
+## Conflicts
+
+When two clients edit the same row, the table's **conflict policy** decides the
+result deterministically:
+
+- **`fieldLww`** (default) — last-writer-wins **per field**, so two clients
+  editing different fields both keep their change; same-field collisions resolve
+  by arrival order at the server.
+- **`timestampLww`** — same per-field merge, but same-field collisions resolve by
+  the op's logical timestamp (+ clientId tiebreaker), so a **newer** edit wins
+  regardless of arrival order (the offline-first fix).
+
+Convergent per-field merges (`setFields`, `counterFields`) compose with either,
+so concurrent array/counter edits accumulate instead of clobbering. For
+collaborative documents where field-LWW isn't enough, use
+[document mode](/docs/document-mode) (CRDTs).
+
+Next: [Defining local-first tables](/docs/defining-tables).

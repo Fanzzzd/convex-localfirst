@@ -1,0 +1,59 @@
+---
+title: Invariants & limits
+description: The non-negotiable correctness and security invariants, what's deliberately deferred, and the roadmap.
+---
+
+## Invariants
+
+These hold by construction — they're the contract the framework is built to keep.
+
+| # | Invariant |
+| --- | --- |
+| **I1** | The live view is **derived**: `deriveView(canonical + replay(pending))`. Server changes never clobber un-synced local ops. |
+| **I4** | Operations have a deterministic order, so replays are stable (even within one millisecond). |
+| **I5** | `applyServerChange` is version-guarded — out-of-order or stale changes are safe. |
+| **I6** | No "sync the whole database" mode is reachable in production. Every table is explicitly scoped. |
+| **I7** | The **client never decides authorization.** The server enforces ownership (`byUser`) and membership (`byWorkspace` / `byProject`) on push *and* pull. |
+| **I8** | Side-effecting / server functions are **server-only by default.** A function is local-first only if declared via `lf.table` and present in the manifest. |
+| **I9** | Logout clears or namespaces local data so the next user can't read it. |
+| **I10** | `check` catches direct `ctx.db` writes to local-first tables (which would bypass the ledger and change log). |
+| **I11** | Ordinary Convex functions keep working through the same hooks (fallback). |
+
+## Non-negotiable constraints
+
+- Do **not** run a Convex backend in the browser.
+- Do **not** promise arbitrary Convex functions become local-first automatically.
+- Do **not** synchronize an entire application database by default.
+- Convex remains authoritative for validation, auth, idempotency, and canonical
+  ordering.
+- Local-first tables require explicit scope declarations.
+- Writes to local-first tables must pass through the DSL or generated wrappers.
+
+## Deferred (bounded, not faked)
+
+These are intentionally out of scope for now, with a clear seam to add them:
+
+- **Automerge rich-text.** Yjs already ships (`@convex-localfirst/yjs` — see below);
+  Automerge rides the same append-only-log approach (one binary change per row) later.
+- **Devtools UI** beyond the snapshot bridge.
+- **A full Next.js plugin.** The Vite alias strategy is implemented and
+  documented; the Next variant is not yet shipped.
+- **Presence / awareness / multi-region.**
+
+## Shipped
+
+- **Yjs rich text** (`@convex-localfirst/yjs`) — collaborative documents over the
+  local-first log (`useCollaborativeDoc`). See [Document mode](/docs/document-mode).
+- **Convergent merges + timestamp-ordered LWW** — opt-in `setFields` / `counterFields`
+  (concurrent array/counter edits merge), and `conflict: lf.timestampLww()` (a newer
+  edit wins regardless of arrival order). See [Defining tables](/docs/defining-tables#conflict-policies).
+- **`createSyncFunctions`** — the server `sync.ts` is now a dozen lines, not ~150.
+  See [Syncing](/docs/syncing#createsyncfunctions).
+- **Full type inference** — `useQuery` / `useMutation` infer args and result from
+  the function reference; no explicit generics. See [React hooks](/docs/react-hooks#type-inference).
+
+## Roadmap
+
+- **Batched component writes** — one component mutation per push instead of a few
+  calls per op, for high-throughput backends.
+- The deferred items above, as the seams they already have are exercised.
