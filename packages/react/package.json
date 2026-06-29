@@ -1,6 +1,6 @@
 {
   "name": "@convex-localfirst/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Convex-compatible React hooks (useQuery/useMutation/useSyncStatus) for local-first, offline-capable apps.",
   "license": "MIT",
   "keywords": [
