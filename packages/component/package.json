@@ -1,6 +1,6 @@
 {
   "name": "@convex-localfirst/component",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mountable Convex component for convex-localfirst: sync ledger, append-only change log, id map, field clocks.",
   "license": "MIT",
   "keywords": [
