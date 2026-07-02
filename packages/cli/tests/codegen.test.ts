@@ -150,7 +150,7 @@ describe("codegen introspection", () => {
     const source = emitManifestSource(1, entries);
     expect(source).toContain('from "@convex-localfirst/core"');
     // I13: the manifest interpreters are imported from the INTERNAL subpath, not the
-    // public root (GOAL §6 forbids manifest interpreters in the public surface).
+    // public root (manifest interpreters stay off the public surface).
     expect(source).toContain('from "@convex-localfirst/core/internal"');
     expect(source).toMatch(/import \{\s*declarativeInsert,[\s\S]*?\}\s*from "@convex-localfirst\/core\/internal"/);
     expect(source).toContain('"todos:list": declarativeQuery(');

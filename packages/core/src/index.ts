@@ -1,4 +1,4 @@
-// Public API surface (GOAL §6). Rebase/replay, the derived view, and other
+// Public API surface. Rebase/replay, the derived view, and other
 // implementation internals are intentionally NOT re-exported here — they live in
 // "./internal.js" ("@convex-localfirst/core/internal") for the React adapter only.
 // Keeping them out keeps the public type surface free of internal vocabulary (I13)
@@ -13,10 +13,10 @@ export { createLocalFirstEngine } from "./engine.js";
 export type { LocalFirstEngine, LocalFirstEngineOptions } from "./engine.js";
 export * from "./collection.js";
 export * from "./relations.js";
-// id: only createClientId is a wiring helper (GOAL §6). createOpId/createDefaultIdFactory
+// id: only createClientId is a wiring helper. createOpId/createDefaultIdFactory
 // are engine internals → "./internal.js".
 export { createClientId, type IdFactory } from "./id.js";
-// indexedDbStore: IndexedDbStore is the wiring helper (GOAL §6). openLocalFirstDb +
+// indexedDbStore: IndexedDbStore is the wiring helper. openLocalFirstDb +
 // the schema-version constant are internals → "./internal.js".
 export { IndexedDbStore, type IndexedDbStoreOptions } from "./indexedDbStore.js";
 export * from "./manifest.js";

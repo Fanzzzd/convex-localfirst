@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index";
 import * as internalApi from "../src/internal";
 
-// I13 / GOAL §6: implementation internals must NOT leak into the public package surface,
+// I13: implementation internals must NOT leak into the public package surface,
 // so they stay free to be rewritten without a semver break. The engine, rebase/replay,
 // derived view, manifest interpreters (declarative*), multi-tab leadership, and low-level
 // id/ordering/db helpers all live behind "@convex-localfirst/core/internal"; apps import

@@ -244,7 +244,7 @@ function LocalFirstProvider(props: LocalFirstProviderConfig & { readonly childre
   return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
 }
 
-// Internal: the engine never appears in the public type surface (GOAL §6/I13).
+// Internal: the engine never appears in the public type surface (I13).
 function useLocalFirstEngine(): LocalFirstEngine | null {
   return useContext(LocalFirstReactContext)?.engine ?? null;
 }

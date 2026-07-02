@@ -1,4 +1,4 @@
-// Internal API surface — NOT part of the public package (GOAL §6 / I13).
+// Internal API surface — NOT part of the public package (I13).
 //
 // The engine, rebase/replay, the derived view, the manifest interpreters
 // (declarative*, consumed only by codegen output), multi-tab leadership, and

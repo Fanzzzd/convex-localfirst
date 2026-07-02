@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createLocalFirst } from "../src/index";
 
-// GOAL G7/§5(g): the deployed function for a local-first table must NOT return
+// G7: the deployed function for a local-first table must NOT return
 // fabricated success. Reads/writes go through the client + sync.push/pull, so the
 // server handler must refuse loudly if invoked directly.
 

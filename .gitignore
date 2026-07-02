@@ -25,3 +25,6 @@ coverage/
 # logs & OS cruft
 *.log
 .DS_Store
+
+# local working notes (goal / specs / todo — not shipped)
+.notes/

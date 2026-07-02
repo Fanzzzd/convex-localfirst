@@ -195,7 +195,7 @@ export function createLocalFirst<
  * sync.push / sync.pull. The function still exists in the deployment — the client
  * references it by name and codegen introspects its attached metadata — but
  * invoking the handler directly is a bug, so it refuses loudly instead of
- * returning fabricated data (GOAL G7: real, or explicitly throw "unsupported").
+ * returning fabricated data (G7: real, or explicitly throw "unsupported").
  */
 function unsupportedLocalFirstCall(kind: string, tableName: string): never {
   throw new Error(
