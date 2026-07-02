@@ -1,7 +1,19 @@
 import { v } from "convex/values";
 import { lf, scopeWorkspace } from "./localfirst";
 
-const comments = lf.table("issue_comments", {
+export const comments = lf.table("issue_comments", {
+  shape: {
+    workspace: v.string(),
+    project: v.string(),
+    issue: v.string(),
+    actor: v.string(),
+    comment_html: v.string(),
+    comment_stripped: v.optional(v.string()),
+    access: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    created_by: v.string()
+  },
   scope: scopeWorkspace, // scope field = "workspace"
   indexes: { byWorkspace: ["workspace", "created_at"] }
 });

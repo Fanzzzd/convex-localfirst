@@ -5,7 +5,24 @@ import { lf, scopeWorkspace } from "./localfirst";
 // Scope field "workspace" (IProjectView.workspace, slug) — comment/project-style — and
 // also carries "project" so the view store can filter views by project. Same byWorkspace
 // shape as projects/comments.
-const views = lf.table("views", {
+export const views = lf.table("views", {
+  shape: {
+    workspace: v.string(),
+    project: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    access: v.optional(v.number()),
+    rich_filters: v.optional(v.any()),
+    display_filters: v.optional(v.any()),
+    display_properties: v.optional(v.any()),
+    query: v.optional(v.any()),
+    query_data: v.optional(v.any()),
+    logo_props: v.optional(v.any()),
+    sort_order: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    created_by: v.optional(v.string())
+  },
   scope: scopeWorkspace,
   indexes: { byWorkspace: ["workspace", "created_at"] }
 });

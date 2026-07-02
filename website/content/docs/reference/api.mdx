@@ -25,12 +25,18 @@ Drop-in for Convex's provider. Without `localFirst`, behaves exactly like
 
 ```ts
 type LocalFirstProviderConfig = {
-  manifest: LocalFirstManifest;     // from codegen
-  transport?: SyncTransport;        // online sync; omit for offline-only
-  store?: LocalStore;               // defaults to in-memory; use IndexedDbStore
-  clientId?: string;
+  modules?: Record<string, unknown>; // imported lf.table modules (runtime manifest, no codegen)
+  schemaVersion?: number;            // gates sync on incompatible shape changes; default 1
+  manifest?: LocalFirstManifest;     // escape hatch / tests, instead of modules
   userId?: string | null;
-  nameOf?: FunctionNameResolver;    // defaults to Convex getFunctionName
+  clientId?: string;
+  store?: LocalStore;                // default: IndexedDB in the browser (namespaced by userId)
+  databaseName?: string;             // default "convex-localfirst"
+  namespace?: string;                // default userId
+  sync?: { push?: FunctionReference<"mutation">; pull?: FunctionReference<"query"> };
+                                     // default api.sync.push / api.sync.pull
+  transport?: SyncTransport;         // escape hatch: bring your own
+  nameOf?: FunctionNameResolver;     // defaults to Convex getFunctionName
 };
 ```
 
@@ -126,17 +132,30 @@ type SyncStatus = {
 };
 ```
 
+### `collectManifest`
+
+```ts
+function collectManifest(
+  modules: Record<string, unknown>,        // imported lf.table modules
+  options?: { schemaVersion?: number }
+): LocalFirstManifest
+```
+
+The codegen-free client manifest: reads the declarations (and their original
+closures) off the imported `lf.table` modules at runtime. The provider's
+`modules` option calls this for you; use it directly for a headless engine.
+Its server twin is [`collectTables`](#collecttables).
+
 Also exported: `LocalStore`, `SyncTransport`, `LocalFirstManifest`,
 `FunctionNameResolver`, `LocalCommit`, `MutationStatus`, `ScopeDefinition`,
-`ConflictPolicyName`, `SyncScope`, and the declarative manifest types.
+`ConflictPolicyName`, and `SyncScope`.
 
 ## `@convex-localfirst/server`
 
 ### `createLocalFirst`
 
 ```ts
-function createLocalFirst<Ctx, Schema>(options: {
-  schema: Schema;
+function createLocalFirst<Ctx>(options?: {
   defaults?: { idField?: string; conflict?: ConflictPolicyName };
 }): LfFactory
 ```
@@ -148,7 +167,7 @@ Returns the `lf` factory:
 
 | Member | Signature |
 | --- | --- |
-| `lf.table(name, options)` | `{ scope; idField?; conflict?; indexes? }` → `{ query, insert, patch, remove }` |
+| `lf.table(name, options)` | `{ shape; scope; idField?; conflict?; indexes?; setFields?; counterFields? }` → `{ table, query, insert, patch, remove }` |
 | `lf.byUser(field)` | `ScopeDefinition` |
 | `lf.byWorkspace({ workspaceIdField, membershipTable })` | `ScopeDefinition` |
 | `lf.byProject({ projectIdField, membershipTable })` | `ScopeDefinition` |
@@ -201,7 +220,7 @@ A mountable Convex component. Mount with `app.use(localfirst)` from
 
 ## `@convex-localfirst/cli`
 
-`codegen`, `check`, `dev`, `init` — see [Codegen & the CLI](/docs/codegen-and-cli).
+`init`, `check` — see [The CLI](/docs/cli).
 
 ## `@convex-localfirst/yjs`
 

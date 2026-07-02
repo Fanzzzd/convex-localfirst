@@ -5,6 +5,7 @@ import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex
 import {
   IndexedDbStore,
   MemoryLocalStore,
+  collectManifest,
   collection,
   createClientId,
   createConvexTransport,
@@ -54,12 +55,40 @@ const EMPTY_STATUS: SyncStatus = {
 };
 
 export type LocalFirstProviderConfig = {
-  readonly manifest: LocalFirstManifest;
-  readonly transport?: SyncTransport;
-  /** Local store. Defaults to an in-memory store; pass an IndexedDbStore in the browser. */
-  readonly store?: LocalStore;
-  readonly clientId?: string;
+  /**
+   * Your imported `lf.table` modules — the client manifest is built from them at
+   * runtime, running the SAME declarations the server deploys (no codegen step):
+   *
+   * ```tsx
+   * import * as todos from "../convex/todos";
+   * <ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
+   * ```
+   *
+   * Keys mirror the Convex module path (`{ todos }` → `api.todos.*`; a nested
+   * module as `{ "tasks/todos": todos }`).
+   */
+  readonly modules?: Record<string, unknown>;
+  /** Bump when a local-first table's shape changes incompatibly (gates sync). Default 1. */
+  readonly schemaVersion?: number;
+  /** Escape hatch / tests: a prebuilt manifest instead of `modules`. */
+  readonly manifest?: LocalFirstManifest;
   readonly userId?: string | null;
+  readonly clientId?: string;
+  /** Local store. Defaults to IndexedDB in the browser (namespaced by `namespace`
+   *  ?? `userId`), in-memory elsewhere (SSR, tests). */
+  readonly store?: LocalStore;
+  /** Database name for the default IndexedDB store. Default "convex-localfirst". */
+  readonly databaseName?: string;
+  /** Store namespace — isolates one user's local data from another's on a shared
+   *  device. Defaults to `userId`; switch it on logout. */
+  readonly namespace?: string;
+  /** Sync function refs. Default to the conventional `api.sync.push` / `api.sync.pull`. */
+  readonly sync?: {
+    readonly push?: FunctionReference<"mutation">;
+    readonly pull?: FunctionReference<"query">;
+  };
+  /** Escape hatch: bring your own transport (replaces the default Convex wiring). */
+  readonly transport?: SyncTransport;
   readonly nameOf?: FunctionNameResolver;
 };
 
@@ -107,7 +136,11 @@ export type ConvexLocalFirstEngine = Omit<LocalFirstEngine, "mutate" | "query"> 
 };
 
 export type CreateConvexLocalFirstOptions = {
-  readonly manifest: LocalFirstManifest;
+  /** Your imported lf.table modules (see LocalFirstProviderConfig.modules) — or a
+   *  prebuilt `manifest`. */
+  readonly modules?: Record<string, unknown>;
+  readonly schemaVersion?: number;
+  readonly manifest?: LocalFirstManifest;
   /** Pass a Convex client, or a `url` to construct a (reactive) ConvexReactClient. */
   readonly client?: InstanceType<typeof ConvexReact.ConvexReactClient>;
   readonly url?: string;
@@ -135,6 +168,11 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
   readonly engine: ConvexLocalFirstEngine;
   readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
 } {
+  const manifest =
+    options.manifest ??
+    (options.modules
+      ? collectManifest(options.modules, { schemaVersion: options.schemaVersion })
+      : raise("createConvexLocalFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."));
   const client =
     options.client ??
     new ConvexReact.ConvexReactClient(
@@ -160,7 +198,7 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     userId: userId ?? ""
   });
   const engine = createLocalFirstEngine({
-    manifest: options.manifest,
+    manifest,
     store,
     transport,
     clientId,
@@ -186,49 +224,100 @@ export function ConvexProvider(props: {
   }
   return (
     <ConvexReact.ConvexProvider client={props.client}>
-      <LocalFirstProvider {...props.localFirst}>{props.children}</LocalFirstProvider>
+      <LocalFirstProvider {...props.localFirst} client={props.client}>
+        {props.children}
+      </LocalFirstProvider>
     </ConvexReact.ConvexProvider>
   );
 }
 
 // Internal: the explicit-config provider. Users mount the local-first layer via
 // the public `ConvexProvider` (drop-in name) + its `localFirst` prop.
-function LocalFirstProvider(props: LocalFirstProviderConfig & { readonly children: React.ReactNode }) {
-  // Resolve the store ONCE per provider instance, with the SAME deps as the engine, so
-  // (a) an app that inlines a fresh store object each render doesn't thrash the engine,
-  // and (b) the multi-tab coordination key below is derived from the EXACT store the
-  // engine holds — never an old-engine-under-a-new-store-namespace mismatch.
-  const store = useMemo(
-    () => props.store ?? new MemoryLocalStore(),
+function LocalFirstProvider(
+  props: LocalFirstProviderConfig & {
+    readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+    readonly children: React.ReactNode;
+  }
+) {
+  // Resolved ONCE per provider instance: the manifest is pure data derived from the
+  // imported modules (stable), and rebuilding it on an inline `modules={{ todos }}`
+  // object would thrash the engine every render.
+  const [manifest] = useState<LocalFirstManifest>(() => {
+    if (props.manifest) return props.manifest;
+    if (props.modules) return collectManifest(props.modules, { schemaVersion: props.schemaVersion });
+    throw new Error(
+      "ConvexProvider localFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."
+    );
+  });
+  const [clientId] = useState(() => props.clientId ?? createClientId());
+  const userId = props.userId ?? null;
+
+  // Default transport: the conventional sync endpoints over the SAME Convex client the
+  // provider already holds. Deps use the resolved function NAMES — `api.sync.push` is a
+  // fresh proxy object per access, so depending on the reference would thrash.
+  const pushName = props.sync?.push ? reactDefaultFunctionName(props.sync.push) : "sync:push";
+  const pullName = props.sync?.pull ? reactDefaultFunctionName(props.sync.pull) : "sync:pull";
+  const transport = useMemo(
+    () =>
+      props.transport ??
+      createConvexTransport({
+        client: props.client,
+        push: makeFunctionReference<"mutation">(pushName),
+        pull: makeFunctionReference<"query">(pullName),
+        clientId,
+        // The transport envelope wants a string; an anonymous (null-userId) engine sends
+        // "" — the server resolves the real identity from auth and ignores this anyway.
+        userId: userId ?? ""
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.manifest, props.userId, props.transport, props.nameOf]
+    [props.transport, props.client, pushName, pullName, clientId, userId]
+  );
+
+  // Resolve the store with the SAME deps as the engine, so (a) an app that inlines a
+  // fresh store object each render doesn't thrash the engine, and (b) the multi-tab
+  // coordination key below is derived from the EXACT store the engine holds — never an
+  // old-engine-under-a-new-store-namespace mismatch. Browser default is durable
+  // IndexedDB, namespaced per user (switch user → separate local data, I9).
+  const store = useMemo(
+    () =>
+      props.store ??
+      (typeof indexedDB !== "undefined"
+        ? new IndexedDbStore({
+            databaseName: props.databaseName ?? "convex-localfirst",
+            namespace: props.namespace ?? userId ?? "default"
+          })
+        : new MemoryLocalStore()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manifest, userId, transport, props.nameOf]
   );
   const engine = useMemo(() => {
     return new LocalFirstEngine({
-      manifest: props.manifest,
+      manifest,
       store,
-      clientId: props.clientId ?? createClientId(),
-      userId: props.userId ?? null,
-      transport: props.transport,
+      clientId,
+      userId,
+      transport,
       nameOf: props.nameOf ?? reactDefaultFunctionName
     });
     // clientId is intentionally captured once; store moves in lockstep (same deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.manifest, props.userId, props.transport, props.nameOf, store]);
+  }, [manifest, userId, transport, props.nameOf, store]);
 
   // The engine self-wires browser connectivity in its constructor — reflecting
   // navigator.onLine into the sync status and flushing the offline outbox on reconnect
-  // (see LocalFirstEngine.wireConnectivity). The provider used to duplicate that here;
-  // it doesn't anymore. We only need to dispose the engine-owned listeners when the engine
-  // is replaced (manifest/user/transport/store change) or the provider unmounts, so they
-  // don't leak across recreations.
-  useEffect(() => () => engine.dispose(), [engine]);
+  // (see LocalFirstEngine.wireConnectivity). Dispose those listeners when the engine is
+  // replaced or the provider unmounts. resume() on setup is what makes this StrictMode-
+  // safe: React's dev mount→cleanup→mount cycle reuses the memoized engine after its
+  // cleanup disposed it, which would otherwise leave it deaf to online/offline events.
+  useEffect(() => {
+    engine.resume();
+    return () => engine.dispose();
+  }, [engine]);
 
   // Multi-tab coordination: elect one leader (only it runs the background batch push)
   // and poke other tabs to re-read the shared IndexedDB after a pull. Engaged only with
   // the crash-safe Web Locks primitive present (every modern browser); without it — SSR,
   // jsdom tests, old browsers — every tab syncs independently exactly as before.
-  const userId = props.userId ?? null;
   useEffect(() => {
     if (typeof window === "undefined" || !("locks" in navigator)) {
       return;

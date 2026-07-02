@@ -1,7 +1,16 @@
 import { v } from "convex/values";
 import { lf, scopeWorkspaceId } from "./localfirst";
 
-const labels = lf.table("labels", {
+export const labels = lf.table("labels", {
+  shape: {
+    workspace_id: v.string(),
+    project_id: v.string(),
+    name: v.string(),
+    color: v.string(),
+    parent: v.optional(v.union(v.string(), v.null())),
+    sort_order: v.optional(v.number()),
+    created_at: v.number()
+  },
   scope: scopeWorkspaceId,
   indexes: { byWorkspace: ["workspace_id", "created_at"] }
 });

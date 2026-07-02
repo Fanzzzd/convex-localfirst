@@ -4,16 +4,26 @@ description: The server DSL — lf.table, the query/insert/patch/remove specs, s
 ---
 
 Local-first tables are declared with the `lf` factory from
-[`createLocalFirst`](/docs/getting-started#3-create-the-lf-factory). Each table
-maps to a real Convex table in your schema and exposes typed query/mutation
-functions that your React code calls.
+[`createLocalFirst`](/docs/getting-started). A table's declaration is its
+**single source of truth**: the Convex schema derives from it (`.table()`), the
+server sync config derives from it (`collectTables`), and the client runs the
+same declaration locally (the provider's `modules`).
 
 ## `lf.table(name, options)`
 
 ```ts
+import { v } from "convex/values";
 import { lf } from "./localfirst";
 
-const todos = lf.table("todos", {
+export const todos = lf.table("todos", {
+  shape: {                           // required: the row's fields (Convex validators)
+    ownerId: v.string(),
+    listId: v.string(),
+    text: v.string(),
+    done: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number()
+  },
   scope: lf.byUser("ownerId"),       // required
   idField: "localId",                // optional, default "localId"
   conflict: lf.fieldLww(),           // optional, default "fieldLww"
@@ -25,19 +35,44 @@ const todos = lf.table("todos", {
 
 | Option | Meaning |
 | --- | --- |
+| `shape` | **Required.** The table's fields. Don't declare the id field here — `.table()` adds it. |
 | `scope` | **Required.** How rows are isolated and authorized — see [Scopes](#scopes). |
 | `idField` | The stable, client-generated id column. Default `"localId"`. |
 | `conflict` | Conflict policy — see [Conflict policies](#conflict-policies). |
-| `indexes` | Named indexes (field lists) your queries read from; mirror these in your Convex schema. |
+| `indexes` | Named indexes (field lists) your queries read from. Added to the Convex table by `.table()`. |
 
-The returned object has four builders: `query`, `insert`, `patch`, `remove`.
-Export each one — that export is the function your client references.
+The returned object has the schema derivation `.table()` plus four function
+builders: `query`, `insert`, `patch`, `remove`. Export the table **and** each
+function — the functions are what your client references; the table object is
+what `schema.ts` imports.
+
+## `.table()` — the derived schema
+
+```ts title="convex/schema.ts"
+import { defineSchema } from "convex/server";
+import { todos } from "./todos";
+
+export default defineSchema({
+  todos: todos.table()
+});
+```
+
+`.table()` returns the Convex `TableDefinition`: your `shape` plus the id field
+(`localId: v.string()`) plus every declared index. Row types flow from here —
+`useQuery(api.todos.list, …)` infers the element type with no client generics.
+
+Server-only fields that should exist in Convex but never sync locally go in
+`extra`:
+
+```ts
+todos.table({ extra: { adminNote: v.optional(v.string()) } })
+```
 
 <Callout type="warn">
 Local-first table functions are **not** directly callable on the server. They
-exist in the deployment so the client can reference them by name and codegen can
-read their metadata, but invoking the handler throws. Reads and writes flow
-through the generated client and sync via `sync.push` / `sync.pull`.
+exist in the deployment so the client can reference them by name, but invoking
+the handler throws. Reads and writes flow through the client engine and sync via
+`sync.push` / `sync.pull`.
 </Callout>
 
 ## `query`
@@ -54,10 +89,11 @@ export const list = todos.query({
 
 `key` builds the index prefix to read — typically the scope value plus query
 args. `auth.userId` is the resolved identity. The query runs **locally** against
-the engine's derived view; it never executes on the server.
+the engine's derived view (rows match the index prefix your `key` returns, sorted
+by the remaining index columns); it never executes on the server.
 
-Because the table knows its row type (from your schema), `useQuery(api.todos.list, …)`
-on the client infers `Doc<"todos">[]` automatically — no client-side generics.
+Because the table knows its row type (from `shape`), `useQuery(api.todos.list, …)`
+on the client infers the row type automatically — no client-side generics.
 The `args` validators likewise type the `key` / `value` / `patch` closures.
 
 ## `insert`
@@ -67,8 +103,8 @@ export const create = todos.insert({
   args: { listId: v.string(), text: v.string() },
   value: ({ auth, args, now, localId }) => ({
     ownerId: auth.userId,
-    listId: String(args.listId),
-    text: String(args.text),
+    listId: args.listId,
+    text: args.text,
     done: false,
     createdAt: now,
     updatedAt: now
@@ -81,25 +117,31 @@ export const create = todos.insert({
 `ownerId`) from `auth`/`args`, never from untrusted input — the server
 re-enforces it anyway.
 
+<Callout>
+The closures run **on the client too** (that's what makes writes optimistic and
+offline-capable), so they must stay pure: any expression over `auth` / `args` /
+`now` / `localId` works — arbitrary computation included — but `ctx` throws on
+access, and side effects belong in plain Convex functions.
+</Callout>
+
 ## `patch`
 
 ```ts
 export const toggle = todos.patch({
   args: { id: v.string(), done: v.boolean() },
-  id: ({ args }) => String(args.id),
-  patch: ({ args, now }) => ({ done: Boolean(args.done), updatedAt: now })
+  patch: ({ args, now }) => ({ done: args.done, updatedAt: now })
 });
 ```
 
-`id` selects the row (by its local id); `patch` returns the changed fields only.
+`patch` returns the changed fields only. The row id defaults to the `id` arg (or
+one named after the table's `idField`); pass an explicit `id: ({ args }) => …`
+closure only for a differently-named arg. Omit `patch` entirely to forward every
+arg 1:1 (minus the id) — the common "update these fields" case.
 
 ## `remove`
 
 ```ts
-export const remove = todos.remove({
-  args: { id: v.string() },
-  id: ({ args }) => String(args.id)
-});
+export const remove = todos.remove({ args: { id: v.string() } });
 ```
 
 ## Scopes

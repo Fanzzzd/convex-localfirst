@@ -59,9 +59,15 @@ export function Todos({ listId }: { listId: string }) {
 import { v } from "convex/values";
 import { lf } from "./localfirst";
 
-const todos = lf.table("todos", {
+// Declared ONCE: schema.ts derives the Convex table from it (todos.table()),
+// sync.ts derives the server config (collectTables), and the client runs these
+// same closures locally (no codegen).
+export const todos = lf.table("todos", {
+  shape: {
+    ownerId: v.string(), listId: v.string(), text: v.string(),
+    done: v.boolean(), createdAt: v.number(), updatedAt: v.number()
+  },
   scope: lf.byUser("ownerId"),       // server enforces per-user isolation
-  conflict: lf.fieldLww(),           // last-writer-wins per field
   indexes: { byList: ["ownerId", "listId", "createdAt"] }
 });
 
@@ -87,8 +93,8 @@ That's the whole surface. Continue with [Getting started](/docs/getting-started)
 
 It does not run a Convex backend in the browser, and it does not turn arbitrary
 Convex functions into local-first ones. Only tables you explicitly declare with
-the [server DSL](/docs/defining-tables) — and that appear in the generated
-manifest — become local-first. Everything else is ordinary Convex.
+the [server DSL](/docs/defining-tables) — and pass to the provider's `modules` —
+become local-first. Everything else is ordinary Convex.
 
 It also does not sync your whole database. Local-first tables require an explicit
 **scope** (per-user, per-workspace, or per-project) so a client only ever holds
@@ -102,5 +108,5 @@ data it is allowed to see.
 | `@convex-localfirst/core` | The local engine, store contract, sync protocol, IndexedDB store, transport. |
 | `@convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`handlePush` / `handlePull`). |
 | `@convex-localfirst/component` | A mountable Convex component holding all sync bookkeeping (ledger, change log, id map, field clocks). |
-| `@convex-localfirst/cli` | `codegen`, `check`, `dev`, `init`. |
+| `@convex-localfirst/cli` | `init` (scaffold a starter), `check` (forbid direct writes to local-first tables). |
 | `@convex-localfirst/yjs` | Yjs rich-text CRDT over the local-first log (`useCollaborativeDoc`). |

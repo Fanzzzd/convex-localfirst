@@ -1,0 +1,38 @@
+---
+title: The CLI
+description: The convex-localfirst CLI — init scaffolds a complete starter, check guards against writes that would bypass local-first.
+---
+
+There is **no codegen step**: the client builds its manifest at runtime from
+your imported `lf.table` modules ([Getting started](/docs/getting-started#5-wire-the-provider)).
+The CLI is only a scaffolder and a safety check, and it runs standalone:
+
+```bash
+npx convex-localfirst <init|check>
+```
+
+## `init`
+
+Scaffolds a complete, compiling local-first starter into `convex/`: the `lf`
+factory, one example table module, the derived `schema.ts`, the component mount,
+and the derived `sync.ts`. Every file is write-if-absent — re-running never
+clobbers your edits.
+
+## `check`
+
+Static analysis that fails if any Convex function writes **directly** to a
+local-first table with `ctx.db.insert` / `ctx.db.patch` / `ctx.db.delete` /
+`ctx.db.replace` — those writes would skip the sync ledger and change log,
+corrupting the local-first contract
+([invariant I10](/docs/reference/invariants)). Run it in CI:
+
+```bash
+npx convex-localfirst check
+# convex-localfirst check: no direct writes to local-first tables found
+```
+
+If it finds violations it prints each file and exits non-zero. The pass is sound
+(no false positives) but function-scoped: ids passed across function boundaries
+or through `ctx.db.get()` are not traced — review those manually.
+
+Next: [Document mode](/docs/document-mode).

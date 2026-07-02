@@ -200,7 +200,7 @@ export class LocalFirstEngine {
     const rows = await this.store.getRows(definition.table);
     const scoped = this.filterToScope(definition.table, rows, args);
     const visibleRows = scoped.filter((row) => !row._deleted);
-    return definition.run(visibleRows, args, { now: this.clock() });
+    return definition.run(visibleRows, args, { now: this.clock(), userId: this.userId });
   }
 
   /**
@@ -635,6 +635,15 @@ export class LocalFirstEngine {
   dispose(): void {
     this.disposeConnectivity();
     this.disposeConnectivity = () => {};
+  }
+
+  /** (Re)attach the engine-owned browser listeners after a dispose(). Idempotent.
+   *  The React provider pairs this with dispose() in an effect, so a StrictMode
+   *  mount→cleanup→mount cycle can't leave the (memoized, reused) engine deaf to
+   *  the browser's online/offline events. */
+  resume(): void {
+    this.disposeConnectivity();
+    this.disposeConnectivity = this.wireConnectivity();
   }
 
   /**

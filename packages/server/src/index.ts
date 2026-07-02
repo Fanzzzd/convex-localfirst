@@ -1,42 +1,40 @@
-import { mutationGeneric as mutation, queryGeneric as query } from "convex/server";
-import type {
-  DataModelFromSchemaDefinition,
-  DocumentByName,
-  GenericSchema,
-  RegisteredMutation,
-  RegisteredQuery,
-  SchemaDefinition,
-  TableNamesInDataModel
-} from "convex/server";
-import type { ObjectType, PropertyValidators } from "convex/values";
+import { defineTable, mutationGeneric as mutation, queryGeneric as query } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery, TableDefinition } from "convex/server";
+import { v } from "convex/values";
+import type { ObjectType, PropertyValidators, VString } from "convex/values";
 import type { ConflictPolicyName, ScopeDefinition } from "@convex-localfirst/core";
+import { LF_METADATA_KEY } from "@convex-localfirst/core/internal";
 import type { ServerTableConfig } from "./serverSync.js";
 
 export * from "./serverSync.js";
 export * from "./createSyncFunctions.js";
 
-// Non-enumerable key under which each lf.table fn carries its sync config (scope /
-// idField / conflict / …). Shared by attachMetadata (writer) and collectTables
-// (reader) so the magic string lives in exactly one place.
-const LF_METADATA_KEY = "__convexLocalFirst";
-
 // Identity is NOT configured here: this factory only declares local-first tables
 // and their spec closures. The server-authoritative user id is resolved at sync
 // time by createSyncFunctions (ctx.auth.getUserIdentity, with an opt-in dev
 // fallback) — see ./createSyncFunctions.ts.
-export type CreateLocalFirstOptions<Schema extends SchemaDefinition<GenericSchema, boolean>> = {
-  readonly schema: Schema;
+export type CreateLocalFirstOptions<DefaultIdField extends string> = {
   readonly defaults?: {
-    readonly idField?: string;
+    readonly idField?: DefaultIdField;
     readonly conflict?: ConflictPolicyName;
   };
 };
 
-export type TableOptions = {
+export type TableOptions<
+  Shape extends PropertyValidators,
+  IdField extends string,
+  Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>
+> = {
+  /** The table's fields (Convex validators) — the ONE place the row shape lives.
+   *  `todos.table()` turns it into the Convex table definition (adding the id
+   *  field + indexes), and the client runs the same declaration locally. */
+  readonly shape: Shape;
   readonly scope: ScopeDefinition;
-  readonly idField?: string;
+  /** Stable client-generated row id field. Added to the Convex table by `.table()`;
+   *  do not declare it in `shape`. Defaults to "localId". */
+  readonly idField?: IdField;
   readonly conflict?: ConflictPolicyName;
-  readonly indexes?: Record<string, readonly string[]>;
+  readonly indexes?: Indexes;
   // Array fields merged as SETS (convergent add/remove) instead of whole-array LWW — so
   // concurrent adds to e.g. `label_ids` don't clobber. Opt-in; omit for plain LWW fields.
   readonly setFields?: readonly string[];
@@ -44,6 +42,24 @@ export type TableOptions = {
   // of whole-number LWW — so concurrent edits to e.g. `vote_count` don't clobber. Opt-in.
   readonly counterFields?: readonly string[];
 };
+
+/** The row type a table's queries return: your shape + the id field + Convex's
+ *  system fields. (`_creationTime` is stamped by the server — an optimistic row
+ *  carries it only after its first sync.) */
+type RowOf<Shape extends PropertyValidators, IdField extends string> = ObjectType<Shape> &
+  Record<IdField, string> & { _id: string; _creationTime: number };
+
+// The same lf.table modules are imported by the CLIENT (collectManifest reads the
+// attached metadata + closures at runtime — the codegen-free path). In a browser,
+// registering real Convex functions is forbidden (convex/server warns and will
+// throw), and the client never invokes the export anyway — api.* references are
+// proxies. So registration happens only outside the browser (the Convex runtime,
+// Node deploys, SSR, tests); in the browser the export is a metadata-only stub.
+const IS_BROWSER = typeof window !== "undefined" && typeof document !== "undefined";
+
+function registerFunction<T>(build: () => T): T {
+  return IS_BROWSER ? ({} as T) : build();
+}
 
 // Spec shapes are generic over the validator record `A` (so the `args` passed to
 // closures — and inferred by the client hooks — are precisely typed) and the
@@ -59,6 +75,8 @@ export type QuerySpec<A extends PropertyValidators, Row> = {
 // The write closures get a precisely-typed `args` (from the validators) but a
 // loose row return: the engine assigns the id field and merges, so forcing every
 // caller to restate the full document (incl. system/id fields) would be noise.
+// They run on the CLIENT too (optimistically), so they must stay pure — `ctx`
+// throws on access outside the server.
 export type InsertSpec<A extends PropertyValidators, Ctx> = {
   readonly args: A;
   readonly value: (input: {
@@ -72,8 +90,8 @@ export type InsertSpec<A extends PropertyValidators, Ctx> = {
 
 export type PatchSpec<A extends PropertyValidators, Ctx> = {
   readonly args: A;
-  // Omit `id` to default the row id to the table's idField (the arg must then be named
-  // after idField, e.g. `id`). Provide it only for a differently-named id arg.
+  // Omit `id` to default the row id to the "id" arg (or one named after the table's
+  // idField). Provide it only for a differently-named id arg.
   readonly id?: (input: { args: ObjectType<A> }) => string;
   // Omit `patch` to default to "forward every arg 1:1 except the id arg" — the common
   // "update these fields" case. Provide it to map/rename fields or set computed values
@@ -88,16 +106,13 @@ export type PatchSpec<A extends PropertyValidators, Ctx> = {
 
 export type RemoveSpec<A extends PropertyValidators> = {
   readonly args: A;
-  // Omit `id` to default the row id to the table's idField (see PatchSpec.id).
+  // Omit `id` to default the row id to the "id" arg (see PatchSpec.id).
   readonly id?: (input: { args: ObjectType<A> }) => string;
 };
 
-export function createLocalFirst<
-  Ctx = unknown,
-  Schema extends SchemaDefinition<GenericSchema, boolean> = SchemaDefinition<GenericSchema, boolean>
->(options: CreateLocalFirstOptions<Schema>) {
-  type DataModel = DataModelFromSchemaDefinition<Schema>;
-
+export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = "localId">(
+  options: CreateLocalFirstOptions<DefaultIdField> = {}
+) {
   return {
     byUser(field: string): ScopeDefinition {
       return { kind: "byUser", field };
@@ -118,26 +133,64 @@ export function createLocalFirst<
     timestampLww(): ConflictPolicyName {
       return "timestampLww";
     },
-    table<T extends TableNamesInDataModel<DataModel>>(tableName: T, tableOptions: TableOptions) {
-      type Row = DocumentByName<DataModel, T>;
+    table<
+      Shape extends PropertyValidators,
+      IdField extends string = DefaultIdField,
+      const Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>
+    >(tableName: string, tableOptions: TableOptions<Shape, IdField, Indexes>) {
+      type Row = RowOf<Shape, IdField>;
       const idField = tableOptions.idField ?? options.defaults?.idField ?? "localId";
       const conflict = tableOptions.conflict ?? options.defaults?.conflict ?? "fieldLww";
+      const indexes = tableOptions.indexes ?? {};
       const metadata = {
         tableName,
         idField,
         conflict,
         scope: tableOptions.scope,
-        indexes: tableOptions.indexes ?? {},
+        indexes,
         setFields: tableOptions.setFields,
         counterFields: tableOptions.counterFields
       };
 
       return {
+        /**
+         * The Convex table definition for `defineSchema` — the schema is DERIVED from
+         * this declaration, never restated:
+         *
+         * ```ts
+         * // convex/schema.ts
+         * import { todos } from "./todos";
+         * export default defineSchema({ todos: todos.table() });
+         * ```
+         *
+         * Adds the id field (`localId: v.string()`) and every declared index. Pass
+         * `extra` for server-only fields that exist in Convex but not in the
+         * local-first shape (they are never written by the sync engine).
+         */
+        table(withExtra?: { readonly extra?: PropertyValidators }): TableDefinition<
+          // Sound: the runtime object IS shape + the id field (+ extra, which stays
+          // outside the local-first type surface on purpose).
+          ReturnType<typeof v.object<Shape & Record<IdField, VString>>>,
+          { [K in keyof Indexes]: string[] }
+        > {
+          const fields = {
+            ...tableOptions.shape,
+            ...(withExtra?.extra ?? {}),
+            [idField]: v.string()
+          } as Shape & Record<IdField, VString>;
+          let definition = defineTable(fields);
+          for (const [name, columns] of Object.entries(indexes)) {
+            definition = definition.index(name, columns as never) as typeof definition;
+          }
+          return definition as never;
+        },
         query<A extends PropertyValidators>(spec: QuerySpec<A, Row>): RegisteredQuery<"public", ObjectType<A>, Row[]> {
-          const fn = query({
-            args: spec.args as never,
-            handler: async () => unsupportedLocalFirstCall("query", tableName)
-          });
+          const fn = registerFunction(() =>
+            query({
+              args: spec.args as never,
+              handler: async () => unsupportedLocalFirstCall("query", tableName)
+            })
+          );
           // ponytail: the handler throws by design (local-first reads run on the
           // client); the declared return type is what the engine actually
           // delivers, so we assert it here rather than leak `never` to callers.
@@ -148,10 +201,12 @@ export function createLocalFirst<
           >;
         },
         insert<A extends PropertyValidators>(spec: InsertSpec<A, Ctx>): RegisteredMutation<"public", ObjectType<A>, null> {
-          const fn = mutation({
-            args: spec.args as never,
-            handler: async () => unsupportedLocalFirstCall("insert", tableName)
-          });
+          const fn = registerFunction(() =>
+            mutation({
+              args: spec.args as never,
+              handler: async () => unsupportedLocalFirstCall("insert", tableName)
+            })
+          );
           return attachMetadata(fn, { kind: "insert", ...metadata, spec }) as unknown as RegisteredMutation<
             "public",
             ObjectType<A>,
@@ -159,10 +214,12 @@ export function createLocalFirst<
           >;
         },
         patch<A extends PropertyValidators>(spec: PatchSpec<A, Ctx>): RegisteredMutation<"public", ObjectType<A>, null> {
-          const fn = mutation({
-            args: spec.args as never,
-            handler: async () => unsupportedLocalFirstCall("patch", tableName)
-          });
+          const fn = registerFunction(() =>
+            mutation({
+              args: spec.args as never,
+              handler: async () => unsupportedLocalFirstCall("patch", tableName)
+            })
+          );
           return attachMetadata(fn, { kind: "patch", ...metadata, spec }) as unknown as RegisteredMutation<
             "public",
             ObjectType<A>,
@@ -170,10 +227,12 @@ export function createLocalFirst<
           >;
         },
         remove<A extends PropertyValidators>(spec: RemoveSpec<A>): RegisteredMutation<"public", ObjectType<A>, null> {
-          const fn = mutation({
-            args: spec.args as never,
-            handler: async () => unsupportedLocalFirstCall("remove", tableName)
-          });
+          const fn = registerFunction(() =>
+            mutation({
+              args: spec.args as never,
+              handler: async () => unsupportedLocalFirstCall("remove", tableName)
+            })
+          );
           return attachMetadata(fn, { kind: "remove", ...metadata, spec }) as unknown as RegisteredMutation<
             "public",
             ObjectType<A>,
@@ -183,19 +242,19 @@ export function createLocalFirst<
       };
     }
     // I8 "server-only by default" needs no wrapper: a mutation is local-first
-    // ONLY if declared via lf.table(...).insert/patch/remove and present in the
-    // manifest. Every other Convex mutation is server-only — it runs through the
-    // normal Convex client and never enters the local outbox.
+    // ONLY if declared via lf.table(...).insert/patch/remove and known to the
+    // client manifest. Every other Convex mutation is server-only — it runs
+    // through the normal Convex client and never enters the local outbox.
   };
 }
 
 /**
  * Local-first table functions are never executed server-side: reads/writes flow
- * through the generated client (optimistic local) and are synchronized via
- * sync.push / sync.pull. The function still exists in the deployment — the client
- * references it by name and codegen introspects its attached metadata — but
- * invoking the handler directly is a bug, so it refuses loudly instead of
- * returning fabricated data (G7: real, or explicitly throw "unsupported").
+ * through the client (optimistic local) and are synchronized via sync.push /
+ * sync.pull. The function still exists in the deployment — the client references
+ * it by name and reads its attached metadata — but invoking the handler directly
+ * is a bug, so it refuses loudly instead of returning fabricated data (G7: real,
+ * or explicitly throw "unsupported").
  */
 function unsupportedLocalFirstCall(kind: string, tableName: string): never {
   throw new Error(
@@ -237,6 +296,7 @@ type AttachedTableMeta = {
  * });
  * ```
  *
+ * (The client-side twin is core's `collectManifest` — same modules, same idea.)
  * Throws if two functions of one table carry conflicting config, or if no local-first
  * tables are found.
  */

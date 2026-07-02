@@ -1,67 +1,95 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { runCheck } from "./check.js";
-import { emitManifestSource, introspectExports, type ManifestEntry } from "./codegen.js";
-import { checkManifestFreshness } from "./freshness.js";
 
 const command = process.argv[2] ?? "help";
 
 if (command === "init") {
   init();
-} else if (command === "codegen") {
-  await codegen();
 } else if (command === "check") {
   check();
-} else if (command === "dev") {
-  await dev();
 } else {
   help();
 }
 
 function init() {
   mkdirSync("convex", { recursive: true });
-  mkdirSync("src", { recursive: true });
 
-  // A COMPLETE, compiling, working starter: schema + factory + component mount +
-  // server sync surface + one example table. Running `init` then `codegen` then
-  // `npx convex dev` gives a live local-first backend with no hand-written sync.
+  // A COMPLETE, compiling, working starter: one shape-based lf.table module is the
+  // single source of truth — the schema derives from it (todos.table()), the server
+  // sync config derives from it (collectTables), and the client manifest derives
+  // from it at runtime (collectManifest via the provider's `modules`). No codegen.
   // Every file is write-if-absent, so re-running init never clobbers your edits.
   const files: Array<{ path: string; content: string }> = [
     {
-      path: join("convex", "schema.ts"),
-      content: `import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+      path: join("convex", "localfirst.ts"),
+      content: `import { createLocalFirst } from "@convex-localfirst/server";
 
-// Your app's own tables. ALL local-first sync bookkeeping (ledger / change log /
-// id map / cursors / tombstones) lives in the mounted @convex-localfirst/component,
-// so your schema only declares domain tables. Each local-first table needs a
-// "localId" field + a "by_localId" index; scope indexes power the per-scope pull.
-export default defineSchema({
-  todos: defineTable({
-    localId: v.string(),
+// Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
+// not here — this factory only declares the local-first tables.
+export const lf = createLocalFirst();
+`
+    },
+    {
+      path: join("convex", "todos.ts"),
+      content: `import { v } from "convex/values";
+import { lf } from "./localfirst";
+
+// THE single source of truth for this table: its shape, scope, and indexes.
+// convex/schema.ts derives the Convex table from it (todos.table()); the client
+// runs these same declarations locally (optimistic, offline) and syncs them.
+export const todos = lf.table("todos", {
+  shape: {
     ownerId: v.string(),
     text: v.string(),
     done: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.number()
-  })
-    .index("by_localId", ["localId"])
-    .index("byOwner", ["ownerId", "createdAt"])
+  },
+  scope: lf.byUser("ownerId"),
+  indexes: { byOwner: ["ownerId", "createdAt"] }
 });
+
+export const list = todos.query({
+  args: {},
+  index: "byOwner",
+  key: ({ auth }) => [auth.userId],
+  order: "asc",
+  initial: []
+});
+
+export const create = todos.insert({
+  args: { text: v.string() },
+  value: ({ auth, args, now }) => ({
+    ownerId: auth.userId,
+    text: args.text,
+    done: false,
+    createdAt: now,
+    updatedAt: now
+  })
+});
+
+// id() defaults to the "id" arg; patch() is explicit only because it computes updatedAt.
+export const toggle = todos.patch({
+  args: { id: v.string(), done: v.boolean() },
+  patch: ({ args, now }) => ({ done: args.done, updatedAt: now })
+});
+
+// No id() / patch() needed — remove defaults to the "id" arg.
+export const remove = todos.remove({ args: { id: v.string() } });
 `
     },
     {
-      path: join("convex", "localfirst.ts"),
-      content: `import { createLocalFirst } from "@convex-localfirst/server";
-import schema from "./schema";
+      path: join("convex", "schema.ts"),
+      content: `import { defineSchema } from "convex/server";
+import { todos } from "./todos";
 
-// Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
-// not here — this factory only declares the local-first tables.
-export const lf = createLocalFirst({
-  schema,
-  defaults: { idField: "localId", conflict: "fieldLww" }
+// Derived, never restated: todos.table() adds the localId field + indexes from
+// the lf.table declaration. ALL sync bookkeeping (ledger / change log / id map /
+// cursors) lives in the mounted @convex-localfirst/component, not here.
+export default defineSchema({
+  todos: todos.table()
 });
 `
     },
@@ -81,65 +109,22 @@ export default app;
     },
     {
       path: join("convex", "sync.ts"),
-      content: `import { createSyncFunctions } from "@convex-localfirst/server";
+      content: `import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
+import * as todos from "./todos";
 
-// The entire server sync surface: declare which app tables are local-first + how
-// they're scoped. createSyncFunctions wires app rows to ctx.db and all sync
-// bookkeeping to the mounted component. Add a table here AND in convex/<table>.ts.
+// The entire server sync surface. collectTables derives scope/idField/conflict
+// from the imported lf.table modules — add a new table by adding its import.
 export const { push, pull } = createSyncFunctions({
   component: components.convexLocalFirst,
   mutation,
   query,
-  tables: {
-    todos: { scope: { kind: "byUser" as const, field: "ownerId" }, idField: "localId", conflict: "fieldLww" as const }
-  },
+  tables: collectTables({ todos }),
   // Local dev with no auth provider trusts the client-supplied userId. In
   // production, DELETE this line and resolve identity from ctx.auth instead.
   devUnsafeAllowClientUserId: true
 });
-`
-    },
-    {
-      path: join("convex", "todos.ts"),
-      content: `import { v } from "convex/values";
-import { lf } from "./localfirst";
-
-// One local-first table. query/insert/patch/remove run OPTIMISTICALLY on the client
-// and sync via convex/sync.ts — never call these handlers server-side.
-const todos = lf.table("todos", {
-  scope: lf.byUser("ownerId"),
-  indexes: { byOwner: ["ownerId", "createdAt"] }
-});
-
-export const list = todos.query({
-  args: {},
-  index: "byOwner",
-  key: ({ auth }) => [auth.userId],
-  order: "asc",
-  initial: []
-});
-
-export const create = todos.insert({
-  args: { text: v.string() },
-  value: ({ auth, args, now }) => ({
-    ownerId: auth.userId,
-    text: String(args.text),
-    done: false,
-    createdAt: now,
-    updatedAt: now
-  })
-});
-
-// id() defaults to the "id" arg; patch() is explicit only because it computes updatedAt.
-export const toggle = todos.patch({
-  args: { id: v.string(), done: v.boolean() },
-  patch: ({ args, now }) => ({ done: Boolean(args.done), updatedAt: now })
-});
-
-// No id() / patch() needed — remove defaults to the "id" arg.
-export const remove = todos.remove({ args: { id: v.string() } });
 `
     }
   ];
@@ -160,58 +145,15 @@ export const remove = todos.remove({ args: { id: v.string() } });
   if (skipped.length) console.log(`  kept (already existed): ${skipped.join(", ")}`);
   console.log(`
 Next:
-  1. npx convex-localfirst codegen   # generate src/convex-localfirst/generated.ts from the DSL
-  2. npx convex dev                  # run the backend + live sync
-  3. Wire the React client: <ConvexProvider client={convex} localFirst={{ manifest, transport, store }}>
-     then useLiveQuery / useMutation (see the README "React hooks" section).`);
-}
+  1. npx convex dev            # deploy the app + component, keep the backend running
+  2. Wire the React client (no codegen — the client imports your convex modules):
 
-async function codegen() {
-  const convexDir = existsSync("convex") ? "convex" : ".";
-  const skip = new Set(["localfirst.ts", "schema.ts", "convex.config.ts"]);
-  const moduleFiles = readdirSync(convexDir).filter(
-    (f) => /\.(ts|js)$/.test(f) && !f.endsWith(".d.ts") && !skip.has(f)
-  );
+       import * as todos from "../convex/todos";
 
-  const entries: ManifestEntry[] = [];
-  const schemaVersion = 1;
-  for (const file of moduleFiles) {
-    const moduleName = file.replace(/\.(ts|js)$/, "");
-    try {
-      const mod = await import(pathToFileURL(resolve(convexDir, file)).href);
-      entries.push(...introspectExports(moduleName, mod as Record<string, unknown>));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/Unknown file extension|ERR_UNKNOWN_FILE_EXTENSION/.test(message)) {
-        console.error(
-          `convex-localfirst codegen: cannot import ${file} as raw TypeScript. Run codegen under a TS loader, e.g.\n  node --import tsx node_modules/@convex-localfirst/cli/dist/index.js codegen`
-        );
-        process.exitCode = 1;
-        return;
-      }
-      // A module that can't be imported standalone (e.g. it imports ./_generated
-      // or a mounted component — Convex-runtime-only) is not a local-first table
-      // module, so skip it rather than failing the whole codegen run.
-      console.warn(`convex-localfirst codegen: skipped ${file} (not importable standalone: ${message.split("\n")[0]})`);
-    }
-  }
+       <ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
 
-  if (entries.length === 0) {
-    console.error(
-      "convex-localfirst codegen: found no local-first functions. Define tables with `lf.table(...).query/insert/patch/remove`."
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  const outDir = join("src", "convex-localfirst");
-  const outFile = join(outDir, "generated.ts");
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(outFile, emitManifestSource(schemaVersion, entries));
-  const tables = new Set(entries.map((e) => e.tableMeta.table));
-  console.log(
-    `convex-localfirst codegen: wrote ${outFile} (${entries.length} functions across ${tables.size} table(s)).`
-  );
+     then use useQuery(api.todos.list) / useMutation(api.todos.create) from
+     "@convex-localfirst/react" exactly like Convex.`);
 }
 
 // Coverage: regex catches ctx.db.insert("<lfTable>", …); an AST taint pass catches
@@ -224,9 +166,6 @@ const CHECK_SCOPE_NOTE =
 
 function check() {
   const dir = existsSync("convex") ? "convex" : ".";
-  // Warn (don't fail) if the generated manifest is older than a DSL source — the safety net
-  // that used to live in the Vite plugin, now folded in so CI `check` catches a stale manifest.
-  checkManifestFreshness(process.cwd(), dir, "src/convex-localfirst/generated.ts", console.warn);
   const violations = runCheck(dir);
   if (violations.length === 0) {
     console.log("convex-localfirst check: no direct writes to local-first tables found");
@@ -235,27 +174,15 @@ function check() {
   }
   console.error(`convex-localfirst check: found ${violations.length} direct write(s) to local-first tables:`);
   for (const v of violations) {
-    console.error(`  ${v.file}:${v.line}  ctx.db.${v.method}("${v.table}", ...)  — use the generated wrapper`);
+    console.error(`  ${v.file}:${v.line}  ctx.db.${v.method}("${v.table}", ...)  — write through the lf.table DSL instead`);
     console.error(`    ${v.snippet}`);
   }
   console.error(`convex-localfirst check: ${CHECK_SCOPE_NOTE}`);
   process.exitCode = 1;
 }
 
-async function dev() {
-  // The dev-time pipeline: regenerate the client manifest from the DSL, then
-  // statically verify nothing writes a local-first table directly. The Convex
-  // backend itself is run separately with `npx convex dev`.
-  console.log("convex-localfirst dev: regenerating manifest + checking for direct local-first writes…");
-  await codegen();
-  check();
-  console.log("convex-localfirst dev: done. Run `npx convex dev` for the backend and live sync.");
-}
-
 function help() {
   console.log(`convex-localfirst commands:
-  init
-  codegen
-  check
-  dev`);
+  init    scaffold a complete local-first Convex starter
+  check   statically verify nothing writes local-first tables with ctx.db directly`);
 }

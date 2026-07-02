@@ -1,7 +1,25 @@
 import { v } from "convex/values";
 import { lf, scopeWorkspaceId } from "./localfirst";
 
-const states = lf.table("states", {
+export const states = lf.table("states", {
+  shape: {
+    workspace_id: v.string(),
+    project_id: v.string(),
+    name: v.string(),
+    color: v.string(),
+    group: v.union(
+      v.literal("backlog"),
+      v.literal("unstarted"),
+      v.literal("started"),
+      v.literal("completed"),
+      v.literal("cancelled")
+    ),
+    description: v.optional(v.string()),
+    sequence: v.optional(v.number()),
+    order: v.number(),
+    default: v.optional(v.boolean()),
+    created_at: v.number()
+  },
   scope: scopeWorkspaceId,
   indexes: { byWorkspace: ["workspace_id", "created_at"] }
 });

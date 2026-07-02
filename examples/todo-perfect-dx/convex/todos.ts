@@ -1,10 +1,20 @@
 import { v } from "convex/values";
 import { lf } from "./localfirst";
 
-const todos = lf.table("todos", {
+// A byUser local-first table (simple scope). This declaration is the single
+// source of truth: shape, scope, and indexes live HERE — schema.ts derives the
+// Convex table via todos.table(), and the client runs these same closures
+// optimistically (no codegen).
+export const todos = lf.table("todos", {
+  shape: {
+    ownerId: v.string(),
+    listId: v.string(),
+    text: v.string(),
+    done: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number()
+  },
   scope: lf.byUser("ownerId"),
-  idField: "localId",
-  conflict: lf.fieldLww(),
   indexes: {
     byList: ["ownerId", "listId", "createdAt"]
   }
@@ -22,8 +32,8 @@ export const create = todos.insert({
   args: { listId: v.string(), text: v.string() },
   value: ({ auth, args, now }) => ({
     ownerId: auth.userId,
-    listId: String(args.listId),
-    text: String(args.text),
+    listId: args.listId,
+    text: args.text,
     done: false,
     createdAt: now,
     updatedAt: now
@@ -33,7 +43,7 @@ export const create = todos.insert({
 export const toggle = todos.patch({
   args: { id: v.string(), done: v.boolean() },
   patch: ({ args, now }) => ({
-    done: Boolean(args.done),
+    done: args.done,
     updatedAt: now
   })
 });

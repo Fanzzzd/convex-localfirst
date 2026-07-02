@@ -58,6 +58,9 @@ export type LocalTableDefinition = {
 
 export type LocalQueryContext = {
   readonly now: number;
+  /** The engine's authenticated user (null when anonymous) — what `auth.userId`
+   *  resolves to when a query's key closure runs locally. */
+  readonly userId?: string | null;
 };
 
 export type LocalQueryDefinition<TArgs = unknown, TResult = unknown> = {

@@ -1,15 +1,19 @@
 ---
 title: Getting started
-description: A complete, working setup — a per-user todos table that reads and writes locally, persists offline, and syncs to Convex.
+description: A complete, working setup — a per-user todos table that reads and writes locally, persists offline, and syncs to Convex. No codegen, no restating your schema.
 ---
 
 This walks through a complete, working setup: a per-user `todos` table that reads
 and writes locally, persists offline, and syncs to Convex. Every step is exactly
 what the [example app](/docs/reference/example) does.
 
+Each table is declared **once**, in one module. The Convex schema derives from it,
+the server sync config derives from it, and the client runs the very same
+declaration locally — there is no codegen step and nothing to keep in sync.
+
 <Callout title="Prerequisites">
 A Convex project (`npm create convex@latest` or an existing one) and React. You
-should already have `convex/schema.ts` and `convex/_generated/` from running
+should already have `convex/` and `convex/_generated/` from running
 `npx convex dev` at least once.
 </Callout>
 
@@ -18,10 +22,11 @@ should already have `convex/schema.ts` and `convex/_generated/` from running
 ```bash
 npm install @convex-localfirst/react @convex-localfirst/core \
             @convex-localfirst/server @convex-localfirst/component
-npm install -D @convex-localfirst/cli tsx
 ```
 
-`tsx` lets the CLI introspect your TypeScript Convex modules during codegen.
+(Optionally `npm install -D @convex-localfirst/cli` for `npx convex-localfirst init`,
+which scaffolds every file below, and `check`, a CI guard against illegal direct
+writes.)
 
 ## 2. Mount the component
 
@@ -39,57 +44,31 @@ app.use(localfirst);
 export default app;
 ```
 
-## 3. Create the `lf` factory
+## 3. Declare the table — once
 
-`createLocalFirst` ties the DSL to your schema and sets per-table defaults. The
-authenticated user is **not** resolved here — it's derived server-side at sync
-time from `ctx.auth` in `createSyncFunctions` (see [Syncing](/docs/syncing)), so
-the client can never forge an identity.
+Create the `lf` factory, then declare the table's **shape, scope, and indexes**
+together with the functions your React code calls:
 
 ```ts title="convex/localfirst.ts"
 import { createLocalFirst } from "@convex-localfirst/server";
-import schema from "./schema";
 
-export const lf = createLocalFirst({
-  schema,
-  defaults: { idField: "localId", conflict: "fieldLww" }
-});
+export const lf = createLocalFirst();
 ```
 
-## 4. Add the table to your schema
-
-A local-first table is a normal Convex table. It needs a stable client-generated
-id field (`localId` by default), your app fields, and the index your query reads:
-
-```ts title="convex/schema.ts"
-import { defineSchema, defineTable } from "convex/server";
+```ts title="convex/todos.ts"
 import { v } from "convex/values";
+import { lf } from "./localfirst";
 
-export default defineSchema({
-  todos: defineTable({
-    localId: v.string(),
+export const todos = lf.table("todos", {
+  shape: {
     ownerId: v.string(),
     listId: v.string(),
     text: v.string(),
     done: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.number()
-  }).index("byList", ["ownerId", "listId", "createdAt"])
-});
-```
-
-## 5. Declare the local-first functions
-
-This is the API your React code calls. Define one table with `lf.table` and its
-`query` / `insert` / `patch` / `remove` operations:
-
-```ts title="convex/todos.ts"
-import { v } from "convex/values";
-import { lf } from "./localfirst";
-
-const todos = lf.table("todos", {
+  },
   scope: lf.byUser("ownerId"),       // per-user isolation, enforced on the server
-  conflict: lf.fieldLww(),
   indexes: { byList: ["ownerId", "listId", "createdAt"] }
 });
 
@@ -105,8 +84,8 @@ export const create = todos.insert({
   args: { listId: v.string(), text: v.string() },
   value: ({ auth, args, now }) => ({
     ownerId: auth.userId,
-    listId: String(args.listId),
-    text: String(args.text),
+    listId: args.listId,
+    text: args.text,
     done: false,
     createdAt: now,
     updatedAt: now
@@ -115,114 +94,89 @@ export const create = todos.insert({
 
 export const toggle = todos.patch({
   args: { id: v.string(), done: v.boolean() },
-  id: ({ args }) => String(args.id),
-  patch: ({ args, now }) => ({ done: Boolean(args.done), updatedAt: now })
+  patch: ({ args, now }) => ({ done: args.done, updatedAt: now })
 });
 
-export const remove = todos.remove({
-  args: { id: v.string() },
-  id: ({ args }) => String(args.id)
+export const remove = todos.remove({ args: { id: v.string() } });
+```
+
+The `value` / `patch` / `key` closures run **on the client** (optimistically,
+offline) and the writes are re-validated on the server — keep them pure
+(`auth`, `args`, `now`, `localId`; `ctx` throws). See
+[Defining local-first tables](/docs/defining-tables) for scopes, conflict
+policies, and the full spec shapes.
+
+## 4. Derive the schema and the sync endpoints
+
+Both are one-liners over the modules you just wrote — nothing is restated:
+
+```ts title="convex/schema.ts"
+import { defineSchema } from "convex/server";
+import { todos } from "./todos";
+
+export default defineSchema({
+  todos: todos.table()   // adds the localId id field + the declared indexes
 });
 ```
 
-See [Defining local-first tables](/docs/defining-tables) for scopes, conflict
-policies, and the full spec shapes.
-
-## 6. Add the sync endpoints
-
-Local-first clients talk to two functions — `sync.push` and `sync.pull`.
-`createSyncFunctions` builds both: you declare which tables are local-first (and
-how to check workspace membership), and it wires app rows to `ctx.db` and all
-bookkeeping to the mounted component.
-
 ```ts title="convex/sync.ts"
-import { createSyncFunctions } from "@convex-localfirst/server";
+import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
+import * as todos from "./todos";
 
 export const { push, pull } = createSyncFunctions({
   component: components.convexLocalFirst,
   mutation,
   query,
-  tables: {
-    todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" }
-  }
+  tables: collectTables({ todos })
   // For byWorkspace / byProject tables, add an `isMember` callback — see Syncing.
 });
 ```
 
-That's the whole server sync surface. Add each new local-first table to `tables`.
-See [Syncing & the component](/docs/syncing) for membership and what runs
-underneath.
-
-## 7. Deploy
-
-Run Convex to deploy the app + component and regenerate `convex/_generated`:
+Add a new local-first table by adding its module to both imports. Then deploy:
 
 ```bash
 npx convex dev
 ```
 
-## 8. Generate the client manifest
+## 5. Wire the provider
 
-The manifest tells the client engine how to run each declared query/mutation
-locally. Generate it from your DSL:
-
-```bash
-node --import tsx node_modules/@convex-localfirst/cli/dist/index.js codegen
-```
-
-This writes `src/convex-localfirst/generated.ts` exporting `localFirstManifest`.
-Add it as a script so you don't retype it:
-
-```json title="package.json"
-{ "scripts": { "generate": "node --import tsx node_modules/@convex-localfirst/cli/dist/index.js codegen" } }
-```
-
-Re-run `npm run generate` whenever you add or change a local-first function.
-See [Codegen & the CLI](/docs/codegen-and-cli).
-
-## 9. Wire the provider
-
-Mount the local-first layer with the drop-in `ConvexProvider`. The IndexedDB
-store gives offline persistence; the transport connects to `sync.push` /
-`sync.pull`:
+The client imports the **same table modules** and hands them to the drop-in
+`ConvexProvider`. IndexedDB persistence, the sync transport
+(`api.sync.push` / `api.sync.pull`), and a client id are all defaulted:
 
 ```tsx title="src/main.tsx"
 import ReactDOM from "react-dom/client";
 import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
-import { IndexedDbStore, createClientId, createConvexTransport } from "@convex-localfirst/core";
-import { api } from "../convex/_generated/api";
-import { localFirstManifest } from "./convex-localfirst/generated";
+import * as todos from "../convex/todos";
 import { App } from "./App";
 
 const userId = "demo-user";                       // from your auth provider in production
-const clientId = createClientId();                // stable per device/tab
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <ConvexProvider
-    client={convex}
-    localFirst={{
-      manifest: localFirstManifest,
-      store: new IndexedDbStore({ databaseName: "my-app", namespace: userId }),
-      transport: createConvexTransport({ client: convex, push: api.sync.push, pull: api.sync.pull, clientId, userId }),
-      clientId,
-      userId
-    }}
-  >
+  <ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
     <App />
   </ConvexProvider>
 );
 ```
 
-<Callout type="warn" title="Namespace the store by user">
-The IndexedDB `namespace` isolates one user's data from another's on a shared
-device. On logout, switch the namespace so the next user never sees stale local
-data. See [invariant I9](/docs/reference/invariants).
+<Callout title="How this works">
+`lf.table` attaches each declaration (including the real closures) to its
+exports. In the browser those exports are metadata-only stubs — no Convex
+function is registered client-side — and the provider assembles the local
+manifest from them at runtime. Key `modules` by the Convex module path:
+`{ todos }` → `api.todos.*`, a nested module as `{ "tasks/todos": todos }`.
 </Callout>
 
-## 10. Use the hooks
+<Callout type="warn" title="Per-user local data">
+The default IndexedDB store is namespaced by `userId`, so one user's local data
+is isolated from another's on a shared device, and switching users on logout
+switches stores. See [invariant I9](/docs/reference/invariants).
+</Callout>
+
+## 6. Use the hooks
 
 Exactly the Convex hooks — declared functions are now local-first:
 
@@ -241,7 +195,7 @@ export function App() {
       <p>{sync.online ? "🟢" : "🔴"} · {sync.pendingMutations} pending</p>
       <button onClick={() => create({ listId: "inbox", text: "First todo" })}>Add</button>
       <ul>
-        {todos.map((t: any) => (
+        {todos.map((t) => (
           <li key={t._id} onClick={() => toggle({ id: t._id, done: !t.done })}>
             {t.done ? "✅" : "⬜️"} {t.text}
           </li>

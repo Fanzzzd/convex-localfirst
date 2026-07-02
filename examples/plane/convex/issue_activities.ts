@@ -6,7 +6,23 @@ import { lf, scopeWorkspace } from "./localfirst";
 // then returns them newest-first on the /history/ route. Scope field "workspace" (slug,
 // comment-style) + carries "project" and "issue" so the route can filter by issue.
 // Append-only in practice (no update/remove), but we expose remove for completeness/parity.
-const activities = lf.table("issue_activities", {
+export const activities = lf.table("issue_activities", {
+  shape: {
+    workspace: v.string(),
+    project: v.string(),
+    issue: v.string(),
+    actor: v.string(),
+    verb: v.string(),
+    field: v.optional(v.union(v.string(), v.null())),
+    old_value: v.optional(v.union(v.string(), v.null())),
+    new_value: v.optional(v.union(v.string(), v.null())),
+    old_identifier: v.optional(v.union(v.string(), v.null())),
+    new_identifier: v.optional(v.union(v.string(), v.null())),
+    comment: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    created_by: v.string()
+  },
   scope: scopeWorkspace,
   indexes: { byWorkspace: ["workspace", "created_at"] }
 });

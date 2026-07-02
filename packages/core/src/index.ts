@@ -12,6 +12,10 @@
 export { createLocalFirstEngine } from "./engine.js";
 export type { LocalFirstEngine, LocalFirstEngineOptions } from "./engine.js";
 export * from "./collection.js";
+// collectManifest: the codegen-free client manifest — built at runtime from the same
+// imported lf.table modules the server's collectTables consumes. LF_METADATA_KEY and
+// the meta TYPE stay internal (only the server DSL writes them).
+export { collectManifest, type CollectManifestOptions } from "./collect.js";
 export * from "./relations.js";
 // id: only createClientId is a wiring helper. createOpId/createDefaultIdFactory
 // are engine internals → "./internal.js".

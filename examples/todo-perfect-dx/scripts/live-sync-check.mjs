@@ -13,6 +13,7 @@ const url = process.env.VITE_CONVEX_URL ?? "http://127.0.0.1:3210";
 const run = Date.now().toString(36);
 const user = `user_${run}`;
 
+const t1 = `t1_${run}`; // per-run unique: the backend persists across runs, and localIds are global
 function op(localId, text) {
   return {
     opId: `op_${localId}`,
@@ -30,7 +31,7 @@ const a = new ConvexHttpClient(url);
 const b = new ConvexHttpClient(url);
 
 // 1. Client A pushes an insert.
-const push1 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op("t1", "hello")] });
+const push1 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op(t1, "hello")] });
 assert.equal(push1.accepted.length, 1, "op accepted");
 assert.equal(push1.rejected.length, 0, "nothing rejected");
 assert.equal(push1.changes.length, 1, "one change emitted");
@@ -48,14 +49,14 @@ const pull1 = await b.query(api.sync.pull, {
   cursors: {}
 });
 assert.equal(pull1.changes.length, 1, "client B pulled one change");
-assert.equal(pull1.changes[0].localId, "t1", "B sees t1");
+assert.equal(pull1.changes[0].localId, t1, "B sees t1");
 assert.equal(pull1.changes[0].data.text, "hello", "B sees the text");
 const cursorKey = `u:${user}`;
 assert.ok(pull1.cursors[cursorKey], "cursor advanced");
 console.log("✓ client B pulled A's change (multi-client sync)");
 
 // 3. Re-push the SAME op — must be idempotent (ledger dedupe), no second change.
-const push2 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op("t1", "hello")] });
+const push2 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op(t1, "hello")] });
 assert.equal(push2.accepted.length, 1, "duplicate op still acknowledged");
 
 const pullAll = await b.query(api.sync.pull, {

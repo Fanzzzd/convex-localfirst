@@ -1,13 +1,12 @@
 {
   "name": "@convex-localfirst/cli",
   "version": "0.1.1",
-  "description": "CLI for convex-localfirst: codegen (client manifest from lf.table), check (catch direct LF-table writes), dev.",
+  "description": "CLI for convex-localfirst: init (scaffold a local-first starter) and check (catch direct writes to local-first tables).",
   "license": "MIT",
   "keywords": [
     "convex",
     "local-first",
-    "cli",
-    "codegen"
+    "cli"
   ],
   "author": "Fanzzzd",
   "repository": {

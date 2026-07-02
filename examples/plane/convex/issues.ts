@@ -9,7 +9,36 @@ import { lf, scopeWorkspaceId } from "./localfirst";
 // editing the same issue offline reconnect and the NEWER edit wins deterministically
 // (arrival order doesn't decide it). Set fields stay convergent — exempt from the timestamp
 // rule. This is the real concurrent-edit driver for `timestampLww`.
-const issues = lf.table("issues", {
+export const issues = lf.table("issues", {
+  shape: {
+    workspace_id: v.string(),
+    project_id: v.string(),
+    sequence_id: v.number(),
+    name: v.string(),
+    sort_order: v.number(),
+    priority: v.string(), // "urgent"|"high"|"medium"|"low"|"none"
+    label_ids: v.array(v.string()),
+    assignee_ids: v.array(v.string()),
+    state_id: v.optional(v.union(v.string(), v.null())),
+    module_ids: v.optional(v.array(v.string())),
+    estimate_point: v.optional(v.union(v.string(), v.null())),
+    sub_issues_count: v.optional(v.number()),
+    attachment_count: v.optional(v.number()),
+    link_count: v.optional(v.number()),
+    parent_id: v.optional(v.union(v.string(), v.null())),
+    cycle_id: v.optional(v.union(v.string(), v.null())),
+    type_id: v.optional(v.union(v.string(), v.null())),
+    start_date: v.optional(v.union(v.string(), v.null())),
+    target_date: v.optional(v.union(v.string(), v.null())),
+    completed_at: v.optional(v.union(v.string(), v.null())),
+    archived_at: v.optional(v.union(v.string(), v.null())),
+    description_html: v.optional(v.string()),
+    is_draft: v.optional(v.boolean()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    created_by: v.string(),
+    updated_by: v.optional(v.string())
+  },
   scope: scopeWorkspaceId,
   conflict: lf.timestampLww(),
   indexes: { byWorkspace: ["workspace_id", "created_at"] },

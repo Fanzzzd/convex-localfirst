@@ -22,7 +22,8 @@ import { LocalFirstEngine } from "@convex-localfirst/core/internal";
 import { api } from "../convex/_generated/api.js";
 
 const url = process.env.VITE_CONVEX_URL ?? "http://127.0.0.1:3210";
-const user = `user_${Date.now().toString(36)}`;
+const run = Date.now().toString(36);
+const user = `user_${run}`;
 
 function manifest() {
   return defineLocalFirstManifest({
@@ -82,7 +83,7 @@ function engine(clientId) {
 }
 
 // Engine A: optimistic insert, then it pushes to the real server.
-const a = engine("A");
+const a = engine(`A_${run}`); // per-run unique so the default `${clientId}_${n}` localIds never collide across runs
 const call = a.mutate("todos:create", { listId: "inbox", text: "from-A" });
 await call.local;
 const localRows = await a.query("todos:list", { listId: "inbox" });
@@ -92,7 +93,7 @@ assert.ok(serverResult, "server accepted A's mutation");
 console.log("✓ engine A: optimistic insert, then pushed to the live server");
 
 // Engine B: a different client, fresh store, pulls A's todo from the server.
-const b = engine("B");
+const b = engine(`B_${run}`);
 await b.syncOnce([{ kind: "byUser", key: `u:${user}` }]);
 const pulledRows = await b.query("todos:list", { listId: "inbox" });
 assert.equal(pulledRows.length, 1, "B pulled A's todo");

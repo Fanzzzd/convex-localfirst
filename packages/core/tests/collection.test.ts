@@ -10,7 +10,7 @@ import {
   manyToMany,
   one
 } from "../src";
-import { LocalFirstEngine, declarativeQuery } from "../src/internal";
+import { LocalFirstEngine } from "../src/internal";
 import { acceptAllTransport, createHarness } from "./helpers";
 
 describe("collection() client query builder", () => {
@@ -108,15 +108,19 @@ describe("collection() client query builder", () => {
         })
       },
       queries: {
-        "issues:list": declarativeQuery({
+        "issues:list": {
+          kind: "query",
           name: "issues:list",
           table: "issues",
-          filters: ["workspaceId"],
-          orderBy: "title",
-          order: "asc",
           initial: [],
-          scope: { kind: "byWorkspace", valueArg: "workspaceId" }
-        })
+          scope: (args: { workspaceId?: string }) => ({
+            kind: "byWorkspace" as const,
+            key: `byWorkspace:${String(args.workspaceId)}`,
+            table: "issues"
+          }),
+          run: (rows: readonly Record<string, unknown>[], args: { workspaceId?: string }) =>
+            rows.filter((row) => row.workspaceId === args.workspaceId)
+        }
       },
       mutations: {}
     });

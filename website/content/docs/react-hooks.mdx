@@ -14,35 +14,33 @@ client and auth helpers (`ConvexReactClient`, `Authenticated`, `useConvexAuth`,
 
 ```tsx
 import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
-import { IndexedDbStore, createClientId, createConvexTransport } from "@convex-localfirst/core";
+import * as todos from "../convex/todos";
 
-const clientId = createClientId();
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 
-<ConvexProvider
-  client={convex}
-  localFirst={{
-    manifest: localFirstManifest,                                   // from codegen
-    store: new IndexedDbStore({ databaseName: "my-app", namespace: userId }),
-    transport: createConvexTransport({ client: convex, push: api.sync.push, pull: api.sync.pull, clientId, userId }),
-    clientId,
-    userId
-  }}
->
+<ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
   {children}
 </ConvexProvider>
 ```
 
-The `localFirst` config:
+`modules` are your imported `lf.table` modules — the client manifest is built
+from them at runtime, running the same declarations the server deploys (no
+codegen). Everything else has a working default and is overridable:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `manifest` | ✓ | The generated client manifest (`localFirstManifest`). |
-| `store` | – | Local persistence. Defaults to in-memory; pass `IndexedDbStore` in the browser. |
-| `transport` | – | Online sync. Omit for a purely offline app. |
-| `clientId` | – | Stable id per device/tab. Defaults to a generated one. |
+| `modules` | ✓* | Imported `lf.table` modules, keyed by Convex module path (`{ todos }` → `api.todos.*`). |
+| `manifest` | ✓* | Escape hatch / tests: a prebuilt manifest instead of `modules`. |
 | `userId` | – | Current user; scopes and store namespacing key off it. |
+| `schemaVersion` | – | Bump on incompatible shape changes (gates sync). Default `1`. |
+| `store` | – | Local persistence. Defaults to **IndexedDB** in the browser (namespaced by `namespace` ?? `userId`), in-memory elsewhere. |
+| `databaseName` / `namespace` | – | Names for the default IndexedDB store. |
+| `sync` | – | `{ push, pull }` function refs. Default `api.sync.push` / `api.sync.pull`. |
+| `transport` | – | Escape hatch: bring your own transport. |
+| `clientId` | – | Stable id per device/tab. Defaults to a generated one. |
 | `nameOf` | – | Function-name resolver. Defaults to Convex's `getFunctionName`. |
+
+\* one of `modules` / `manifest`.
 
 The provider also wires browser connectivity: it reflects `navigator.onLine`
 into the sync status and flushes the outbox automatically on the `online` event.

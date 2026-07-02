@@ -1,13 +1,8 @@
 import { createLocalFirst } from "@convex-localfirst/server";
-import schema from "./schema";
 
-// The schema is inferred from `schema`, so `lf.table("issues", …)` knows the row
-// type — `useQuery` then infers `Doc<"issues">[]` on the client with no explicit
-// generics. Auth is resolved server-side at sync time (convex/sync.ts), not here.
-export const lf = createLocalFirst({
-  schema,
-  defaults: {
-    idField: "localId",
-    conflict: "fieldLww"
-  }
-});
+// The lf factory. Each table module declares its shape/scope/indexes ONCE with
+// lf.table — the Convex schema derives from it (convex/schema.ts), the server
+// sync config derives from it (convex/sync.ts, collectTables), and the client
+// runs the same declarations locally (src/main.tsx, `modules`). Auth is resolved
+// server-side at sync time (convex/sync.ts), not here.
+export const lf = createLocalFirst();

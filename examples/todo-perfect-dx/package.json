@@ -8,7 +8,6 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:e2e": "playwright test",
-    "generate": "node --import tsx ../../packages/cli/dist/index.js codegen",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

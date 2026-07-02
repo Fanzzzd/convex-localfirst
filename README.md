@@ -38,16 +38,26 @@ locally; everything else falls back to the official Convex client.
 
 ## Server
 
-Declare local-first tables with the `lf.table` DSL in your Convex modules:
+Declare each local-first table **once** — its shape, scope, and indexes together
+with the functions your React code calls. The Convex schema derives from it
+(`todos.table()`), the server sync config derives from it (`collectTables`), and
+the client runs the same declaration locally (the provider's `modules`). There is
+no codegen step and nothing to keep in sync.
 
 ```ts
 import { v } from "convex/values";
 import { lf } from "./localfirst";
 
-const todos = lf.table("todos", {
+export const todos = lf.table("todos", {
+  shape: {
+    ownerId: v.string(),
+    listId: v.string(),
+    text: v.string(),
+    done: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number()
+  },
   scope: lf.byUser("ownerId"),
-  idField: "localId",
-  conflict: lf.fieldLww(),
   indexes: {
     byList: ["ownerId", "listId", "createdAt"]
   }
@@ -74,6 +84,25 @@ export const create = todos.insert({
 });
 ```
 
+```ts
+// convex/schema.ts — derived, never restated
+export default defineSchema({ todos: todos.table() });
+
+// convex/sync.ts — derived, never restated
+export const { push, pull } = createSyncFunctions({
+  component: components.convexLocalFirst,
+  mutation, query,
+  tables: collectTables({ todos })
+});
+```
+
+```tsx
+// src/main.tsx — the client imports the same modules; store/transport/ids default
+import * as todos from "../convex/todos";
+
+<ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
+```
+
 The server stays authoritative: every pushed operation is validated against
 auth, table scope (`byUser` / `byWorkspace` / `byProject`), row ownership or
 membership, schema version, and an idempotency ledger.
@@ -86,7 +115,7 @@ membership, schema version, and an idempotency ledger.
 | [`@convex-localfirst/react`](./packages/react) | Convex-compatible `useQuery` / `useMutation`, `useSyncStatus`, Convex fallback |
 | [`@convex-localfirst/server`](./packages/server) | The `lf.table` DSL and the server sync engine (`createSyncFunctions`, `collectTables`) |
 | [`@convex-localfirst/component`](./packages/component) | Mountable Convex component holding the sync bookkeeping: ledger, change log, id map, field clocks |
-| [`@convex-localfirst/cli`](./packages/cli) | `codegen` (client manifest from the DSL), `check` (no direct writes to local-first tables), `dev` |
+| [`@convex-localfirst/cli`](./packages/cli) | `init` (scaffold a complete starter), `check` (no direct writes to local-first tables) |
 | [`@convex-localfirst/yjs`](./packages/yjs) | Yjs CRDT (rich text) over the local-first append-only log, plus `useCollaborativeDoc` |
 
 ## Documentation

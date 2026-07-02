@@ -1,10 +1,8 @@
 import { createLocalFirst } from "@convex-localfirst/server";
-import schema from "./schema";
 
 // Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
 // not here — this factory only declares the local-first tables.
 export const lf = createLocalFirst({
-  schema,
   // Plane entities key on `id`; field-level LWW is the merge policy.
   defaults: { idField: "id", conflict: "fieldLww" }
 });
