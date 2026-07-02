@@ -185,6 +185,38 @@ Status flows on its own notification channel, so updating the indicator never
 re-renders your data queries. Use `blockedBySchemaMismatch` to disable writes
 when the client manifest is older than the deployed schema.
 
+## `usePresence`
+
+Who is here right now — live avatars, "N online", typing indicators:
+
+```tsx
+const { peers, others } = usePresence(
+  { workspace: workspaceId },        // or { project }, or omit for your own user scope
+  { name: "Ada", color: "#7c5cff" }, // broadcast to peers on each heartbeat
+  { heartbeatMs: 10_000 }
+);
+// peers: [{ clientId, userId, data, updatedAt }, ...]; others excludes this tab
+```
+
+Presence is **ephemeral by design**: heartbeats write into the mounted
+component's presence table, reads are TTL-expired (30s), and nothing touches the
+sync log or local persistence — a closed tab disappears on its own. Delivery
+rides plain Convex reactivity (each heartbeat is a table write), so peers update
+live without polling.
+
+The scope is a sync scope, and the server enforces the same access rules as
+pull: your own user scope, or a workspace/project the caller is a **member** of
+(your `isMember`). Non-members see an empty room and their beats are dropped —
+fail-soft, so a heartbeat racing a just-sent join converges on its own. Export
+the endpoints from `convex/sync.ts`:
+
+```ts
+export const { push, pull, presence, presenceList } = createSyncFunctions({ ... });
+```
+
+A `data` change is broadcast on the *next* beat; lower `heartbeatMs` if you
+push fast-changing data (live cursors).
+
 ## Fallback
 
 A reference that is **not** a declared local-first function is passed straight to

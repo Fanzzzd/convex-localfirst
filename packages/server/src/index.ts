@@ -195,12 +195,12 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
           const fn = registerFunction(() =>
             query({
               args: spec.args as never,
-              handler: async () => unsupportedLocalFirstCall("query", tableName)
+              handler: async (ctx: unknown, args: ObjectType<A>) =>
+                runServerQuery(ctx, tableName, tableOptions.scope, indexes, spec as unknown as QuerySpec<PropertyValidators, unknown>, args)
             })
           );
-          // ponytail: the handler throws by design (local-first reads run on the
-          // client); the declared return type is what the engine actually
-          // delivers, so we assert it here rather than leak `never` to callers.
+          // In the browser the export is a metadata stub; on the server, byUser
+          // queries EXECUTE (see runServerQuery) and other scopes refuse (G7).
           return attachMetadata(fn, { kind: "query", ...metadata, spec }) as unknown as RegisteredQuery<
             "public",
             ObjectType<A>,
@@ -256,12 +256,67 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
 }
 
 /**
- * Local-first table functions are never executed server-side: reads/writes flow
- * through the client (optimistic local) and are synchronized via sync.push /
- * sync.pull. The function still exists in the deployment — the client references
- * it by name and reads its attached metadata — but invoking the handler directly
- * is a bug, so it refuses loudly instead of returning fabricated data (G7: real,
- * or explicitly throw "unsupported").
+ * byUser queries run FOR REAL when invoked server-side (SSR loaders, scripts,
+ * `npx convex run`, plain Convex clients): identity comes from ctx.auth and the
+ * declared index is walked with the key closure — the same declaration the local
+ * engine interprets in the browser. Fail-closed guards keep it exactly as safe
+ * as the sync path: the index must lead with the owner field and the key must
+ * pin it to the authenticated user, otherwise we refuse rather than leak.
+ *
+ * byWorkspace/byProject queries still refuse: membership (`isMember`) lives in
+ * the sync config, which this standalone handler cannot consult — executing them
+ * here would hand rows to any caller who guesses a workspace id.
+ */
+async function runServerQuery(
+  ctx: unknown,
+  tableName: string,
+  scope: ScopeDefinition,
+  indexes: Record<string, readonly string[]>,
+  spec: QuerySpec<PropertyValidators, unknown>,
+  args: Record<string, unknown>
+): Promise<unknown[]> {
+  if (scope.kind !== "byUser") {
+    unsupportedLocalFirstCall("query", tableName);
+  }
+  const c = ctx as {
+    auth: { getUserIdentity(): Promise<{ subject?: string } | null> };
+    db: {
+      query(table: string): {
+        withIndex(index: string, range: (q: never) => unknown): { order(o: "asc" | "desc"): { collect(): Promise<unknown[]> } };
+      };
+    };
+  };
+  const identity = await c.auth.getUserIdentity();
+  const userId = identity?.subject;
+  if (!userId) {
+    throw new Error(
+      `convex-localfirst: server-side "${tableName}" query requires an authenticated caller (ctx.auth). ` +
+        `In the browser this query is served by the local engine instead.`
+    );
+  }
+  const columns = indexes[spec.index];
+  const key = spec.key({ auth: { userId }, args });
+  // Fail closed (I7): only run when the walk is provably confined to the caller —
+  // the index leads with the owner field and the key pins it to the identity.
+  if (!columns || columns[0] !== scope.field || key.length === 0 || key[0] !== userId || key.length > columns.length) {
+    unsupportedLocalFirstCall("query", tableName);
+  }
+  return c.db
+    .query(tableName)
+    .withIndex(spec.index, (q) =>
+      key.reduce<unknown>((acc, value, i) => (acc as { eq(f: string, v: unknown): unknown }).eq(columns[i], value), q)
+    )
+    .order(spec.order ?? "asc")
+    .collect();
+}
+
+/**
+ * Local-first writes are never executed server-side: they flow through the
+ * client (optimistic local) and are synchronized via sync.push / sync.pull. The
+ * function still exists in the deployment — the client references it by name and
+ * reads its attached metadata — but invoking the handler directly is a bug, so
+ * it refuses loudly instead of returning fabricated data (G7: real, or
+ * explicitly throw "unsupported").
  */
 function unsupportedLocalFirstCall(kind: string, tableName: string): never {
   throw new Error(

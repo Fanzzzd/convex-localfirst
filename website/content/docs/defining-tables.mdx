@@ -88,9 +88,17 @@ export const list = todos.query({
 ```
 
 `key` builds the index prefix to read — typically the scope value plus query
-args. `auth.userId` is the resolved identity. The query runs **locally** against
-the engine's derived view (rows match the index prefix your `key` returns, sorted
-by the remaining index columns); it never executes on the server.
+args. `auth.userId` is the resolved identity. In the browser the query runs
+**locally** against the engine's derived view (rows match the index prefix your
+`key` returns, sorted by the remaining index columns).
+
+For a **byUser** table the same declaration also executes **on the server** when
+invoked there — SSR loaders, scripts, `npx convex run`, plain Convex clients:
+identity comes from `ctx.auth` and the declared index is walked with the same
+`key` closure. It fails closed unless the index leads with the owner field and
+the key pins it to the authenticated caller. byWorkspace/byProject queries
+refuse server-side (membership lives in the sync config), and writes always
+refuse — they must flow through the client so they sync.
 
 Because the table knows its row type (from `shape`), `useQuery(api.todos.list, …)`
 on the client infers the row type automatically — no client-side generics.

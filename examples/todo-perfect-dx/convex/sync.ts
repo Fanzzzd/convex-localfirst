@@ -14,7 +14,7 @@ import * as labels from "./labels";
 import * as documents from "./documents";
 import * as docUpdates from "./docUpdates";
 
-export const { push, pull } = createSyncFunctions({
+export const { push, pull, presence, presenceList } = createSyncFunctions({
   component: components.convexLocalFirst,
   mutation,
   query,

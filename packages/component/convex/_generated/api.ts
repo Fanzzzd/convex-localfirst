@@ -12,6 +12,7 @@ import type * as changes from "../changes.js";
 import type * as fieldClocks from "../fieldClocks.js";
 import type * as idMaps from "../idMaps.js";
 import type * as ops from "../ops.js";
+import type * as presence from "../presence.js";
 
 import type {
   ApiFromModules,
@@ -25,6 +26,7 @@ const fullApi: ApiFromModules<{
   fieldClocks: typeof fieldClocks;
   idMaps: typeof idMaps;
   ops: typeof ops;
+  presence: typeof presence;
 }> = anyApi as any;
 
 /**

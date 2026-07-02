@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { collection, useLiveQuery, useMutation, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { collection, useLiveQuery, useMutation, usePresence, useQuery, useSyncStatus } from "@convex-localfirst/react";
 import { ChevronLeft, ChevronRight, Loader2, MessageSquare, Plus, Tag, Users, Wifi, WifiOff, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
@@ -38,6 +38,9 @@ function initials(name: string) {
 
 export function App() {
   const sync = useSyncStatus();
+  // Live "who's here": heartbeats into the mounted component, TTL-expired reads.
+  // 2s beats keep the demo (and the e2e) snappy; production defaults to 10s.
+  const { peers } = usePresence({ workspace: WORKSPACE }, { name: USER }, { heartbeatMs: 2000 });
 
   // Plain Convex (not local-first) → exercises the drop-in fallback path (I11).
   const join = useMutation(api.workspaces.join);
@@ -138,6 +141,14 @@ export function App() {
             <span className="flex items-center gap-1.5 text-muted-foreground">
               <Users className="size-4" />
               <span data-testid="member-count">{memberCount ?? "—"}</span>
+            </span>
+            <span className="text-border">|</span>
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              </span>
+              <span data-testid="presence-count">{peers.length}</span> here
             </span>
             {sync.blockedBySchemaMismatch ? <Badge variant="destructive">schema mismatch</Badge> : null}
           </div>

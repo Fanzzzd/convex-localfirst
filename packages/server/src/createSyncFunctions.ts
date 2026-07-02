@@ -51,11 +51,14 @@ export type CreateSyncFunctionsOptions = {
   readonly devUnsafeAllowClientUserId?: boolean;
 };
 
-/** The two endpoints local-first clients talk to. Opaque to app code — they are
- *  driven by the client transport, not called via `useMutation`/`useQuery`. */
+/** The endpoints local-first clients talk to. Opaque to app code — they are
+ *  driven by the client transport / `usePresence`, not called via
+ *  `useMutation`/`useQuery`. */
 export type SyncFunctions = {
   readonly push: RegisteredMutation<"public", Record<string, unknown>, unknown>;
   readonly pull: RegisteredQuery<"public", Record<string, unknown>, unknown>;
+  readonly presence: RegisteredMutation<"public", Record<string, unknown>, unknown>;
+  readonly presenceList: RegisteredQuery<"public", Record<string, unknown>, unknown>;
 };
 
 function storedFromComponent(r: any): StoredChange {
@@ -309,6 +312,75 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     }
   });
 
-  return { push, pull } as SyncFunctions;
+  // ---- Presence (ephemeral, never part of the sync log) ---------------------
+  // Authorization mirrors pull's scope rules exactly: your own `u:` scope, or a
+  // workspace/project you are a member of (isMember decides — I7). scopeKey uses
+  // the same format the sync engine uses, so presence rooms line up with scopes.
+  async function hasPresenceAccess(ctx: AnyCtx, userId: string, scopeKey: string): Promise<boolean> {
+    const sep = scopeKey.indexOf(":");
+    const kind = sep === -1 ? scopeKey : scopeKey.slice(0, sep);
+    const value = sep === -1 ? "" : scopeKey.slice(sep + 1);
+    if (kind === "u") {
+      return value === userId;
+    }
+    if (kind === "byWorkspace" || kind === "byProject") {
+      const table = Object.values(options.tables).find((t) => t.scope.kind === kind);
+      const membershipTable = (table?.scope as { membershipTable?: string } | undefined)?.membershipTable;
+      // NOTE: reading membership INSIDE the query is what makes presenceList
+      // reactive to joining — the subscription re-runs when the membership row
+      // lands, so a client that heartbeats-then-joins converges on its own.
+      return membershipTable !== undefined && (await isMember(ctx, { userId, scopeValue: value, membershipTable }));
+    }
+    return false;
+  }
+
+  const presence = options.mutation({
+    args: {
+      scopeKey: v.string(),
+      clientId: v.string(),
+      userId: v.string(),
+      data: v.any(),
+      leaving: v.optional(v.boolean())
+    },
+    handler: async (ctx: AnyCtx, args: any) => {
+      const userId = await resolveUserId(ctx, args.userId);
+      if (!(await hasPresenceAccess(ctx, userId, args.scopeKey))) {
+        // Fail SOFT (like the read side): a beat racing ahead of a just-joined
+        // membership row is a legitimate startup order, not a bug — dropping it
+        // means "invisible until authorized", and the loop retries anyway.
+        return null;
+      }
+      await ctx.runMutation(lf.presence.heartbeat, {
+        scopeKey: args.scopeKey,
+        clientId: args.clientId,
+        userId,
+        dataJson: JSON.stringify(args.data ?? {}),
+        leaving: args.leaving
+      });
+      return null;
+    }
+  });
+
+  const presenceList = options.query({
+    args: { scopeKey: v.string(), userId: v.string() },
+    handler: async (ctx: AnyCtx, args: any) => {
+      const userId = await resolveUserId(ctx, args.userId);
+      // Read side fails SOFT: a non-member sees an empty room (not an exception
+      // that kills the subscription). The moment membership lands, the reactive
+      // read above re-runs and the room fills in.
+      if (!(await hasPresenceAccess(ctx, userId, args.scopeKey))) {
+        return [];
+      }
+      const rows = await ctx.runQuery(lf.presence.list, { scopeKey: args.scopeKey });
+      return rows.map((row: any) => ({
+        clientId: row.clientId,
+        userId: row.userId,
+        data: JSON.parse(row.dataJson),
+        updatedAt: row.updatedAt
+      }));
+    }
+  });
+
+  return { push, pull, presence, presenceList } as SyncFunctions;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

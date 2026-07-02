@@ -83,10 +83,13 @@ export type LocalFirstProviderConfig = {
   /** Store namespace — isolates one user's local data from another's on a shared
    *  device. Defaults to `userId`; switch it on logout. */
   readonly namespace?: string;
-  /** Sync function refs. Default to the conventional `api.sync.push` / `api.sync.pull`. */
+  /** Sync function refs. Default to the conventional `api.sync.push` / `api.sync.pull`
+   *  (and `api.sync.presence` / `api.sync.presenceList` for `usePresence`). */
   readonly sync?: {
     readonly push?: FunctionReference<"mutation">;
     readonly pull?: FunctionReference<"query">;
+    readonly presence?: FunctionReference<"mutation">;
+    readonly presenceList?: FunctionReference<"query">;
   };
   /** Escape hatch: bring your own transport (replaces the default Convex wiring). */
   readonly transport?: SyncTransport;
@@ -95,6 +98,14 @@ export type LocalFirstProviderConfig = {
 
 type LocalFirstReactContextValue = {
   readonly engine: LocalFirstEngine;
+  /** What usePresence needs; presence rides plain Convex reactivity, not the engine. */
+  readonly presence: {
+    readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+    readonly clientId: string;
+    readonly userId: string | null;
+    readonly beatName: string;
+    readonly listName: string;
+  };
 };
 
 const LocalFirstReactContext = createContext<LocalFirstReactContextValue | null>(null);
@@ -341,7 +352,12 @@ function LocalFirstProvider(
     return dispose;
   }, [engine, userId, store]);
 
-  const value = useMemo(() => ({ engine }), [engine]);
+  const beatName = props.sync?.presence ? reactDefaultFunctionName(props.sync.presence) : "sync:presence";
+  const listName = props.sync?.presenceList ? reactDefaultFunctionName(props.sync.presenceList) : "sync:presenceList";
+  const value = useMemo(
+    () => ({ engine, presence: { client: props.client, clientId, userId, beatName, listName } }),
+    [engine, props.client, clientId, userId, beatName, listName]
+  );
   return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
 }
 
@@ -591,5 +607,92 @@ export function useSyncStatus(): SyncStatus {
   }, [engine]);
 
   return status;
+}
+
+export type PresencePeer = {
+  readonly clientId: string;
+  readonly userId: string;
+  readonly data: Record<string, unknown>;
+  readonly updatedAt: number;
+};
+
+const EMPTY_PEERS: PresencePeer[] = [];
+
+/**
+ * Who is here right now — live avatars, "N online", typing indicators. Ephemeral
+ * by design: presence rides plain Convex reactivity (heartbeats into the mounted
+ * component, TTL-expired reads), never the sync log, and nothing persists locally.
+ *
+ * ```tsx
+ * const { others } = usePresence({ workspace: workspaceId }, { name: "Ada", color: "#7c5cff" });
+ * ```
+ *
+ * The scope is a sync scope, so the server enforces the same access rules as
+ * pull: your own user scope (the default), or a workspace/project you are a
+ * member of. `data` is broadcast to peers on each heartbeat.
+ */
+export function usePresence(
+  scope?: { readonly workspace?: string; readonly project?: string },
+  data?: Record<string, unknown>,
+  options?: { readonly heartbeatMs?: number }
+): { readonly peers: PresencePeer[]; readonly others: PresencePeer[] } {
+  const presence = useContext(LocalFirstReactContext)?.presence ?? null;
+  const heartbeatMs = options?.heartbeatMs ?? 10_000;
+  const scopeKey = scope?.workspace
+    ? `byWorkspace:${scope.workspace}`
+    : scope?.project
+      ? `byProject:${scope.project}`
+      : `u:${presence?.userId ?? ""}`;
+
+  // Live peers via plain Convex useQuery — every heartbeat is a table write, so
+  // subscribers re-render at heartbeat granularity without polling.
+  const listRef = makeFunctionReference<"query">(presence?.listName ?? "sync:presenceList");
+  const peers =
+    (ConvexReact.useQuery(
+      listRef as never,
+      (presence ? { scopeKey, userId: presence.userId ?? "" } : "skip") as never
+    ) as PresencePeer[] | undefined) ?? EMPTY_PEERS;
+
+  // The heartbeat loop reads `data` through a ref so a changing object doesn't
+  // restart it. ponytail: a data change is broadcast on the NEXT beat (≤ heartbeatMs);
+  // lower heartbeatMs if you push fast-changing data like cursors.
+  const dataRef = useRef<Record<string, unknown>>(data ?? {});
+  dataRef.current = data ?? {};
+  useEffect(() => {
+    if (!presence) {
+      return;
+    }
+    const beatRef = makeFunctionReference<"mutation">(presence.beatName);
+    const send = (leaving?: boolean) =>
+      void presence.client
+        .mutation(
+          beatRef as never,
+          {
+            scopeKey,
+            clientId: presence.clientId,
+            userId: presence.userId ?? "",
+            data: dataRef.current,
+            leaving
+          } as never
+        )
+        .catch(() => {
+          // Presence is best-effort: an offline or rejected beat simply means we
+          // appear absent until the next successful one.
+        });
+    send();
+    const timer = setInterval(() => send(), heartbeatMs);
+    const onUnload = () => send(true);
+    window.addEventListener("beforeunload", onUnload);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", onUnload);
+      send(true);
+    };
+  }, [presence, scopeKey, heartbeatMs]);
+
+  return useMemo(
+    () => ({ peers, others: presence ? peers.filter((p) => p.clientId !== presence.clientId) : peers }),
+    [peers, presence]
+  );
 }
 

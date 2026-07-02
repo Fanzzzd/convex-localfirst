@@ -116,7 +116,7 @@ import * as todos from "./todos";
 
 // The entire server sync surface. collectTables derives scope/idField/conflict
 // from the imported lf.table modules — add a new table by adding its import.
-export const { push, pull } = createSyncFunctions({
+export const { push, pull, presence, presenceList } = createSyncFunctions({
   component: components.convexLocalFirst,
   mutation,
   query,

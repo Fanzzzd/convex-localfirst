@@ -61,5 +61,18 @@ export default defineSchema({
     localId: v.string(),
     clocksJson: v.string(),
     updatedAt: v.number()
-  }).index("by_table_local", ["table", "localId"])
+  }).index("by_table_local", ["table", "localId"]),
+
+  // Ephemeral presence: who is in a scope right now (avatars, cursors, typing).
+  // Rows are heartbeat-refreshed and expire by read-time TTL + opportunistic
+  // pruning on heartbeat -- never part of the sync log, never persisted locally.
+  presence: defineTable({
+    scopeKey: v.string(),
+    clientId: v.string(),
+    userId: v.string(),
+    dataJson: v.string(),
+    updatedAt: v.number()
+  })
+    .index("by_scope_client", ["scopeKey", "clientId"])
+    .index("by_scope_updated", ["scopeKey", "updatedAt"])
 });
