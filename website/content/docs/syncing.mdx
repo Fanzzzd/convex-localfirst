@@ -79,7 +79,28 @@ definition.)
 | `mutation` / `query` | The constructors from your `_generated/server`. |
 | `tables` | Which app tables are local-first, and how each is scoped. |
 | `isMember` | **Required if any table is `byWorkspace`/`byProject`.** The server-side membership check. |
-| `schemaVersion` / `now` | Optional. |
+| `schemaVersion` | Normally omitted — `collectTables` carries the version declared in `createLocalFirst`. |
+| `now` | Optional clock override (tests). |
+
+## Schema changes: bump the version, clients reset
+
+When a local-first table's shape changes incompatibly, bump the version — in
+**one** place:
+
+```ts title="convex/localfirst.ts"
+export const lf = createLocalFirst({ schemaVersion: 2 });
+```
+
+That single number flows everywhere: the server sync gate (via `collectTables`)
+rejects pushes and pulls from clients still on the old version
+(`status.blockedBySchemaMismatch`, so stale clients pause instead of corrupting
+data), and each upgraded client's default IndexedDB store is namespaced by the
+new version — it starts clean and re-syncs from the server in full.
+
+The trade-off is explicit: **unsynced offline writes made under the old version
+are dropped** on upgrade (the server would reject them anyway). Additive changes
+(a new `v.optional` field, a new table, a new function) don't need a bump — only
+changes that make old rows or old ops unreadable do.
 
 ## Membership (I7)
 

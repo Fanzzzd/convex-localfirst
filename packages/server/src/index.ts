@@ -14,6 +14,12 @@ export * from "./createSyncFunctions.js";
 // time by createSyncFunctions (ctx.auth.getUserIdentity, with an opt-in dev
 // fallback) — see ./createSyncFunctions.ts.
 export type CreateLocalFirstOptions<DefaultIdField extends string> = {
+  /** Bump when a local-first table's shape changes incompatibly. Declared HERE
+   *  only — it flows to the server sync gate (via collectTables) and to every
+   *  client (via the provider's `modules`), where it also namespaces the local
+   *  store: bumping it gives each client a clean local DB + a full resync, and
+   *  the server rejects ops from clients still on the old version. Default 1. */
+  readonly schemaVersion?: number;
   readonly defaults?: {
     readonly idField?: DefaultIdField;
     readonly conflict?: ConflictPolicyName;
@@ -149,7 +155,8 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         scope: tableOptions.scope,
         indexes,
         setFields: tableOptions.setFields,
-        counterFields: tableOptions.counterFields
+        counterFields: tableOptions.counterFields,
+        schemaVersion: options.schemaVersion
       };
 
       return {
@@ -279,7 +286,13 @@ type AttachedTableMeta = {
   readonly idField: string;
   readonly conflict: ConflictPolicyName;
   readonly scope: ScopeDefinition;
+  readonly schemaVersion?: number;
 };
+
+/** Non-enumerable marker on collectTables' result carrying the modules' declared
+ *  schemaVersion, so createSyncFunctions picks it up without a second declaration.
+ *  Non-enumerable: iterating the tables config must see table names only. */
+export const COLLECTED_SCHEMA_VERSION = Symbol.for("convexLocalFirst.schemaVersion");
 
 /**
  * Derive the `createSyncFunctions({ tables })` config from your imported `lf.table`
@@ -302,6 +315,7 @@ type AttachedTableMeta = {
  */
 export function collectTables(modules: Record<string, unknown>): Record<string, ServerTableConfig> {
   const out: Record<string, ServerTableConfig> = {};
+  const declaredVersions = new Set<number>();
   for (const mod of Object.values(modules)) {
     if (!mod || (typeof mod !== "object" && typeof mod !== "function")) continue;
     for (const exported of Object.values(mod as Record<string, unknown>)) {
@@ -309,6 +323,7 @@ export function collectTables(modules: Record<string, unknown>): Record<string, 
         | AttachedTableMeta
         | undefined;
       if (!meta || typeof meta.tableName !== "string") continue;
+      if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
       const config: ServerTableConfig = { scope: meta.scope, idField: meta.idField, conflict: meta.conflict };
       const existing = out[meta.tableName];
       if (!existing) {
@@ -330,6 +345,14 @@ export function collectTables(modules: Record<string, unknown>): Record<string, 
     throw new Error(
       "collectTables: no local-first tables found in the provided modules. Import the table modules and pass them, e.g. collectTables({ issues, labels })."
     );
+  }
+  if (declaredVersions.size > 1) {
+    throw new Error(
+      `collectTables: modules declare conflicting schemaVersions (${[...declaredVersions].join(", ")}) — declare it once, in createLocalFirst({ schemaVersion }).`
+    );
+  }
+  if (declaredVersions.size === 1) {
+    Object.defineProperty(out, COLLECTED_SCHEMA_VERSION, { value: [...declaredVersions][0], enumerable: false });
   }
   return out;
 }

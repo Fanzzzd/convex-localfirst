@@ -144,6 +144,9 @@ importers:
       convex:
         specifier: '>=1.0.0'
         version: 1.41.0(react@19.2.7)
+      convex-localfirst:
+        specifier: workspace:*
+        version: link:../../packages/localfirst
       lucide-react:
         specifier: ^1.21.0
         version: 1.21.0(react@19.2.7)
@@ -223,6 +226,31 @@ importers:
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.20.0)(jsdom@29.1.1)(lightningcss@1.32.0)
+
+  packages/localfirst:
+    dependencies:
+      '@convex-localfirst/core':
+        specifier: workspace:*
+        version: link:../core
+      '@convex-localfirst/react':
+        specifier: workspace:*
+        version: link:../react
+      '@convex-localfirst/server':
+        specifier: workspace:*
+        version: link:../server
+      convex:
+        specifier: '>=1.0.0'
+        version: 1.41.0(react@19.2.7)
+      react:
+        specifier: '>=18.0.0'
+        version: 19.2.7
+    devDependencies:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

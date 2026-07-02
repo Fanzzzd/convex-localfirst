@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
-import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
+import { ConvexProvider, ConvexReactClient } from "convex-localfirst";
 import { App } from "./App";
 // The client imports the SAME lf.table modules the server deploys — the local
 // manifest is built from them at runtime (no codegen, nothing to regenerate).

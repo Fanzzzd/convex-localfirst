@@ -36,6 +36,8 @@ export type CreateSyncFunctionsOptions = {
   readonly query: (definition: { args: any; handler: (ctx: AnyCtx, args: any) => any }) => any;
   /** Which app tables are local-first, and how they are scoped. */
   readonly tables: SyncConfig["tables"];
+  /** Normally omitted: `collectTables` carries the version declared in
+   *  createLocalFirst({ schemaVersion }) along with the tables config. */
   readonly schemaVersion?: number;
   readonly now?: () => number;
   /** Required if any table is scoped `byWorkspace` / `byProject`. */
@@ -87,8 +89,12 @@ function storedFromComponent(r: any): StoredChange {
  */
 export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFunctions {
   const lf = options.component;
+  // The version rides on collectTables' result (declared once, in createLocalFirst).
+  const collectedVersion = (options.tables as Record<PropertyKey, unknown>)[
+    Symbol.for("convexLocalFirst.schemaVersion")
+  ] as number | undefined;
   const config: SyncConfig = {
-    schemaVersion: options.schemaVersion ?? 1,
+    schemaVersion: options.schemaVersion ?? collectedVersion ?? 1,
     now: options.now ?? (() => Date.now()),
     tables: options.tables,
     valueCodec

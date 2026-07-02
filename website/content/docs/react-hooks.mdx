@@ -3,7 +3,8 @@ title: React hooks
 description: The drop-in ConvexProvider plus useQuery, useMutation, useSyncStatus, and useQueryMeta — same signatures as Convex.
 ---
 
-Import everything from `@convex-localfirst/react`. It re-exports Convex's own
+Import everything from `convex-localfirst` (or the standalone
+`@convex-localfirst/react`). It re-exports Convex's own
 client and auth helpers (`ConvexReactClient`, `Authenticated`, `useConvexAuth`,
 …) so it's a true drop-in for `convex/react`.
 
@@ -13,7 +14,7 @@ client and auth helpers (`ConvexReactClient`, `Authenticated`, `useConvexAuth`,
 `localFirst` to enable local-first tables; omit it and you get plain Convex.
 
 ```tsx
-import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
+import { ConvexProvider, ConvexReactClient } from "convex-localfirst";
 import * as todos from "../convex/todos";
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);

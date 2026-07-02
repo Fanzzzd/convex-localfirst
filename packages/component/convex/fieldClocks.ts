@@ -15,7 +15,7 @@ export const get = query({
     const row = await ctx.db
       .query("fieldClocks")
       .withIndex("by_table_local", (q) => q.eq("table", args.table).eq("localId", args.localId))
-      .unique();
+      .first(); // first-by-index = oldest; deterministic under legacy duplicate rows (never wedge)
     return row?.clocksJson ?? null;
   }
 });
@@ -30,7 +30,7 @@ export const put = mutation({
     const existing = await ctx.db
       .query("fieldClocks")
       .withIndex("by_table_local", (q) => q.eq("table", args.table).eq("localId", args.localId))
-      .unique();
+      .first(); // first-by-index = oldest; deterministic under legacy duplicate rows (never wedge)
     if (existing) {
       await ctx.db.patch(existing._id, { clocksJson: args.clocksJson, updatedAt: Date.now() });
       return existing._id;

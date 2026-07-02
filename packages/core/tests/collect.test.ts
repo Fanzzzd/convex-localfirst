@@ -85,6 +85,19 @@ const mutationCtx: LocalMutationContext = {
 };
 
 describe("collectManifest", () => {
+  it("derives schemaVersion declared once in createLocalFirst (metadata), option overrides", () => {
+    const versioned = {
+      remove: lfFn({ kind: "remove", ...tableMeta, schemaVersion: 4, spec: { args: { id: {} } } })
+    };
+    expect(collectManifest({ todos: versioned }).schemaVersion).toBe(4);
+    expect(collectManifest({ todos: versioned }, { schemaVersion: 9 }).schemaVersion).toBe(9);
+    const conflicting = {
+      a: lfFn({ kind: "remove", ...tableMeta, schemaVersion: 4, spec: { args: { id: {} } } }),
+      b: lfFn({ kind: "remove", ...tableMeta, schemaVersion: 5, spec: { args: { id: {} } } })
+    };
+    expect(() => collectManifest({ t: conflicting })).toThrow(/conflicting schemaVersions/);
+  });
+
   it("builds tables/queries/mutations named <moduleKey>:<exportName>", () => {
     const manifest = collectManifest({ todos: todosModule });
     expect(manifest.schemaVersion).toBe(1);

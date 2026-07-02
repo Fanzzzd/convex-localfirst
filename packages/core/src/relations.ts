@@ -8,15 +8,18 @@ import type { RowValue } from "./types.js";
  * to a serializable form (Zero/TanStack must, to drive query-driven sync); we
  * resolve them locally, which is simpler and more flexible.
  *
- * Three shapes cover what an app like Linear needs:
+ * Four shapes cover what an app like Linear needs:
  *  - one          issue.project   (issue.projectId -> projects._id)
  *  - many         issue.comments  (comments.issueId -> issue._id)
  *  - manyToMany   issue.labels    (via an issue_labels join table)
+ *  - viaIds       issue.labels    (issue.label_ids: string[] -> labels._id — the
+ *                 natural pair for a `setFields` id-array, no join table needed)
  */
 export type RelationSpec<_Target = unknown, _Many extends boolean = boolean> = {
-  readonly kind: "one" | "many" | "manyToMany";
+  readonly kind: "one" | "many" | "manyToMany" | "viaIds";
   readonly table: string;
-  /** one: the base row's FK field -> target._id. many: the target row's FK field -> base._id. */
+  /** one: the base row's FK field -> target._id. many: the target row's FK field
+   *  -> base._id. viaIds: the base row's id-ARRAY field -> target._id (per entry). */
   readonly foreignKey: string;
   /** manyToMany only: the join table and its two FK fields. */
   readonly through?: string;
@@ -48,6 +51,15 @@ export function manyToMany<Target extends Record<string, unknown> = RowValue>(
   targetKey: string
 ): RelationSpec<Target, true> {
   return { kind: "manyToMany", table, through, localKey, targetKey, foreignKey: "" };
+}
+
+/** base[idsField] (an array of target ids) -> targets, in the array's order.
+ *  The natural join for a `setFields` id-array (e.g. `label_ids`). */
+export function viaIds<Target extends Record<string, unknown> = RowValue>(
+  table: string,
+  idsField: string
+): RelationSpec<Target, true> {
+  return { kind: "viaIds", table, foreignKey: idsField };
 }
 
 export type RelationEntry = { readonly name: string; readonly spec: RelationSpec };
@@ -89,6 +101,17 @@ export function attachRelations(
     if (spec.kind === "many") {
       const byFk = groupBy(targets, (t) => t[spec.foreignKey]);
       return { name, resolve: (row: Record<string, unknown>) => byFk.get(row._id) ?? [] };
+    }
+    if (spec.kind === "viaIds") {
+      const byId = new Map(targets.map((t) => [t._id, t]));
+      return {
+        name,
+        resolve: (row: Record<string, unknown>) => {
+          const ids = row[spec.foreignKey];
+          if (!Array.isArray(ids)) return [];
+          return ids.map((id) => byId.get(id as string)).filter((t): t is RowValue => t !== undefined);
+        }
+      };
     }
     // manyToMany
     const through = rowsByTable[spec.through as string] ?? [];

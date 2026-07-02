@@ -48,12 +48,17 @@ export type LocalFirstFunctionMeta = {
   readonly indexes: Record<string, readonly string[]>;
   readonly setFields?: readonly string[];
   readonly counterFields?: readonly string[];
+  /** Declared once in createLocalFirst({ schemaVersion }); flows to the client
+   *  manifest AND the server sync config so the two can never drift. */
+  readonly schemaVersion?: number;
   readonly spec: SpecMeta;
 };
 
 export type CollectManifestOptions = {
   /** Bump when a local-first table's shape changes incompatibly; the server
-   *  gates sync on it (schemaMismatch). Defaults to 1. */
+   *  gates sync on it (schemaMismatch). Normally declared ONCE in
+   *  createLocalFirst({ schemaVersion }) and derived from the modules — this
+   *  option overrides. Defaults to 1. */
   readonly schemaVersion?: number;
 };
 
@@ -77,6 +82,7 @@ export function collectManifest(
   const queries: Record<string, LocalQueryDefinition<any, any>> = {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mutations: Record<string, LocalMutationDefinition<any, any>> = {};
+  const declaredVersions = new Set<number>();
 
   for (const [moduleKey, mod] of Object.entries(modules)) {
     if (!mod || (typeof mod !== "object" && typeof mod !== "function")) continue;
@@ -84,6 +90,7 @@ export function collectManifest(
       const meta = metaOf(exported);
       if (!meta) continue;
       const name = `${moduleKey}:${exportName}`;
+      if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
       registerTable(tables, meta, name);
       if (meta.kind === "query") {
         queries[name] = interpretQuery(name, meta);
@@ -98,8 +105,15 @@ export function collectManifest(
       "collectManifest: no local-first functions found. Import your lf.table modules and pass them, e.g. collectManifest({ todos, issues })."
     );
   }
+  if (declaredVersions.size > 1) {
+    // Two lf factories with different versions would silently gate half the app.
+    throw new Error(
+      `collectManifest: modules declare conflicting schemaVersions (${[...declaredVersions].join(", ")}) — declare it once, in createLocalFirst({ schemaVersion }).`
+    );
+  }
 
-  return { schemaVersion: options?.schemaVersion ?? 1, tables, queries, mutations };
+  const schemaVersion = options?.schemaVersion ?? [...declaredVersions][0] ?? 1;
+  return { schemaVersion, tables, queries, mutations };
 }
 
 function metaOf(exported: unknown): LocalFirstFunctionMeta | null {

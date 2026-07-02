@@ -6,13 +6,13 @@ and write optimistically, work offline, and sync in the background, with Convex
 as the source of truth. Ordinary Convex functions keep working unchanged.
 
 ```bash
-npm install @convex-localfirst/react @convex-localfirst/server @convex-localfirst/component
+npm install convex-localfirst
 ```
 
 ## React
 
 ```tsx
-import { useMutation, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { useMutation, useQuery, useSyncStatus } from "convex-localfirst";
 import { api } from "../convex/_generated/api";
 
 export function Todos({ listId }: { listId: string }) {
@@ -111,6 +111,7 @@ membership, schema version, and an idempotency ledger.
 
 | Package | What it is |
 | --- | --- |
+| [`convex-localfirst`](./packages/localfirst) | **The one-line install** — client surface at the root, `./server` for the DSL, `./component/convex.config` for the mount (scoped packages below are also published individually) |
 | [`@convex-localfirst/core`](./packages/core) | Local engine: derived live view (`canonical + replay(pending)`), IndexedDB store, multi-tab leader election, sync protocol, convergent merges (set / counter / timestamp-LWW) |
 | [`@convex-localfirst/react`](./packages/react) | Convex-compatible `useQuery` / `useMutation`, `useSyncStatus`, Convex fallback |
 | [`@convex-localfirst/server`](./packages/server) | The `lf.table` DSL and the server sync engine (`createSyncFunctions`, `collectTables`) |

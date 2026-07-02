@@ -13,7 +13,7 @@ export type Comment = Doc<"issue_comments">;
 export const issueRelations = {
   project: rel.one("projects", "projectId"), // issue.projectId -> projects
   state: rel.one("states", "stateId"), // issue.stateId -> states
-  labels: rel.manyToMany("labels", "issue_labels", "issueId", "labelId") // via join (N:N)
+  labels: rel.viaIds("labels", "label_ids") // issue.label_ids (a setFields id-array) -> labels
 };
 
 export type Issue = Doc<"issues"> & {

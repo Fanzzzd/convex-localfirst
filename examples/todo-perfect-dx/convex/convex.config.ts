@@ -1,5 +1,5 @@
 import { defineApp } from "convex/server";
-import localfirst from "@convex-localfirst/component/convex.config.js";
+import localfirst from "convex-localfirst/component/convex.config.js";
 
 // Mount the local-first component. This is the whole "no hand-written backend"
 // promise: the app gets the sync ledger / change log / id map / cursors /

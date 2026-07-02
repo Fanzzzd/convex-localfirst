@@ -8,7 +8,8 @@ import {
   localTable,
   many,
   manyToMany,
-  one
+  one,
+  viaIds
 } from "../src";
 import { LocalFirstEngine } from "../src/internal";
 import { acceptAllTransport, createHarness } from "./helpers";
@@ -198,21 +199,23 @@ describe("collection() client query builder", () => {
         value: { workspaceId: "w1", ...value }, version: 1, serverTime: 1
       });
     await seed("projects", "p1", { name: "Platform" });
-    await seed("issues", "i1", { title: "Bug", projectId: "p1" });
+    await seed("issues", "i1", { title: "Bug", projectId: "p1", tag_ids: ["l2", "l1", "ghost"] });
     await seed("issues", "i2", { title: "Feature", projectId: "p1" });
     await seed("comments", "cm1", { issueId: "i1", body: "hi" });
     await seed("comments", "cm2", { issueId: "i1", body: "again" });
     await seed("labels", "l1", { name: "urgent" });
+    await seed("labels", "l2", { name: "later" });
     await seed("issue_labels", "il1", { issueId: "i1", labelId: "l1" });
     const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
 
     const rows = await engine.runLocalQuery(
-      collection<{ title: string; projectId: string }>("issues")
+      collection<{ title: string; projectId: string; tag_ids?: string[] }>("issues")
         .scope({ workspaceId: "w1" })
         .order("title")
         .related("project", one<{ name: string }>("projects", "projectId"))
         .related("comments", many<{ body: string }>("comments", "issueId"))
         .related("labels", manyToMany<{ name: string }>("labels", "issue_labels", "issueId", "labelId"))
+        .related("tags", viaIds<{ name: string }>("labels", "tag_ids"))
     );
 
     expect(rows.map((r) => r.title)).toEqual(["Bug", "Feature"]); // ordered
@@ -221,6 +224,9 @@ describe("collection() client query builder", () => {
     expect(rows[1].comments).toEqual([]); // i2 has none
     expect(rows[0].labels.map((l) => l.name)).toEqual(["urgent"]); // manyToMany
     expect(rows[1].labels).toEqual([]);
+    // viaIds: the id-array on the base row, in array order; missing/absent are skipped.
+    expect(rows[0].tags.map((t) => t.name)).toEqual(["later", "urgent"]); // ["l2","l1","ghost"] order
+    expect(rows[1].tags).toEqual([]); // no tag_ids field at all
   });
 
   it("attaches a reusable relation map via withRelations() (define-once DX)", async () => {

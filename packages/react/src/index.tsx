@@ -13,6 +13,7 @@ import {
   many,
   manyToMany,
   one,
+  viaIds,
   type FunctionNameResolver,
   type LocalFirstManifest,
   type LocalFirstMutationCall,
@@ -33,7 +34,7 @@ import {
   defaultFunctionName
 } from "@convex-localfirst/core/internal";
 
-export { collection, many, manyToMany, one };
+export { collection, many, manyToMany, one, viaIds };
 export type { LocalQueryPlan, RelationSpec };
 
 export const ConvexReactClient = ConvexReact.ConvexReactClient;
@@ -185,7 +186,7 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     (typeof indexedDB !== "undefined"
       ? new IndexedDbStore({
           databaseName: options.databaseName ?? "convex-localfirst",
-          namespace: options.namespace ?? userId ?? "default"
+          namespace: options.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
         })
       : new MemoryLocalStore());
   const transport = createConvexTransport({
@@ -212,6 +213,14 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
 
 function raise(message: string): never {
   throw new Error(message);
+}
+
+/** Default IndexedDB namespace: per user, and per schemaVersion past v1 — bumping the
+ *  version yields a fresh local store (clean reset + full resync) instead of a
+ *  mismatch-blocked dead end. v1 stays unsuffixed so existing stores keep working. */
+function defaultNamespace(userId: string | null, schemaVersion: number): string {
+  const base = userId ?? "default";
+  return schemaVersion > 1 ? `${base}::v${schemaVersion}` : base;
 }
 
 export function ConvexProvider(props: {
@@ -277,14 +286,17 @@ function LocalFirstProvider(
   // fresh store object each render doesn't thrash the engine, and (b) the multi-tab
   // coordination key below is derived from the EXACT store the engine holds — never an
   // old-engine-under-a-new-store-namespace mismatch. Browser default is durable
-  // IndexedDB, namespaced per user (switch user → separate local data, I9).
+  // IndexedDB, namespaced per user (switch user → separate local data, I9) and per
+  // schemaVersion past v1 — so bumping the version in createLocalFirst gives every
+  // client a clean local store + full resync (the schema-migration escape hatch),
+  // instead of a mismatch-blocked dead end.
   const store = useMemo(
     () =>
       props.store ??
       (typeof indexedDB !== "undefined"
         ? new IndexedDbStore({
             databaseName: props.databaseName ?? "convex-localfirst",
-            namespace: props.namespace ?? userId ?? "default"
+            namespace: props.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
           })
         : new MemoryLocalStore()),
     // eslint-disable-next-line react-hooks/exhaustive-deps

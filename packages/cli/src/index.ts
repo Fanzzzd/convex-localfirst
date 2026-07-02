@@ -24,7 +24,7 @@ function init() {
   const files: Array<{ path: string; content: string }> = [
     {
       path: join("convex", "localfirst.ts"),
-      content: `import { createLocalFirst } from "@convex-localfirst/server";
+      content: `import { createLocalFirst } from "convex-localfirst/server";
 
 // Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
 // not here — this factory only declares the local-first tables.
@@ -96,7 +96,7 @@ export default defineSchema({
     {
       path: join("convex", "convex.config.ts"),
       content: `import { defineApp } from "convex/server";
-import localfirst from "@convex-localfirst/component/convex.config.js";
+import localfirst from "convex-localfirst/component/convex.config.js";
 
 // Mount the local-first component — the whole "no hand-written backend" promise:
 // the sync ledger / change log / id map / cursors / tombstones come as a drop-in,
@@ -109,7 +109,7 @@ export default app;
     },
     {
       path: join("convex", "sync.ts"),
-      content: `import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
+      content: `import { collectTables, createSyncFunctions } from "convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import * as todos from "./todos";
@@ -153,7 +153,7 @@ Next:
        <ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
 
      then use useQuery(api.todos.list) / useMutation(api.todos.create) from
-     "@convex-localfirst/react" exactly like Convex.`);
+     "convex-localfirst" exactly like Convex.`);
 }
 
 // Coverage: regex catches ctx.db.insert("<lfTable>", …); an AST taint pass catches

@@ -20,13 +20,14 @@ should already have `convex/` and `convex/_generated/` from running
 ## 1. Install
 
 ```bash
-npm install @convex-localfirst/react @convex-localfirst/core \
-            @convex-localfirst/server @convex-localfirst/component
+npm install convex-localfirst
 ```
 
+One package: the client surface is the root import, the DSL is
+`convex-localfirst/server`, and the mountable component ships inside it.
 (Optionally `npm install -D @convex-localfirst/cli` for `npx convex-localfirst init`,
 which scaffolds every file below, and `check`, a CI guard against illegal direct
-writes.)
+writes. The `@convex-localfirst/*` packages are also published individually.)
 
 ## 2. Mount the component
 
@@ -36,7 +37,7 @@ field clocks) so you never hand-write those tables. Mount it in
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
-import localfirst from "@convex-localfirst/component/convex.config.js";
+import localfirst from "convex-localfirst/component/convex.config.js";
 
 const app = defineApp();
 app.use(localfirst);
@@ -50,7 +51,7 @@ Create the `lf` factory, then declare the table's **shape, scope, and indexes**
 together with the functions your React code calls:
 
 ```ts title="convex/localfirst.ts"
-import { createLocalFirst } from "@convex-localfirst/server";
+import { createLocalFirst } from "convex-localfirst/server";
 
 export const lf = createLocalFirst();
 ```
@@ -120,7 +121,7 @@ export default defineSchema({
 ```
 
 ```ts title="convex/sync.ts"
-import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
+import { collectTables, createSyncFunctions } from "convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import * as todos from "./todos";
@@ -148,7 +149,7 @@ The client imports the **same table modules** and hands them to the drop-in
 
 ```tsx title="src/main.tsx"
 import ReactDOM from "react-dom/client";
-import { ConvexProvider, ConvexReactClient } from "@convex-localfirst/react";
+import { ConvexProvider, ConvexReactClient } from "convex-localfirst";
 import * as todos from "../convex/todos";
 import { App } from "./App";
 
@@ -181,7 +182,7 @@ switches stores. See [invariant I9](/docs/reference/invariants).
 Exactly the Convex hooks — declared functions are now local-first:
 
 ```tsx title="src/App.tsx"
-import { useMutation, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { useMutation, useQuery, useSyncStatus } from "convex-localfirst";
 import { api } from "../convex/_generated/api";
 
 export function App() {

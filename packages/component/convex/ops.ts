@@ -15,7 +15,7 @@ export const getByOpId = query({
     const row = await ctx.db
       .query("ops")
       .withIndex("by_user_op", (q) => q.eq("userId", args.userId).eq("opId", args.opId))
-      .unique();
+      .first(); // first-by-index = oldest; deterministic under legacy duplicate rows (never wedge)
     if (!row) {
       return null;
     }
@@ -44,7 +44,7 @@ export const record = mutation({
     const existing = await ctx.db
       .query("ops")
       .withIndex("by_user_op", (q) => q.eq("userId", args.userId).eq("opId", args.opId))
-      .unique();
+      .first(); // first-by-index = oldest; deterministic under legacy duplicate rows (never wedge)
     if (existing) {
       return existing._id;
     }

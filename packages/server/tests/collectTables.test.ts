@@ -63,6 +63,17 @@ describe("collectTables", () => {
     expect(() => collectTables({ nothing: { plain: () => 0 } })).toThrow(/no local-first tables/);
   });
 
+  it("carries the schemaVersion declared once in createLocalFirst to createSyncFunctions", () => {
+    const lf2 = createLocalFirst({ schemaVersion: 3 });
+    const mod = {
+      create: lf2.table("things", { shape: {}, scope: lf2.byUser("ownerId") }).insert({ args: {}, value: () => ({}) })
+    };
+    const tables = collectTables({ mod });
+    expect((tables as Record<PropertyKey, unknown>)[Symbol.for("convexLocalFirst.schemaVersion")]).toBe(3);
+    // Non-enumerable: iterating the config sees table names only.
+    expect(Object.keys(tables)).toEqual(["things"]);
+  });
+
   it("fails closed on conflicting config for the same table name", () => {
     const otherScope = lf.byWorkspace({ workspaceIdField: "workspace", membershipTable: "other_members" });
     const tampered = {

@@ -1,4 +1,4 @@
-import { createLocalFirst } from "@convex-localfirst/server";
+import { createLocalFirst } from "convex-localfirst/server";
 
 // The lf factory. Each table module declares its shape/scope/indexes ONCE with
 // lf.table — the Convex schema derives from it (convex/schema.ts), the server

@@ -14,7 +14,7 @@ export const put = mutation({
     const existing = await ctx.db
       .query("idMaps")
       .withIndex("by_table_local", (q) => q.eq("table", args.table).eq("localId", args.localId))
-      .unique();
+      .first(); // first-by-index = oldest; deterministic under legacy duplicate rows (never wedge)
     if (existing) {
       // Idempotent on a matching claim; reject a conflicting one. localId is a
       // globally-unique client id, so a different serverId for the same
@@ -37,10 +37,16 @@ export const get = query({
     localId: v.string()
   },
   handler: async (ctx, args) => {
+    // Deterministic under legacy duplicates: put() has been fail-closed since
+    // 0.2 (one mapping per (table, localId)), but data written by an older
+    // component version can hold duplicates — .unique() would then wedge every
+    // push/pull touching that localId forever. First-by-index = the OLDEST
+    // mapping, i.e. the row the first writer created, which is also what the
+    // fail-closed put() would have preserved.
     const row = await ctx.db
       .query("idMaps")
       .withIndex("by_table_local", (q) => q.eq("table", args.table).eq("localId", args.localId))
-      .unique();
+      .first();
     return row?.serverId ?? null;
   }
 });
