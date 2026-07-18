@@ -201,6 +201,8 @@ function createSyncFunctions(options: {
   schemaVersion?: number;
   now?: () => number;
   changeRetentionMs?: number;  // change-log GC horizon, default 30 days
+  visibility?: Record<table, (ctx, { userId, row }) => boolean | Promise<boolean>>;
+  serverStamp?: Record<table, (ctx, { userId, value }) => Record<string, unknown> | undefined>;
 }): { push; pull; presence; presenceList; serverWriter }
 ```
 

@@ -56,6 +56,30 @@ export type CreateSyncFunctionsOptions = {
    * current rows instead of replaying history. Pass Infinity to never GC.
    */
   readonly changeRetentionMs?: number;
+  /**
+   * Per-table row-level read filter WITHIN an authorized scope (e.g. guests only
+   * see issues they created). Runs with your ctx, so it can read roles from
+   * ctx.db. Applied to bootstrap rows, incremental changes (a row entering
+   * visibility arrives as a full-row upsert; one leaving arrives as a delete),
+   * and patch/delete writes (can't see → can't touch).
+   */
+  readonly visibility?: Record<
+    string,
+    (ctx: AnyCtx, input: { userId: string; row: Record<string, unknown> }) => boolean | Promise<boolean>
+  >;
+  /**
+   * Per-table server-minted insert fields (push AND `serverWriter`, where userId
+   * is "server") — e.g. an atomic per-project sequence number read from ctx.db.
+   * Runs inside the push transaction (race-free under Convex OCC). Stamped fields
+   * must be part of the table's declared shape to sync back to clients.
+   */
+  readonly serverStamp?: Record<
+    string,
+    (
+      ctx: AnyCtx,
+      input: { userId: string; value: Record<string, unknown> }
+    ) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>
+  >;
 };
 
 /** Trusted server-side writer for local-first tables — the third writer besides
@@ -121,6 +145,32 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     now: options.now ?? (() => Date.now()),
     tables: options.tables,
     valueCodec
+  };
+
+  // visibility / serverStamp hooks take the request's ctx (to read roles/counters
+  // from ctx.db) — bind it per request by cloning the affected table configs.
+  for (const [optionName, hooks] of [
+    ["visibility", options.visibility],
+    ["serverStamp", options.serverStamp]
+  ] as const) {
+    for (const table of Object.keys(hooks ?? {})) {
+      if (!(table in config.tables)) {
+        throw new Error(`createSyncFunctions: ${optionName} names unknown local-first table "${table}"`);
+      }
+    }
+  }
+  const configFor = (ctx: AnyCtx): SyncConfig => {
+    if (!options.visibility && !options.serverStamp) {
+      return config;
+    }
+    const tables = { ...config.tables };
+    for (const [table, hook] of Object.entries(options.visibility ?? {})) {
+      tables[table] = { ...tables[table]!, visibility: (input) => hook(ctx, input) };
+    }
+    for (const [table, hook] of Object.entries(options.serverStamp ?? {})) {
+      tables[table] = { ...tables[table]!, serverStamp: (input) => hook(ctx, input) };
+    }
+    return { ...config, tables };
   };
 
   // I7: the pull side resolves ONE membership table per scope kind (scope keys
@@ -308,7 +358,7 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     },
     handler: async (ctx: AnyCtx, args: any) => {
       const userId = await resolveUserId(ctx, args.userId);
-      return await handlePush(pushStore(ctx), config, {
+      return await handlePush(pushStore(ctx), configFor(ctx), {
         userId,
         clientId: args.clientId,
         schemaVersion: args.schemaVersion,
@@ -329,7 +379,7 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     },
     handler: async (ctx: AnyCtx, args: any) => {
       const userId = await resolveUserId(ctx, args.userId);
-      return await handlePull(pullStore(ctx), config, {
+      return await handlePull(pullStore(ctx), configFor(ctx), {
         userId,
         clientId: args.clientId,
         schemaVersion: args.schemaVersion,
@@ -413,11 +463,12 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
   const newLocalId = createDefaultIdFactory("sv");
   const serverWriter = (ctx: AnyCtx): ServerWriter => {
     const store = pushStore(ctx);
+    const cfg = configFor(ctx); // serverStamp applies to server-authored inserts too
     return {
       insert: (table, value, opts) =>
-        applyServerWrite(store, config, { kind: "insert", table, value, localId: opts?.localId }, () => newLocalId(table)),
-      patch: (table, localId, patch) => applyServerWrite(store, config, { kind: "patch", table, localId, patch }, () => newLocalId(table)),
-      remove: (table, localId) => applyServerWrite(store, config, { kind: "delete", table, localId }, () => newLocalId(table))
+        applyServerWrite(store, cfg, { kind: "insert", table, value, localId: opts?.localId }, () => newLocalId(table)),
+      patch: (table, localId, patch) => applyServerWrite(store, cfg, { kind: "patch", table, localId, patch }, () => newLocalId(table)),
+      remove: (table, localId) => applyServerWrite(store, cfg, { kind: "delete", table, localId }, () => newLocalId(table))
     };
   };
 

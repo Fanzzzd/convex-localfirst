@@ -32,6 +32,35 @@ export const { push, pull } = createSyncFunctions({
       .unique();
     return row !== null;
   },
+  // Plane's EUserWorkspaceRoles guest rule (role 5): within a workspace a guest only
+  // sees issues they created or are assigned to. Rows entering/leaving visibility
+  // arrive as full-row upserts/deletes automatically, and guests can't patch/delete
+  // rows they can't see.
+  visibility: {
+    issues: async (ctx, { userId, row }) => {
+      const member = await ctx.db
+        .query("ws_members")
+        .withIndex("by_user_ws", (q: any) => q.eq("user_id", userId).eq("workspace_id", row.workspace_id))
+        .unique();
+      if ((member?.role ?? 0) > 5) return true; // admin/member: everything
+      return row.created_by === userId || ((row.assignee_ids as string[] | undefined) ?? []).includes(userId);
+    }
+  },
+  // Server-minted per-project issue numbers (PROJ-123). Runs inside the push
+  // transaction, so the counter read-modify-write is race-free under Convex OCC.
+  serverStamp: {
+    issues: async (ctx, { value }) => {
+      const key = `issue_seq:${value.project_id}`;
+      const counter = await ctx.db
+        .query("counters")
+        .withIndex("by_key", (q: any) => q.eq("key", key))
+        .unique();
+      const next = (counter?.value ?? 0) + 1;
+      if (counter) await ctx.db.patch(counter._id, { value: next });
+      else await ctx.db.insert("counters", { key, value: next });
+      return { sequence_id: next };
+    }
+  },
   // Local backend has no auth provider; identity comes from the client userId. Dev only.
   devUnsafeAllowClientUserId: true
 });

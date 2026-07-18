@@ -1175,3 +1175,150 @@ describe("server sync — membership revocation", () => {
     expect(res.deniedScopes).toEqual(["byWorkspace:ws1"]);
   });
 });
+
+describe("server sync — row-level visibility", () => {
+  // Plane-style guest rule: within an authorized workspace, "guest" only sees docs
+  // they created. The membership check still gates the SCOPE; visibility filters ROWS.
+  const guestConfig = (): SyncConfig => ({
+    ...config,
+    tables: {
+      ...config.tables,
+      docs: {
+        ...config.tables.docs!,
+        visibility: ({ userId, row }) => userId === "member" || row.createdBy === userId
+      }
+    }
+  });
+  const doc = (opId: string, localId: string, createdBy: string, title = "t"): ServerOperation => ({
+    opId, clientId: "c1", schemaVersion: 1, functionName: "docs:create", table: "docs",
+    kind: "insert", localId, value: { wsId: "ws1", title, createdBy }
+  });
+  function seededStore() {
+    const store = new MemoryServerStore();
+    for (const u of ["member", "guest"]) store.members.add(`${u}:ws1:ws_members`);
+    return store;
+  }
+
+  it("bootstrap: a guest gets only rows the predicate admits", async () => {
+    const store = seededStore();
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "c1", schemaVersion: 1,
+      mutations: [doc("o1", "d1", "member"), doc("o2", "d2", "guest")]
+    });
+    const res = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    expect(res.changes.map((c) => c.localId)).toEqual(["d2"]);
+    const memberRes = await handlePull(store, guestConfig(), {
+      userId: "member", clientId: "cm", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    expect(memberRes.changes.map((c) => c.localId).sort()).toEqual(["d1", "d2"]);
+  });
+
+  it("incremental: invisible inserts are withheld; a row entering visibility arrives as a full-row upsert", async () => {
+    const store = seededStore();
+    // Guest is warm at cursor 0-equivalent: bootstrap an empty scope first.
+    const cold = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    const sk = "byWorkspace:ws1";
+    const cursor = cold.cursors[sk]!;
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "c1", schemaVersion: 1, mutations: [doc("o1", "d1", "member")]
+    });
+    const hidden = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: cursor }
+    });
+    expect(hidden.changes).toHaveLength(0); // withheld, but the cursor still advances
+    expect(Number(hidden.cursors[sk])).toBeGreaterThan(Number(cursor));
+
+    // The member reassigns the doc to the guest — the guest lacks the base row, so
+    // the patch must arrive as a FULL-ROW upsert.
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "c1", schemaVersion: 1,
+      mutations: [{ opId: "o2", clientId: "c1", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "guest" } }]
+    });
+    const entered = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: hidden.cursors[sk]! }
+    });
+    expect(entered.changes).toHaveLength(1);
+    expect(entered.changes[0]!.kind).toBe("insert");
+    expect(entered.changes[0]!.data).toMatchObject({ title: "t", createdBy: "guest" });
+  });
+
+  it("incremental: a row leaving visibility arrives as a delete", async () => {
+    const store = seededStore();
+    await handlePush(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1, mutations: [doc("o1", "d1", "guest")]
+    });
+    const sk = "byWorkspace:ws1";
+    const warm = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    // The member takes the doc over; for the guest it leaves visibility.
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "cm", schemaVersion: 1,
+      mutations: [{ opId: "o2", clientId: "cm", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "member" } }]
+    });
+    const res = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: warm.cursors[sk]! }
+    });
+    expect(res.changes.map((c) => c.kind)).toEqual(["delete"]);
+  });
+
+  it("write side: can't see → can't touch (patch and delete of an invisible row reject)", async () => {
+    const store = seededStore();
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "cm", schemaVersion: 1, mutations: [doc("o1", "d1", "member")]
+    });
+    const res = await handlePush(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      mutations: [
+        { opId: "o2", clientId: "cg", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { title: "hacked" } },
+        { opId: "o3", clientId: "cg", schemaVersion: 1, functionName: "docs:remove", table: "docs", kind: "delete", localId: "d1" }
+      ]
+    });
+    expect(res.accepted).toHaveLength(0);
+    expect(res.rejected.map((r) => r.message)).toEqual(["Cannot patch docs:d1", "Cannot delete docs:d1"]);
+    const row = await store.getRow("docs", (await store.getServerId("docs", "d1"))!);
+    expect(row).toMatchObject({ title: "t" });
+  });
+});
+
+describe("server sync — serverStamp", () => {
+  it("push inserts get server-minted fields (sequence numbers) atomically", async () => {
+    const store = new MemoryServerStore();
+    let seq = 0;
+    const cfg: SyncConfig = {
+      ...config,
+      tables: { todos: { ...config.tables.todos!, serverStamp: () => ({ sequenceId: ++seq }) } }
+    };
+    const res = await handlePush(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
+    });
+    expect(res.changes.map((c) => c.data?.sequenceId)).toEqual([1, 2]);
+    const row = await store.getRow("todos", (await store.getServerId("todos", "t1"))!);
+    expect(row!.sequenceId).toBe(1); // stamped on the stored row, not just the change
+  });
+
+  it("a stamp may not rewrite the scope or id field", async () => {
+    const store = new MemoryServerStore();
+    const cfg: SyncConfig = {
+      ...config,
+      tables: { todos: { ...config.tables.todos!, serverStamp: () => ({ ownerId: "someone_else" }) } }
+    };
+    const res = await handlePush(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "a" })]
+    });
+    expect(res.rejected).toHaveLength(1);
+    expect(res.rejected[0]!.message).toMatch(/serverStamp must not set the scope field/);
+  });
+});

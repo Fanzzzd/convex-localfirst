@@ -28,6 +28,22 @@ export type ServerTableConfig = {
    *  leak to clients. Absent (hand-written config): bootstrap strips only Convex
    *  system fields. collectTables always fills it. */
   readonly syncedFields?: readonly string[];
+  /** Row-level read filter WITHIN an authorized scope (e.g. Plane-style guests who
+   *  only see issues they created). Applied on every read path — bootstrap rows,
+   *  incremental changes, and (as "can't see → can't touch") patch/delete writes.
+   *  A patch to a row that ENTERS visibility is delivered as a full-row upsert (the
+   *  client may lack the base row); one that LEAVES visibility is delivered as a
+   *  delete (the client evicts it). Inserts are judged on the inserted data. */
+  readonly visibility?: (input: { userId: string; row: Record<string, unknown> }) => boolean | Promise<boolean>;
+  /** Server-minted fields merged into every insert (push AND serverWriter, where
+   *  userId is "server") — e.g. an atomic per-project sequence number. Runs inside
+   *  the push transaction, so counter reads are race-free under Convex OCC. Stamped
+   *  fields must be part of the table's declared shape to sync back to clients, and
+   *  may not touch the partition or id field. */
+  readonly serverStamp?: (input: {
+    userId: string;
+    value: Record<string, unknown>;
+  }) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
 };
 
 export type ServerOperation = {
@@ -443,6 +459,10 @@ async function applyOp(
     if (scopeKey === null || !(await isAuthorizedForScope(store, tableConfig, userId, scopeKey))) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
     }
+    // Row-level rule: can't see → can't touch. Same generic message (no oracle).
+    if (existingRow && tableConfig.visibility && !(await tableConfig.visibility({ userId, row: existingRow }))) {
+      throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
+    }
     // Deletes commute: an authorized delete of an already-gone row acks as a no-op
     // (the EXPECTED case for an insert-only log with compaction, where two clients
     // can concurrently prune the same subsumed rows, and for any replayed delete).
@@ -481,6 +501,15 @@ async function applyOp(
     throw error;
   }
 
+  // Row-level rule for patch (delete is handled above): can't see → can't touch.
+  // Generic message, mirroring the scope-denial collapse (no existence oracle).
+  if (op.kind === "patch" && tableConfig.visibility) {
+    const row = await loadRow(store, op);
+    if (!(await tableConfig.visibility({ userId, row }))) {
+      throw new RejectOp(`Cannot patch ${op.table}:${op.localId}`);
+    }
+  }
+
   if (op.kind === "insert") {
     // Record the client's stable local id under the table's idField so the row
     // satisfies the app schema and can be correlated back to the client.
@@ -492,6 +521,8 @@ async function applyOp(
     if (await store.getServerId(op.table, op.localId)) {
       throw new RejectOp(`Duplicate localId for ${op.table}:${op.localId}`);
     }
+    // After the dup check so a rejected insert never burns a minted sequence number.
+    mergeServerStamp(value, await tableConfig.serverStamp?.({ userId, value }), tableConfig);
     const serverId = await store.insertRow(op.table, value);
     await store.putIdMap(userId, op.table, op.localId, serverId);
     // First change for a fresh row is version 1 (I5 monotonicity).
@@ -589,6 +620,22 @@ async function applyOp(
   throw new RejectOp(`Unsupported op kind for ${op.table}:${op.localId}`);
 }
 
+/** Merge serverStamp output into an insert value. The stamp must never rewrite the
+ *  partition or id field — that would bypass the scope checks already performed. */
+function mergeServerStamp(
+  value: Record<string, unknown>,
+  stamped: Record<string, unknown> | undefined,
+  tableConfig: ServerTableConfig
+): void {
+  if (!stamped) return;
+  for (const field of [partitionFieldOf(tableConfig.scope), tableConfig.idField]) {
+    if (field && Object.prototype.hasOwnProperty.call(stamped, field)) {
+      throw new Error(`serverStamp must not set the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
+    }
+  }
+  Object.assign(value, stamped);
+}
+
 function changeAsStored(
   changeId: string,
   scopeKey: string,
@@ -640,6 +687,7 @@ export async function applyServerWrite(
       value[ts.createdAt] ??= serverTime;
       value[ts.updatedAt] ??= serverTime;
     }
+    mergeServerStamp(value, await tableConfig.serverStamp?.({ userId: "server", value }), tableConfig);
     const scopeValue = partition ? value[partition] : null;
     if (typeof scopeValue !== "string") {
       throw new Error(`serverWriter: insert into "${write.table}" is missing its scope field "${partition}"`);
@@ -816,6 +864,10 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
           if (!row) {
             continue; // deleted row: a cold client simply never sees it
           }
+          const visibility = config.tables[rv.table]?.visibility;
+          if (visibility && !(await visibility({ userId: input.userId, row }))) {
+            continue; // row-filtered within the scope (e.g. guest rules)
+          }
           out.changes.push({
             changeId: "", // synthetic — clients fold by version, cursors come from out.cursors
             scopeKey,
@@ -844,7 +896,40 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     }
 
     const changes = await store.changesAfter(scopeKey, cursor, limit);
-    out.changes.push(...changes);
+    for (const change of changes) {
+      const table = config.tables[change.table];
+      if (!table?.visibility || change.kind === "delete") {
+        // No row filter, or a delete (carries no data; evicting an unknown row is a
+        // client no-op) — deliver as-is.
+        out.changes.push(change);
+        continue;
+      }
+      if (change.kind === "insert") {
+        // Judge inserts on the inserted data; a later patch that flips visibility
+        // is delivered below as an upsert/delete, so the end state converges.
+        if (await table.visibility({ userId: input.userId, row: change.data ?? {} })) {
+          out.changes.push(change);
+        }
+        continue;
+      }
+      // Patch: visibility is a property of the CURRENT row (the change carries only
+      // the patched fields). Row gone → skip; its delete change handles eviction.
+      const serverId = await store.getServerId(change.table, change.localId);
+      const row = serverId ? await store.getRow(change.table, serverId) : null;
+      if (!row) {
+        continue;
+      }
+      if (await table.visibility({ userId: input.userId, row })) {
+        // Deliver as a full-row upsert: the row may have just ENTERED visibility
+        // and this client may lack the base row the patch assumes.
+        out.changes.push({ ...change, kind: "insert", patch: undefined, data: projectSyncedFields(row, table) });
+      } else {
+        // The row LEFT (or never had) visibility for this user: evict it.
+        out.changes.push({ ...change, kind: "delete", patch: undefined, data: undefined });
+      }
+    }
+    // The cursor advances past everything READ (filtered rows included) — a filtered
+    // change is a per-user decision, not undelivered data.
     const last = changes[changes.length - 1];
     out.cursors[scopeKey] = last ? last.changeId : cursor ?? "";
     // A full page means the server capped this scope; more may remain past the cursor.

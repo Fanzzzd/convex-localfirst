@@ -59,6 +59,13 @@ export default defineSchema({
     .index("by_user_ws", ["user_id", "workspace_id"])
     .index("by_ws", ["workspace_id"]),
 
+  // Per-project issue sequence counters, read inside the push transaction by the
+  // serverStamp hook in sync.ts (race-free under Convex OCC) — Plane's PROJ-123.
+  counters: defineTable({
+    key: v.string(),
+    value: v.number()
+  }).index("by_key", ["key"]),
+
   // --- local-first byWorkspace (idField "id"); scope field per Plane's type ----
   // projects: scope field = "workspace" (TProject.workspace)
   projects: projects.table(),

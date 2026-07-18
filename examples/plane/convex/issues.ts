@@ -10,7 +10,7 @@ export const issues = lf.table("issues", {
   shape: {
     workspace_id: v.string(),
     project_id: v.string(),
-    sequence_id: v.number(),
+    sequence_id: v.optional(v.number()), // server-minted (serverStamp in sync.ts) — clients never pick it
     name: v.string(),
     sort_order: v.number(),
     priority: v.string(), // "urgent"|"high"|"medium"|"low"|"none"

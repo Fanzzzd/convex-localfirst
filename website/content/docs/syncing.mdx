@@ -82,7 +82,47 @@ definition.)
 | `isMember` | **Required if any table is `byWorkspace`/`byProject`.** The server-side membership check. |
 | `schemaVersion` | Normally omitted — `collectTables` carries the version declared in `createLocalFirst`. |
 | `changeRetentionMs` | How long change-log entries live before opportunistic GC (default 30 days; `Infinity` disables). |
+| `visibility` | Per-table row-level read filter within an authorized scope — see below. |
+| `serverStamp` | Per-table server-minted insert fields (sequence numbers) — see below. |
 | `now` | Optional clock override (tests). |
+
+## Row-level visibility & server-minted fields
+
+Two per-table hooks cover the patterns scope membership alone can't:
+
+**`visibility`** filters *rows* within a scope the user already has access to —
+e.g. guests only see issues they created or are assigned:
+
+```ts
+visibility: {
+  issues: async (ctx, { userId, row }) => {
+    const m = await memberRow(ctx, userId, row.workspace_id);
+    return m.role > GUEST || row.created_by === userId;
+  }
+}
+```
+
+It applies everywhere: bootstrap rows are filtered; an incremental change to a
+row that *enters* visibility (say, the user gets assigned) arrives as a full-row
+upsert (the client may lack the base row); one that *leaves* arrives as a delete
+(the client evicts it); and writes obey "can't see → can't touch" — a patch or
+delete of an invisible row is rejected.
+
+**`serverStamp`** merges server-minted fields into every insert (client push
+*and* `serverWriter`) — the pattern for atomic sequence numbers like `PROJ-123`:
+
+```ts
+serverStamp: {
+  issues: async (ctx, { value }) => ({
+    sequence_id: await nextCounter(ctx, `issue_seq:${value.project_id}`)
+  })
+}
+```
+
+It runs inside the push transaction, so the counter read-modify-write is
+race-free under Convex OCC. Declare the stamped field in the table's `shape`
+(as `v.optional(...)` so clients don't supply it) and it syncs back to every
+client like any other field. A stamp may not touch the scope or id field.
 
 ## Cold start, GC, and revocation
 

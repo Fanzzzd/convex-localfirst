@@ -26,6 +26,13 @@ Snapshot bootstrap, change-log GC, derived mutation specs, serverWriter — and 
 - **`serverWriter`.** A trusted server-side write path through the change log
   for activity feeds, importers, and crons — server-originated rows sync to
   clients like any other change.
+- **Row-level visibility.** A per-table `visibility` hook filters rows *within*
+  an authorized scope (Plane-style guest rules): bootstrap rows are filtered, a
+  row entering visibility arrives as a full-row upsert, one leaving arrives as a
+  delete, and writes obey "can't see → can't touch".
+- **Server-minted fields.** A per-table `serverStamp` hook merges
+  server-computed fields into every insert (client push and `serverWriter`) —
+  atomic sequence numbers (`PROJ-123`) inside the push transaction.
 - **Membership revocation.** Pulls report `deniedScopes`; the client evicts the
   scope's rows and forgets its cursor.
 - **Cheaper reactivity.** The reactive watch subscribes with a content-free
