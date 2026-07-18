@@ -1,6 +1,6 @@
 {
   "name": "@convex-localfirst/yjs",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Yjs CRDT over the convex-localfirst append-only log: base64 codec, snapshot compaction, useCollaborativeDoc hook.",
   "license": "MIT",
   "keywords": [
