@@ -4,7 +4,6 @@ import {
   byWorkspace,
   collection,
   defineLocalFirstManifest,
-  fieldLww,
   localTable,
   many,
   manyToMany,
@@ -74,7 +73,6 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          conflict: fieldLww(),
           indexes: {}
         })
       },
@@ -104,7 +102,6 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          conflict: fieldLww(),
           indexes: {}
         })
       },
@@ -151,7 +148,6 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          conflict: fieldLww(),
           indexes: {}
         })
       },
@@ -185,7 +181,7 @@ describe("collection() client query builder", () => {
 
   it("attaches one / many / manyToMany relations from local tables", async () => {
     const ws = byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" });
-    const t = (table: string) => localTable({ table, idField: "localId", scope: ws, conflict: fieldLww(), indexes: {} });
+    const t = (table: string) => localTable({ table, idField: "localId", scope: ws, indexes: {} });
     const manifest = defineLocalFirstManifest({
       schemaVersion: 1,
       tables: { issues: t("issues"), projects: t("projects"), comments: t("comments"), labels: t("labels"), issue_labels: t("issue_labels") },
@@ -231,7 +227,7 @@ describe("collection() client query builder", () => {
 
   it("attaches a reusable relation map via withRelations() (define-once DX)", async () => {
     const ws = byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" });
-    const t = (table: string) => localTable({ table, idField: "localId", scope: ws, conflict: fieldLww(), indexes: {} });
+    const t = (table: string) => localTable({ table, idField: "localId", scope: ws, indexes: {} });
     const manifest = defineLocalFirstManifest({
       schemaVersion: 1,
       tables: { issues: t("issues"), projects: t("projects"), comments: t("comments"), labels: t("labels"), issue_labels: t("issue_labels") },

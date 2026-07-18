@@ -339,6 +339,38 @@ export class IndexedDbStore implements LocalStore {
     await transactionDone(tx);
   }
 
+  async removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void> {
+    // Serialized like every canonical write. One readwrite tx: read the table's rows
+    // and delete matches via request callbacks (no awaits inside the tx).
+    const run = this.writeChain.then(async () => {
+      const db = await this.db();
+      const tx = db.transaction(CANONICAL, "readwrite");
+      const store = tx.objectStore(CANONICAL);
+      const getReq = store.index(BY_TABLE).getAll(table);
+      getReq.onsuccess = () => {
+        for (const row of getReq.result as RowValue[]) {
+          if (row[field] === value && !keepIds?.has(row._id)) {
+            store.delete([table, row._id]);
+          }
+        }
+      };
+      await transactionDone(tx);
+      this.notify();
+    });
+    this.writeChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  async removeCursor(scopeKey: ScopeKey): Promise<void> {
+    const db = await this.db();
+    const tx = db.transaction(CURSORS, "readwrite");
+    tx.objectStore(CURSORS).delete(scopeKey);
+    await transactionDone(tx);
+  }
+
   async clear(): Promise<void> {
     // Serialize through writeChain so a logout clear cannot land BETWEEN an
     // in-flight apply's read and write and resurrect the just-cleared rows.

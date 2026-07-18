@@ -1,6 +1,6 @@
 ---
 title: Defining local-first tables
-description: The server DSL — lf.table, the query/insert/patch/remove specs, scopes, conflict policies, and indexes.
+description: The server DSL — lf.table, the query/insert/patch/remove specs, scopes, timestamps, and indexes.
 ---
 
 Local-first tables are declared with the `lf` factory from
@@ -20,13 +20,11 @@ export const todos = lf.table("todos", {
     ownerId: v.string(),
     listId: v.string(),
     text: v.string(),
-    done: v.boolean(),
-    createdAt: v.number(),
-    updatedAt: v.number()
+    done: v.boolean()
   },
   scope: lf.byUser("ownerId"),       // required
   idField: "localId",                // optional, default "localId"
-  conflict: lf.fieldLww(),           // optional, default "fieldLww"
+  timestamps: true,                  // optional: adds createdAt/updatedAt, stamped automatically
   indexes: {                         // optional
     byList: ["ownerId", "listId", "createdAt"]
   }
@@ -38,7 +36,7 @@ export const todos = lf.table("todos", {
 | `shape` | **Required.** The table's fields. Don't declare the id field here — `.table()` adds it. |
 | `scope` | **Required.** How rows are isolated and authorized — see [Scopes](#scopes). |
 | `idField` | The stable, client-generated id column. Default `"localId"`. |
-| `conflict` | Conflict policy — see [Conflict policies](#conflict-policies). |
+| `timestamps` | `true` adds `createdAt`/`updatedAt`; a tuple names them (e.g. `["created_at", "updated_at"]`). Stamped automatically on insert (both) and patch (updated). |
 | `indexes` | Named indexes (field lists) your queries read from. Added to the Convex table by `.table()`. |
 
 The returned object has the schema derivation `.table()` plus four function
@@ -183,21 +181,15 @@ logic — see [Syncing](/docs/syncing#membership).
 The same shape as `byWorkspace`, keyed by a project id. Use whichever name fits
 your domain.
 
-## Conflict policies
+## Merges
 
-Set per table via `conflict` (or globally via `defaults.conflict`):
+Merges are **last-writer-wins per field** (not configurable — there is exactly
+one policy): concurrent edits to different fields both survive; same-field
+collisions resolve by arrival order at the server.
 
-| Policy | Behavior |
-| --- | --- |
-| `lf.fieldLww()` | **Default.** Last-writer-wins per field. Concurrent edits to different fields both survive; same-field collisions resolve by arrival order at the server. |
-| `lf.timestampLww()` | Same per-field merge, but same-field collisions resolve by the op's logical timestamp (+ clientId tiebreaker) — a **newer** edit wins regardless of arrival order (the offline-first fix). Backed by per-field write clocks on the server. |
-
-Only these two are offered — both are real and server-enforced. (An option that
-silently did nothing would be a footgun, so it isn't in the type.)
-
-For convergent merges of specific fields, declare them per field instead of as a
-whole-row policy: `setFields` (array add/remove merge) and `counterFields`
-(numeric increments accumulate). Both compose with either policy above. For real
+For convergent merges of specific fields, declare them per field:
+`setFields` (array add/remove merge) and `counterFields`
+(numeric increments accumulate). Both compose with the per-field merge. For real
 collaborative editing of the *same* rich-text field (ordered lists, text), reach
 for [document mode](/docs/document-mode).
 

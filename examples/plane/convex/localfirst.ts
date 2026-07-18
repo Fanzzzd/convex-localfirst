@@ -4,7 +4,7 @@ import { createLocalFirst } from "@convex-localfirst/server";
 // not here — this factory only declares the local-first tables.
 export const lf = createLocalFirst({
   // Plane entities key on `id`; field-level LWW is the merge policy.
-  defaults: { idField: "id", conflict: "fieldLww" }
+  defaults: { idField: "id" }
 });
 
 // Two scope helpers because Plane's types name the workspace field differently per

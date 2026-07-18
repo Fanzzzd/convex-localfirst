@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexToJson, jsonToConvex } from "convex/values";
 import { byUser, byWorkspace } from "@convex-localfirst/core";
 import {
+  applyServerWrite,
   handlePull,
   handlePush,
   scopeKeyForUser,
@@ -68,10 +69,42 @@ class MemoryServerStore implements ServerStore {
     this.idmap.set(`${table}:${localId}`, serverId);
   }
 
+  rowVersions = new Map<string, { table: string; localId: string; rowKey: string; scopeKey: string; version: number }>();
+
   async appendChange(change: Omit<StoredChange, "changeId">) {
     const changeId = String(++this.seq).padStart(12, "0"); // lexicographically monotonic
     this.changes.push({ ...change, changeId });
+    this.rowVersions.set(`${change.table}:${change.localId}`, {
+      table: change.table,
+      localId: change.localId,
+      rowKey: `${change.table}:${change.localId}`,
+      scopeKey: change.scopeKey,
+      version: change.version
+    });
     return changeId;
+  }
+
+  /** Test helper simulating the component's opportunistic GC: prune this scope's
+   *  oldest changes, always keeping the newest `keepLast`. */
+  gc(scopeKey: string, keepLast = 1) {
+    const rel = this.changes.filter((c) => c.scopeKey === scopeKey);
+    const cut = new Set(rel.slice(0, Math.max(0, rel.length - keepLast)));
+    this.changes = this.changes.filter((c) => !cut.has(c));
+  }
+
+  async firstChangeId(scopeKey: string) {
+    const rel = this.changes.filter((c) => c.scopeKey === scopeKey);
+    return rel.length ? rel[0]!.changeId : null;
+  }
+  async lastChangeId(scopeKey: string) {
+    const rel = this.changes.filter((c) => c.scopeKey === scopeKey);
+    return rel.length ? rel[rel.length - 1]!.changeId : null;
+  }
+  async rowVersionsByScope(scopeKey: string, afterRowKey: string | null, limit: number) {
+    return [...this.rowVersions.values()]
+      .filter((r) => r.scopeKey === scopeKey && r.rowKey > (afterRowKey ?? ""))
+      .sort((a, b) => (a.rowKey < b.rowKey ? -1 : 1))
+      .slice(0, limit);
   }
   async changesAfter(scopeKey: string, cursor: string | null, limit: number) {
     const from = cursor ?? "";
@@ -88,14 +121,6 @@ class MemoryServerStore implements ServerStore {
     return rows.length ? rows[rows.length - 1]!.scopeKey : null;
   }
 
-  fieldClocks = new Map<string, Record<string, { ts: number; tiebreaker: string }>>();
-  async getFieldClocks(table: string, localId: string) {
-    return this.fieldClocks.get(`${table}:${localId}`) ?? {};
-  }
-  async putFieldClocks(table: string, localId: string, clocks: Record<string, { ts: number; tiebreaker: string }>) {
-    this.fieldClocks.set(`${table}:${localId}`, clocks);
-  }
-
   async isMember(userId: string, scopeValue: string, membershipTable: string) {
     // Key on the membership table too, so a read/write that checks the WRONG
     // table (a real bug) is caught here instead of silently passing.
@@ -107,16 +132,11 @@ const config: SyncConfig = {
   schemaVersion: 1,
   now: () => 1,
   tables: {
-    todos: { scope: byUser("ownerId"), idField: "localId", conflict: "fieldLww" },
+    todos: { scope: byUser("ownerId"), idField: "localId" },
     docs: {
       scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
       idField: "localId",
-      conflict: "fieldLww"
     },
-    // A timestamp-ordered LWW table: same-field collisions resolve by op recency, not arrival.
-    // It ALSO has a set field (tags) to prove delta fields are exempt from the timestamp rule
-    // (a delta-only patch needs no timestamp).
-    notes: { scope: byUser("ownerId"), idField: "localId", conflict: "timestampLww", setFields: ["tags"] }
   }
 };
 
@@ -412,8 +432,8 @@ describe("server sync — security", () => {
       schemaVersion: 1,
       now: () => 1,
       tables: {
-        docs: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }), idField: "localId", conflict: "fieldLww" },
-        secrets: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "secret_members" }), idField: "localId", conflict: "fieldLww" }
+        docs: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }), idField: "localId" },
+        secrets: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "secret_members" }), idField: "localId" }
       }
     };
     await expect(
@@ -593,16 +613,30 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       ]
     });
     const deleteChangeId = del.changes[0]?.changeId as string;
+    const insertChangeId = String(Number(deleteChangeId) - 1).padStart(12, "0");
 
-    // A fresh client (cursor null) sees the delete change (deletes ride the change log).
-    const fresh = await handlePull(store, config, {
+    // A client BEHIND the delete (cursor at the insert) sees it incrementally.
+    const behind = await handlePull(store, config, {
       userId: "user_a",
       clientId: "c2",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
+      cursors: { [scopeKeyForUser("user_a")]: insertChangeId }
+    });
+    expect(behind.changes.some((c) => c.kind === "delete" && c.localId === "t1")).toBe(true);
+
+    // A COLD client bootstraps from current rows: the deleted row simply never
+    // appears (no history replay, no delete change needed).
+    const fresh = await handlePull(store, config, {
+      userId: "user_a",
+      clientId: "c3",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
       cursors: {}
     });
-    expect(fresh.changes.some((c) => c.kind === "delete" && c.localId === "t1")).toBe(true);
+    expect(fresh.changes).toHaveLength(0);
+    expect(fresh.snapshotScopes).toContain(scopeKeyForUser("user_a"));
+    expect(fresh.cursors[scopeKeyForUser("user_a")]).toBe(deleteChangeId); // caught up
 
     // A client already past the delete does not see it again.
     const past = await handlePull(store, config, {
@@ -636,7 +670,7 @@ describe("server sync — schema guard + value codec", () => {
     expect(pulled.changes).toHaveLength(0);
   });
 
-  it("pull reports per-scope hasMore when a page hits the pull limit", async () => {
+  it("a multi-page bootstrap pages via bootstrapCursors and lands on the end cursor", async () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = { ...config, pullLimit: 2 };
     await handlePush(store, cfg, {
@@ -653,12 +687,100 @@ describe("server sync — schema guard + value codec", () => {
     });
     expect(first.changes).toHaveLength(2);
     expect(first.hasMore[sk]).toBe(true);
+    expect(first.snapshotScopes).toContain(sk); // first page resets
+    expect(first.bootstrapCursors[sk]).toBeDefined();
+    const second = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: first.cursors[sk] || null },
+      bootstrapCursors: first.bootstrapCursors
+    });
+    expect(second.changes).toHaveLength(1);
+    expect(second.hasMore[sk]).toBe(false);
+    expect(second.snapshotScopes).toContain(sk); // every page is marked a snapshot page
+    expect(second.cursors[sk]).toBe("000000000003"); // caught up to the log
+  });
+
+  it("pull reports per-scope hasMore when an incremental page hits the pull limit", async () => {
+    const store = new MemoryServerStore();
+    const cfg: SyncConfig = { ...config, pullLimit: 2 };
+    await handlePush(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [
+        insert("t1", { listId: "i", text: "a" }),
+        insert("t2", { listId: "i", text: "b" }),
+        insert("t3", { listId: "i", text: "c" })
+      ]
+    });
+    const sk = scopeKeyForUser("user_a");
+    // Warm client one change behind the head: cursor at the first insert.
+    const first = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000001" }
+    });
+    expect(first.changes).toHaveLength(2);
+    expect(first.hasMore[sk]).toBe(true);
     const second = await handlePull(store, cfg, {
       userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
       cursors: { [sk]: first.cursors[sk] }
     });
-    expect(second.changes).toHaveLength(1);
+    expect(second.changes).toHaveLength(0);
     expect(second.hasMore[sk]).toBe(false);
+  });
+
+  it("a cursor behind the GC horizon is reset and re-bootstrapped from current rows", async () => {
+    const store = new MemoryServerStore();
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [
+        insert("t1", { text: "a" }),
+        insert("t2", { text: "b" })
+      ]
+    });
+    // Delete t1, then GC everything except the newest change: the delete is pruned.
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [
+        { opId: "del1", clientId: "c1", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId: "t1" },
+        insert("t3", { text: "c" })
+      ]
+    });
+    const sk = scopeKeyForUser("user_a");
+    store.gc(sk, 1); // only the newest change (t3's insert) survives
+
+    // A client whose cursor predates the horizon (it saw only t1+t2) must NOT sync
+    // incrementally — it would miss the pruned delete and keep t1 as a ghost.
+    const res = await handlePull(store, config, {
+      userId: "user_a", clientId: "c2", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000002" }
+    });
+    expect(res.snapshotScopes).toContain(sk);
+    const ids = res.changes.map((c) => c.localId).sort();
+    expect(ids).toEqual(["t2", "t3"]); // t1 is gone; the reset evicts it client-side
+    expect(res.cursors[sk]).toBe("000000000004");
+
+    // A client exactly at the last retained change stays incremental (no reset).
+    const warm = await handlePull(store, config, {
+      userId: "user_a", clientId: "c3", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000004" }
+    });
+    expect(warm.snapshotScopes).toHaveLength(0);
+    expect(warm.changes).toHaveLength(0);
+  });
+
+  it("bootstrapping an empty scope completes with the zero cursor (no re-bootstrap loop)", async () => {
+    const store = new MemoryServerStore();
+    const sk = scopeKeyForUser("user_a");
+    const first = await handlePull(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+    });
+    expect(first.changes).toHaveLength(0);
+    expect(first.cursors[sk]).toBe("000000000000");
+    const second = await handlePull(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: first.cursors[sk] }
+    });
+    expect(second.snapshotScopes).toHaveLength(0); // incremental from the zero cursor
+    expect(second.changes).toHaveLength(0);
   });
 
   it("round-trips bigint/bytes row values losslessly via the injected Convex codec", async () => {
@@ -894,101 +1016,162 @@ describe("server sync — counter-field merge", () => {
   });
 });
 
-describe("server sync — timestamp-ordered LWW (conflict: timestampLww)", () => {
-  // Helpers for the byUser "notes" table (conflict: "timestampLww").
-  const noteInsert = (localId: string, value: Record<string, unknown>) => ({
-    opId: `i_${localId}`, clientId: "c0", schemaVersion: 1, functionName: "notes:create",
-    table: "notes", kind: "insert" as const, localId, value
-  });
-  const notePatch = (opId: string, clientId: string, localId: string, patch: Record<string, unknown>, timestamp: number) => ({
-    opId, clientId, schemaVersion: 1, functionName: "notes:update",
-    table: "notes", kind: "patch" as const, localId, patch, timestamp
-  });
-  const rowOf = async (store: MemoryServerStore, localId: string) => {
-    const serverId = await store.getServerId("notes", localId);
-    return serverId ? await store.getRow("notes", serverId) : null;
+
+describe("server sync — server-authored writes (applyServerWrite)", () => {
+  const wsConfig: SyncConfig = {
+    schemaVersion: 1,
+    now: () => 42,
+    tables: {
+      activities: {
+        scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
+        idField: "localId",
+        timestamps: { createdAt: "created_at", updatedAt: "updated_at" }
+      }
+    }
   };
+  let n = 0;
+  const nextId = () => `sv_${++n}`;
 
-  it("a NEWER edit wins even when it arrives FIRST and an OLDER edit arrives later (the offline-first fix)", async () => {
+  it("insert lands in rows + id map + change log with stamped id/timestamps", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n1", { title: "v0" })] });
-
-    // Edit A made at ts=10 (later) reaches the server FIRST.
-    const a = await handlePush(store, config, { userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [notePatch("pA", "cA", "n1", { title: "A" }, 10)] });
-    expect(a.changes[0]?.patch?.title).toBe("A");
-    expect((await rowOf(store, "n1"))?.title).toBe("A");
-
-    // Edit B made at ts=5 (earlier, e.g. offline) reaches the server LATER. Arrival-order LWW
-    // would let it clobber A; timestamp-LWW DROPS it (older), keeping A.
-    const b = await handlePush(store, config, { userId: "user_a", clientId: "cB", schemaVersion: 1, mutations: [notePatch("pB", "cB", "n1", { title: "B" }, 5)] });
-    expect(b.rejected).toHaveLength(0); // accepted op, but its stale field-write is dropped
-    expect(b.changes[0]?.patch?.title).toBeUndefined(); // B's title did NOT win
-    expect((await rowOf(store, "n1"))?.title).toBe("A"); // newer edit survived despite arriving earlier
+    const res = await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
+      nextId
+    );
+    expect(res.serverId).toBeDefined();
+    const row = await store.getRow("activities", res.serverId!);
+    expect(row).toMatchObject({ wsId: "w1", verb: "created", localId: res.localId, created_at: 42, updated_at: 42 });
+    expect(store.changes).toHaveLength(1);
+    expect(store.changes[0]).toMatchObject({ scopeKey: "byWorkspace:w1", kind: "insert", localId: res.localId, version: 1 });
   });
 
-  it("preserves field-level merge: concurrent edits to DIFFERENT fields both apply", async () => {
+  it("patch stamps updated_at, appends a v2 change, and refuses scope/id rewrites", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n2", { title: "v0", body: "b0" })] });
-    await handlePush(store, config, { userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [notePatch("pA", "cA", "n2", { title: "A" }, 10)] });
-    await handlePush(store, config, { userId: "user_a", clientId: "cB", schemaVersion: 1, mutations: [notePatch("pB", "cB", "n2", { body: "B" }, 8)] });
-    const row = await rowOf(store, "n2");
-    expect(row?.title).toBe("A");
-    expect(row?.body).toBe("B"); // different field, lower ts, still applies (no collision)
+    const { localId } = await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
+      nextId
+    );
+    await applyServerWrite(store, wsConfig, { kind: "patch", table: "activities", localId, patch: { verb: "edited" } }, nextId);
+    expect(store.changes[1]).toMatchObject({ kind: "patch", version: 2, patch: { verb: "edited", updated_at: 42 } });
+    await expect(
+      applyServerWrite(store, wsConfig, { kind: "patch", table: "activities", localId, patch: { wsId: "w2" } }, nextId)
+    ).rejects.toThrow(/scope field/);
   });
 
-  it("breaks an equal-timestamp tie deterministically by clientId (higher wins, order-independent)", async () => {
+  it("delete appends a delete change; deleting again is a commuting no-op", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n3", { title: "v0" })] });
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [notePatch("p1", "c1", "n3", { title: "from-c1" }, 7)] });
-    // Same ts, clientId "c2" > "c1" → wins.
-    await handlePush(store, config, { userId: "user_a", clientId: "c2", schemaVersion: 1, mutations: [notePatch("p2", "c2", "n3", { title: "from-c2" }, 7)] });
-    expect((await rowOf(store, "n3"))?.title).toBe("from-c2");
-    // Same ts, clientId "c0" < "c2" → loses (stays from-c2).
-    await handlePush(store, config, { userId: "user_a", clientId: "c0b", schemaVersion: 1, mutations: [notePatch("p3", "c0", "n3", { title: "from-c0" }, 7)] });
-    expect((await rowOf(store, "n3"))?.title).toBe("from-c2");
+    const { localId } = await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
+      nextId
+    );
+    await applyServerWrite(store, wsConfig, { kind: "delete", table: "activities", localId }, nextId);
+    expect(store.changes[1]).toMatchObject({ kind: "delete", version: 2, localId });
+    const again = await applyServerWrite(store, wsConfig, { kind: "delete", table: "activities", localId }, nextId);
+    expect(again.serverId).toBeUndefined();
+    expect(store.changes).toHaveLength(2); // no extra change appended
   });
+});
 
-  it("REJECTS a plain-field patch with no timestamp (fail closed — applying it by arrival order would desync the clock)", async () => {
+describe("server sync — bootstrap hardening", () => {
+  it("bootstrap projects rows to syncedFields — server-only extra columns never leak", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n4", { title: "v0" })] });
-    // A scalar (plain) field-write to a timestampLww table with NO timestamp must be refused
-    // loudly, not silently applied by arrival order (which would leave the clock stale → a later
-    // legitimate timestamped write could be wrongly dropped — the mixed-version desync bug).
-    const res = await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1,
-      mutations: [{ opId: "pA", clientId: "cA", schemaVersion: 1, functionName: "notes:update", table: "notes", kind: "patch", localId: "n4", patch: { title: "A" } }]
+    const cfg: SyncConfig = {
+      ...config,
+      tables: { todos: { scope: byUser("ownerId"), idField: "localId", syncedFields: ["ownerId", "text", "localId"] } }
+    };
+    await handlePush(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [insert("t1", { text: "x" })]
     });
-    expect(res.rejected).toHaveLength(1);
-    expect(res.rejected[0]?.message).toMatch(/without a timestamp/);
-    expect((await rowOf(store, "n4"))?.title).toBe("v0"); // unchanged — the op was refused, not half-applied
+    // Simulate a server-only `extra` column written by ordinary Convex code.
+    const serverId = await store.getServerId("todos", "t1");
+    await store.patchRow("todos", serverId!, { internalFlag: "moderation-hold" });
+
+    const res = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c2", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+    });
+    expect(res.changes).toHaveLength(1);
+    expect(res.changes[0]!.data).toEqual({ ownerId: "user_a", text: "x", localId: "t1" });
+    expect("internalFlag" in res.changes[0]!.data!).toBe(false);
   });
 
-  it("ACCEPTS a delta-ONLY patch with no timestamp (convergent set/counter fields are exempt from the timestamp rule)", async () => {
+  it("the final bootstrap page reports hasMore when changes landed during the bootstrap", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n6", { title: "v0", tags: ["base"] })] });
-    // `tags` is a setField → a patch touching ONLY it carries a self-describing delta, needs no
-    // timestamp, and converges by design. It must NOT be rejected for lacking a timestamp.
-    const res = await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1,
-      mutations: [{ opId: "pB", clientId: "cA", schemaVersion: 1, functionName: "notes:update", table: "notes", kind: "patch", localId: "n6", patch: { tags: { __lfSet: { add: ["x"], remove: [] } } } }]
+    const cfg: SyncConfig = { ...config, pullLimit: 1 };
+    await handlePush(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
     });
-    expect(res.rejected).toHaveLength(0);
-    const tags = (await rowOf(store, "n6"))?.tags as string[];
-    expect(tags.sort()).toEqual(["base", "x"]); // delta merged, no timestamp needed
+    const sk = scopeKeyForUser("user_a");
+    const first = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+    });
+    expect(first.bootstrapCursors[sk]).toBeDefined();
+    expect(sk in first.cursors).toBe(false); // no cursor persisted mid-bootstrap
+
+    // A concurrent write lands while the bootstrap is paging.
+    await handlePush(store, cfg, {
+      userId: "user_a", clientId: "cX", schemaVersion: 1,
+      mutations: [insert("t3", { text: "c" })]
+    });
+
+    // Drain the remaining bootstrap pages to completion.
+    let boot = first.bootstrapCursors;
+    let res = first;
+    for (let i = 0; i < 5 && boot[sk]; i++) {
+      res = await handlePull(store, cfg, {
+        userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+        cursors: {}, bootstrapCursors: boot
+      });
+      boot = res.bootstrapCursors;
+    }
+    // Final page: cursor lands on the bootstrap's END cursor (t2's change), and
+    // hasMore says the mid-bootstrap append (t3) still owes an incremental pass.
+    expect(res.cursors[sk]).toBe("000000000002");
+    expect(res.hasMore[sk]).toBe(true);
+    const incr = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: res.cursors[sk] }
+    });
+    expect(incr.changes.map((c) => c.localId)).toEqual(["t3"]);
   });
 
-  it("rejects LOUDLY when a timestampLww table gets a timestamped op but the store has no field-clock methods (no silent arrival-order degrade)", async () => {
+  it("a doorbell pull never takes the bootstrap path (cheap reactive watch)", async () => {
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c0", schemaVersion: 1, mutations: [noteInsert("n5", { title: "v0" })] });
-    // Simulate a custom ServerStore that declared timestampLww but never implemented clocks.
-    (store as unknown as { getFieldClocks?: unknown }).getFieldClocks = undefined;
-    (store as unknown as { putFieldClocks?: unknown }).putFieldClocks = undefined;
-    const res = await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1,
-      mutations: [notePatch("pA", "cA", "n5", { title: "A" }, 10)]
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
     });
-    expect(res.rejected).toHaveLength(1);
-    expect(res.rejected[0]?.message).toMatch(/getFieldClocks\/putFieldClocks/);
-    expect((await rowOf(store, "n5"))?.title).toBe("v0"); // unchanged — the op was refused, not half-applied
+    const res = await handlePull(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      cursors: {}, doorbell: true
+    });
+    expect(res.snapshotScopes).toHaveLength(0);
+    expect(res.changes.length).toBeLessThanOrEqual(1); // one change per scope, max
+  });
+});
+
+describe("server sync — membership revocation", () => {
+  it("a denied scope is reported so the client evicts it", async () => {
+    const store = new MemoryServerStore();
+    store.members.add("user_a:ws1:ws_members");
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [{ opId: "d1", clientId: "c1", schemaVersion: 1, functionName: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "hello" } }]
+    });
+    // Revoke and pull: no changes, and the scope is called out as denied.
+    store.members.delete("user_a:ws1:ws_members");
+    const res = await handlePull(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    expect(res.changes).toHaveLength(0);
+    expect(res.deniedScopes).toEqual(["byWorkspace:ws1"]);
   });
 });

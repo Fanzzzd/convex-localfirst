@@ -43,24 +43,29 @@ export default defineSchema({
     .index("by_scope_change", ["scopeKey", "changeId"])
     .index("by_table_local", ["table", "localId"]),
 
+  // Per-row version authority + snapshot-bootstrap driver. One row per (table,
+  // localId) EVER seen, upserted on every change append; survives change-log GC
+  // (and row deletion) so versions stay monotonic forever. rowKey = `table:localId`
+  // gives bootstrap a single-column pagination cursor.
+  rowVersions: defineTable({
+    table: v.string(),
+    localId: v.string(),
+    rowKey: v.string(),
+    scopeKey: v.string(),
+    version: v.number(),
+    // Denormalized app-row id so snapshot bootstrap loads rows with one ctx.db.get
+    // instead of a per-row id-map lookup.
+    serverId: v.optional(v.string())
+  })
+    .index("by_table_local", ["table", "localId"])
+    .index("by_scope_row", ["scopeKey", "rowKey"]),
+
   idMaps: defineTable({
     userId: v.string(), // creator, kept for audit only — NOT part of the lookup key
     table: v.string(),
     localId: v.string(),
     serverId: v.string(),
     createdAt: v.number()
-  }).index("by_table_local", ["table", "localId"]),
-
-  // Per-field write clocks for `timestampLww` tables: clocksJson is a JSON map
-  // field -> { ts, tiebreaker } so a NEWER field-write wins regardless of arrival order.
-  // Keyed by (table, localId) like idMaps. The push mutation read-modify-writes a row's
-  // clocks inside its own transaction, so Convex OCC serializes concurrent writers to the
-  // same row — no clock update is lost (same guarantee as the per-row version RMW).
-  fieldClocks: defineTable({
-    table: v.string(),
-    localId: v.string(),
-    clocksJson: v.string(),
-    updatedAt: v.number()
   }).index("by_table_local", ["table", "localId"]),
 
   // Ephemeral presence: who is in a scope right now (avatars, cursors, typing).

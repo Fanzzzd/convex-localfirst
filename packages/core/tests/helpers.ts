@@ -2,7 +2,6 @@ import {
   MemoryLocalStore,
   byUser,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localQuery,
   localTable,
@@ -22,7 +21,6 @@ export function createTodoManifest(): LocalFirstManifest {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        conflict: fieldLww(),
         indexes: { byList: ["ownerId", "listId", "createdAt"] }
       })
     },
@@ -92,16 +90,18 @@ export function createHarness(
     retry?: { retries: number; baseDelayMs: number };
     sleep?: (ms: number) => Promise<void>;
     clock?: () => number;
+    manifest?: LocalFirstManifest;
+    userId?: string;
   } = {}
 ): Harness {
   const store = options.store ?? new MemoryLocalStore();
   let now = 1000;
   let ids = 0;
   const engine = new LocalFirstEngine({
-    manifest: createTodoManifest(),
+    manifest: options.manifest ?? createTodoManifest(),
     store,
     clientId: "client_test",
-    userId: "user_a",
+    userId: options.userId ?? "user_a",
     transport: options.transport,
     nameOf: (reference) => String(reference),
     idFactory: () => `todos_local_${++ids}`,

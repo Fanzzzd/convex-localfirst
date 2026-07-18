@@ -3,7 +3,6 @@ import {
   MemoryLocalStore,
   byUser,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localTable,
   type SyncTransport
@@ -19,7 +18,6 @@ function manifest() {
         table: "issues",
         idField: "localId",
         scope: byUser("ownerId"),
-        conflict: fieldLww(),
         indexes: { byOwner: ["ownerId", "createdAt"] },
         setFields: ["labels"],
         counterFields: ["votes"]

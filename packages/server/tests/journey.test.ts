@@ -4,7 +4,6 @@ import {
   byUser,
   createConvexTransport,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localQuery,
   localTable,
@@ -99,7 +98,7 @@ class MemoryServerStore implements ServerStore {
 const config: SyncConfig = {
   schemaVersion: 1,
   now: () => 1,
-  tables: { todos: { scope: byUser("ownerId"), idField: "localId", conflict: "fieldLww" } }
+  tables: { todos: { scope: byUser("ownerId"), idField: "localId" } }
 };
 
 type Todo = { localId: string; listId: string; text: string; done: boolean };
@@ -108,8 +107,8 @@ function manifest() {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), conflict: fieldLww(), indexes: {} }),
-      drafts: localTable({ table: "drafts", idField: "localId", scope: byUser("ownerId"), conflict: fieldLww(), indexes: {} })
+      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), indexes: {} }),
+      drafts: localTable({ table: "drafts", idField: "localId", scope: byUser("ownerId"), indexes: {} })
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly RowValue[]>({

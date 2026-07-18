@@ -9,7 +9,6 @@
  */
 
 import type * as changes from "../changes.js";
-import type * as fieldClocks from "../fieldClocks.js";
 import type * as idMaps from "../idMaps.js";
 import type * as ops from "../ops.js";
 import type * as presence from "../presence.js";
@@ -23,7 +22,6 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   changes: typeof changes;
-  fieldClocks: typeof fieldClocks;
   idMaps: typeof idMaps;
   ops: typeof ops;
   presence: typeof presence;

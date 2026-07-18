@@ -3,10 +3,10 @@ title: Document mode (Yjs CRDT)
 description: Collaborative rich text and ordered structures over the local-first log, via @convex-localfirst/yjs.
 ---
 
-Per-field [`fieldLww`](/docs/defining-tables#conflict-policies) handles most
-optimistic editing, and the opt-in convergent merges — `setFields`,
-`counterFields`, and [`timestampLww`](/docs/defining-tables#conflict-policies) —
-cover concurrent edits to array, counter, and scalar fields without clobbering.
+Field-level LWW ([merges](/docs/defining-tables#merges)) handles most
+optimistic editing, and the opt-in convergent merges — `setFields` and
+`counterFields` — cover concurrent edits to array and counter fields without
+clobbering.
 
 What field-level merge can't do is **concurrent edits to the same rich text or
 ordered list** (two people typing in one paragraph). For that, reach for a real

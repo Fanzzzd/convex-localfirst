@@ -49,9 +49,8 @@ describe("createConvexTransport", () => {
 
     // Op was serialized with localId (not id).
     expect(mutation).toHaveBeenCalledWith("ref:push", expect.objectContaining({ userId: "user_a", schemaVersion: 1 }));
-    const sent = mutation.mock.calls[0][1] as { mutations: Array<{ localId: string; value: unknown; timestamp?: number }> };
+    const sent = mutation.mock.calls[0][1] as { mutations: Array<{ localId: string; value: unknown }> };
     expect(sent.mutations[0]).toMatchObject({ localId: "t1", value: { text: "hi" } });
-    expect(sent.mutations[0].timestamp).toBe(1); // op.createdAt forwarded as the wire timestamp (for timestampLww)
 
     // Server change mapped to client ServerChange (localId -> id, data -> value).
     expect(res.changes[0]).toMatchObject({ id: "t1", value: { text: "hi", ownerId: "user_a" }, changeId: "000000000001" });

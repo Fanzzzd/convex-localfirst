@@ -6,7 +6,6 @@ import {
   computeSetDelta,
   isCounterDelta,
   isSetDelta,
-  lwwWins,
   mergePatch
 } from "../src/setMerge.js";
 
@@ -105,32 +104,5 @@ describe("counter-field merge primitives", () => {
       votes: { __lfCounter: 2 } // counter field → add
     });
     expect(patched).toEqual({ _id: "1", title: "new", votes: 5 });
-  });
-});
-
-describe("timestamp-LWW register primitive (lwwWins)", () => {
-  it("absent current clock → incoming always wins (first write)", () => {
-    expect(lwwWins({ ts: 1, tiebreaker: "c1" }, undefined)).toBe(true);
-  });
-
-  it("higher timestamp wins regardless of arrival; lower loses (the offline-first fix)", () => {
-    expect(lwwWins({ ts: 10, tiebreaker: "cX" }, { ts: 5, tiebreaker: "cY" })).toBe(true); // newer wins
-    expect(lwwWins({ ts: 5, tiebreaker: "cX" }, { ts: 10, tiebreaker: "cY" })).toBe(false); // older loses even if it arrives later
-  });
-
-  it("equal timestamps break by tiebreaker (deterministic, order-independent)", () => {
-    expect(lwwWins({ ts: 7, tiebreaker: "c2" }, { ts: 7, tiebreaker: "c1" })).toBe(true); // c2 > c1
-    expect(lwwWins({ ts: 7, tiebreaker: "c1" }, { ts: 7, tiebreaker: "c2" })).toBe(false);
-    expect(lwwWins({ ts: 7, tiebreaker: "c1" }, { ts: 7, tiebreaker: "c1" })).toBe(false); // same write never re-wins (idempotent)
-  });
-
-  it("CONVERGES: the same winner emerges no matter which order two writes resolve", () => {
-    const a = { ts: 4, tiebreaker: "cA" };
-    const b = { ts: 9, tiebreaker: "cB" };
-    // start empty; apply a then b → b wins; apply b then a → b still wins.
-    const afterAB = lwwWins(b, lwwWins(a, undefined) ? a : undefined) ? b : a;
-    const afterBA = lwwWins(a, lwwWins(b, undefined) ? b : undefined) ? a : b;
-    expect(afterAB).toBe(b);
-    expect(afterBA).toBe(b);
   });
 });

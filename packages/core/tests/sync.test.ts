@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { byWorkspace, localTable } from "../src";
 import type { PullResponse, PushResponse, SyncScope, SyncTransport } from "../src";
-import { acceptAllTransport, createHarness, offlineTransport, serverChange } from "./helpers";
+import { acceptAllTransport, createHarness, createTodoManifest, offlineTransport, serverChange } from "./helpers";
 
 const scope = (key: string): SyncScope => ({ kind: "byUser", key });
 
@@ -281,5 +282,101 @@ describe("sync protocol", () => {
     const { engine } = createHarness({ transport, retry: { retries: 2, baseDelayMs: 1 }, sleep: async () => {} });
     await expect(engine.syncOnce([scope("user:user_a")])).rejects.toThrow("always down");
     expect(engine.getStatus().lastError).toContain("always down");
+  });
+});
+
+describe("snapshot bootstrap", () => {
+  it("evicts rows the completed snapshot did not contain (ghosts), keeping delivered ones", async () => {
+    const sk = "u:user_a";
+    const transport: SyncTransport = {
+      push: acceptAllTransport().push,
+      async pull() {
+        return {
+          // Single-page bootstrap: the server snapshot has only t2 — t1 was
+          // deleted while this client was behind the GC horizon.
+          changes: [serverChange({ id: "t2", kind: "insert", version: 5, scopeKey: sk, value: { ownerId: "user_a", listId: "i", text: "kept" } })],
+          cursors: { [sk]: "000000000009" },
+          hasMore: { [sk]: false },
+          snapshotScopes: [sk],
+          serverTime: 1
+        } satisfies PullResponse;
+      }
+    };
+    const { engine, store } = createHarness({ transport, userId: "user_a" });
+    // Ghost: a canonical row whose delete change was GC'd server-side.
+    await store.applyServerChange(serverChange({ id: "t1", kind: "insert", version: 1, value: { ownerId: "user_a", listId: "i", text: "ghost" } }));
+
+    await engine.syncOnce([{ kind: "byUser", key: sk }]);
+    const rows = await store.getRows("todos");
+    expect(rows.map((r) => r._id)).toEqual(["t2"]);
+    expect(await store.getCursor(sk)).toBe("000000000009");
+  });
+
+  it("an interrupted multi-page bootstrap evicts nothing (rows stay whole)", async () => {
+    const sk = "u:user_a";
+    const transport: SyncTransport = {
+      push: acceptAllTransport().push,
+      async pull() {
+        // Always mid-bootstrap: continuation token, no cursor, hasMore — but the
+        // token never advances, so the drain gives up (partial).
+        return {
+          changes: [serverChange({ id: "t2", kind: "insert", version: 5, scopeKey: sk, value: { ownerId: "user_a", listId: "i", text: "page1" } })],
+          cursors: {},
+          hasMore: { [sk]: true },
+          snapshotScopes: [sk],
+          bootstrapCursors: { [sk]: "tok" },
+          serverTime: 1
+        } satisfies PullResponse;
+      }
+    };
+    const { engine, store } = createHarness({ transport, userId: "user_a" });
+    await store.applyServerChange(serverChange({ id: "t1", kind: "insert", version: 1, value: { ownerId: "user_a", listId: "i", text: "old" } }));
+
+    await engine.syncOnce([{ kind: "byUser", key: sk }]);
+    // t1 must NOT be evicted: the bootstrap never completed. t2 (page 1) applied.
+    const ids = (await store.getRows("todos")).map((r) => r._id).sort();
+    expect(ids).toEqual(["t1", "t2"]);
+    expect(await store.getCursor(sk)).toBeNull(); // cursor untouched mid-bootstrap
+    expect(engine.getStatus().partial).toBe(true);
+  });
+});
+
+describe("membership revocation", () => {
+  it("evicts a denied scope's rows and forgets its cursor", async () => {
+    const sk = "byWorkspace:w1";
+    const transport: SyncTransport = {
+      push: acceptAllTransport().push,
+      async pull() {
+        return {
+          changes: [],
+          cursors: {},
+          hasMore: {},
+          deniedScopes: [sk],
+          serverTime: 1
+        } satisfies PullResponse;
+      }
+    };
+    const manifest = createTodoManifest();
+    const wsManifest = {
+      ...manifest,
+      tables: {
+        ...manifest.tables,
+        issues: localTable({
+          table: "issues",
+          idField: "localId",
+          scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
+          indexes: {}
+        })
+      }
+    };
+    const { engine, store } = createHarness({ transport, userId: "user_a", manifest: wsManifest });
+    await store.applyServerChange(
+      serverChange({ table: "issues", id: "i1", kind: "insert", version: 1, value: { workspaceId: "w1", title: "secret" } })
+    );
+    await store.setCursor(sk, "000000000007");
+
+    await engine.syncOnce([{ kind: "byWorkspace", key: sk }]);
+    expect(await store.getRows("issues")).toHaveLength(0);
+    expect(await store.getCursor(sk)).toBeNull();
   });
 });

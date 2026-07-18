@@ -7,7 +7,6 @@ import {
   localQuery,
   localTable,
   byUser,
-  fieldLww,
   type SyncTransport
 } from "../src";
 import { LocalFirstEngine } from "../src/internal";
@@ -20,7 +19,6 @@ function createManifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        conflict: fieldLww(),
         indexes: {
           byList: ["ownerId", "listId", "createdAt"]
         }

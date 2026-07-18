@@ -4,18 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "generate": "node --import tsx ../../packages/cli/dist/index.js codegen",
     "test": "vitest run --passWithNoTests",
-    "test:e2e": "playwright test",
     "mu:whoami": "node multiuser-harness/whoami-probe.mjs",
     "mu:seed": "node multiuser-harness/seed.mjs",
     "mu:proof": "node multiuser-harness/multiuser-proof.mjs",
     "mu:setmerge": "node multiuser-harness/setmerge-proof.mjs",
-    "mu:timestamplww": "node multiuser-harness/timestamplww-proof.mjs",
-    "mu:all": "node multiuser-harness/whoami-probe.mjs && node multiuser-harness/seed.mjs && node multiuser-harness/multiuser-proof.mjs && node multiuser-harness/setmerge-proof.mjs && node multiuser-harness/timestamplww-proof.mjs",
+    "mu:all": "node multiuser-harness/whoami-probe.mjs && node multiuser-harness/seed.mjs && node multiuser-harness/multiuser-proof.mjs && node multiuser-harness/setmerge-proof.mjs",
     "backend": "./local-backend/serve.sh",
     "backend:deploy": "./local-backend/deploy.sh",
     "inc:proof": "node local-backend/incremental-proof.mjs"
@@ -23,26 +18,11 @@
   "dependencies": {
     "@convex-localfirst/component": "workspace:*",
     "@convex-localfirst/core": "workspace:*",
-    "@convex-localfirst/react": "workspace:*",
     "@convex-localfirst/server": "workspace:*",
-    "@tailwindcss/vite": "^4.3.1",
-    "@vitejs/plugin-react": "latest",
-    "clsx": "^2.1.1",
-    "convex": ">=1.0.0",
-    "lucide-react": "^1.21.0",
-    "react": "latest",
-    "react-dom": "latest",
-    "react-router-dom": "^7.1.0",
-    "tailwindcss": "^4.3.1",
-    "tslib": "^2.8.1"
+    "convex": ">=1.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.0",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vite": "latest",
     "vitest": "latest"
   }
 }

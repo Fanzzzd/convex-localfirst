@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { v } from "convex/values";
+import { collectManifest } from "@convex-localfirst/core";
 import { createLocalFirst } from "../src/index";
 
 // G7: the deployed function for a local-first table must NOT return
@@ -65,6 +66,56 @@ describe("local-first DSL handlers", () => {
     ] as const) {
       await expect(handlerOf(fn)({}, {}), name).rejects.toThrow(/not directly callable/);
     }
+  });
+});
+
+describe("derived specs + auto timestamps", () => {
+  const todos = lf.table("todos", {
+    shape: { ownerId: v.string(), text: v.string(), done: v.boolean() },
+    scope: lf.byUser("ownerId"),
+    timestamps: true,
+    indexes: { byOwner: ["ownerId", "createdAt"] }
+  });
+  const create = todos.insert();
+  const update = todos.patch();
+  const del = todos.remove();
+  const mutationCtx = (now: number) => ({ now, clientId: "c1", userId: "u1", localId: () => "t1" });
+
+  it("table() adds the timestamp columns (true → createdAt/updatedAt; tuple → named)", () => {
+    const exported = (todos.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }).export();
+    expect(Object.keys(exported.documentType.value).sort()).toEqual(["createdAt", "done", "localId", "ownerId", "text", "updatedAt"]);
+
+    const snake = lf.table("snake", {
+      shape: { ownerId: v.string() },
+      scope: lf.byUser("ownerId"),
+      timestamps: ["created_at", "updated_at"]
+    });
+    const snakeExport = (snake.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }).export();
+    expect(Object.keys(snakeExport.documentType.value).sort()).toEqual(["created_at", "localId", "ownerId", "updated_at"]);
+  });
+
+  it("derived insert args = shape minus owner + timestamps; derived patch args = id + optionalized shape", () => {
+    const insertArgs = (create as { __convexLocalFirst?: { spec: { args: Record<string, unknown> } } }).__convexLocalFirst!.spec.args;
+    expect(Object.keys(insertArgs).sort()).toEqual(["done", "text"]);
+    const patchArgs = (update as { __convexLocalFirst?: { spec: { args: Record<string, { isOptional: string }> } } }).__convexLocalFirst!.spec.args;
+    expect(Object.keys(patchArgs).sort()).toEqual(["done", "id", "text"]);
+    expect(patchArgs.text!.isOptional).toBe("optional"); // shape fields optionalized
+    expect(patchArgs.id!.isOptional).toBe("required"); // the id itself stays required
+  });
+
+  it("derived insert stamps owner + timestamps; derived patch forwards present args + stamps updatedAt", () => {
+    const manifest = collectManifest({ todos: { todos, create, update, del } });
+    const insertPlan = manifest.mutations["todos:create"]!.plan({ text: "hi", done: false }, mutationCtx(111));
+    expect(insertPlan).toEqual({
+      kind: "insert",
+      table: "todos",
+      id: "t1",
+      value: { text: "hi", done: false, ownerId: "u1", createdAt: 111, updatedAt: 111 }
+    });
+    const patchPlan = manifest.mutations["todos:update"]!.plan({ id: "t1", text: "yo" }, mutationCtx(222));
+    expect(patchPlan).toEqual({ kind: "patch", table: "todos", id: "t1", patch: { text: "yo", updatedAt: 222 } });
+    const removePlan = manifest.mutations["todos:del"]!.plan({ id: "t1" }, mutationCtx(333));
+    expect(removePlan).toEqual({ kind: "delete", table: "todos", id: "t1" });
   });
 });
 

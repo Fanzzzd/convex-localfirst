@@ -89,10 +89,7 @@ export function createConvexTransport(options: {
           kind: op.kind,
           localId: op.id,
           value: op.value,
-          patch: op.patch,
-          // The op's logical timestamp — consumed only by `timestampLww` tables on the server
-          // to resolve same-field collisions by recency. Harmless extra field otherwise.
-          timestamp: op.createdAt
+          patch: op.patch
         }))
       })) as Omit<PushResponse, "changes"> & { changes: ServerStoredChange[] };
       return { ...response, changes: response.changes.map(toClientChange) };
@@ -103,7 +100,10 @@ export function createConvexTransport(options: {
         userId: options.userId,
         schemaVersion: request.schemaVersion,
         scopes: request.scopes.map((scope) => ({ kind: scope.kind, value: scopeValue(scope.key) })),
-        cursors: request.cursors
+        cursors: request.cursors,
+        ...(request.bootstrapCursors && Object.keys(request.bootstrapCursors).length > 0
+          ? { bootstrapCursors: request.bootstrapCursors }
+          : {})
       })) as Omit<PullResponse, "changes"> & { changes: ServerStoredChange[] };
       return { ...response, changes: response.changes.map(toClientChange) };
     },
@@ -120,7 +120,11 @@ export function createConvexTransport(options: {
             userId: options.userId,
             schemaVersion: request.schemaVersion,
             scopes: request.scopes.map((scope) => ({ kind: scope.kind, value: scopeValue(scope.key) })),
-            cursors: request.cursors
+            cursors: request.cursors,
+            // Content-free doorbell: the server skips the bootstrap path and reads
+            // one change per scope — enough to invalidate on new appends, cheap to
+            // re-execute on every one.
+            doorbell: true
           });
           return watch.onUpdate(() => onChange());
         }

@@ -1,8 +1,8 @@
 import { defineTable, mutationGeneric as mutation, queryGeneric as query } from "convex/server";
 import type { RegisteredMutation, RegisteredQuery, TableDefinition } from "convex/server";
 import { v } from "convex/values";
-import type { ObjectType, PropertyValidators, VString } from "convex/values";
-import type { ConflictPolicyName, ScopeDefinition } from "@convex-localfirst/core";
+import type { ObjectType, PropertyValidators, VFloat64, VString } from "convex/values";
+import type { ScopeDefinition } from "@convex-localfirst/core";
 import { LF_METADATA_KEY } from "@convex-localfirst/core/internal";
 import type { ServerTableConfig } from "./serverSync.js";
 
@@ -22,25 +22,45 @@ export type CreateLocalFirstOptions<DefaultIdField extends string> = {
   readonly schemaVersion?: number;
   readonly defaults?: {
     readonly idField?: DefaultIdField;
-    readonly conflict?: ConflictPolicyName;
   };
 };
+
+/** `true` → auto `createdAt`/`updatedAt`; a tuple names them (e.g. `["created_at",
+ *  "updated_at"]`). The fields are added to the table (do not declare them in
+ *  `shape`) and stamped automatically on insert (both) and patch (updated). */
+export type TimestampsOption = true | readonly [string, string];
+
+type TsFieldNames<Ts> = Ts extends true
+  ? "createdAt" | "updatedAt"
+  : Ts extends readonly [infer C extends string, infer U extends string]
+    ? C | U
+    : never;
+
+type PartitionFieldOf<S> = S extends { readonly kind: "byUser"; readonly field: infer F extends string }
+  ? F
+  : S extends { readonly kind: "byWorkspace"; readonly workspaceIdField: infer F extends string }
+    ? F
+    : S extends { readonly kind: "byProject"; readonly projectIdField: infer F extends string }
+      ? F
+      : never;
 
 export type TableOptions<
   Shape extends PropertyValidators,
   IdField extends string,
-  Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>
+  Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>,
+  S extends ScopeDefinition = ScopeDefinition,
+  Ts extends TimestampsOption | undefined = undefined
 > = {
   /** The table's fields (Convex validators) — the ONE place the row shape lives.
    *  `todos.table()` turns it into the Convex table definition (adding the id
    *  field + indexes), and the client runs the same declaration locally. */
   readonly shape: Shape;
-  readonly scope: ScopeDefinition;
+  readonly scope: S;
   /** Stable client-generated row id field. Added to the Convex table by `.table()`;
    *  do not declare it in `shape`. Defaults to "localId". */
   readonly idField?: IdField;
-  readonly conflict?: ConflictPolicyName;
   readonly indexes?: Indexes;
+  readonly timestamps?: Ts;
   // Array fields merged as SETS (convergent add/remove) instead of whole-array LWW — so
   // concurrent adds to e.g. `label_ids` don't clobber. Opt-in; omit for plain LWW fields.
   readonly setFields?: readonly string[];
@@ -120,44 +140,84 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
   options: CreateLocalFirstOptions<DefaultIdField> = {}
 ) {
   return {
-    byUser(field: string): ScopeDefinition {
-      return { kind: "byUser", field };
+    byUser<F extends string>(field: F) {
+      return { kind: "byUser", field } as const;
     },
-    byWorkspace(input: { workspaceIdField: string; membershipTable: string }): ScopeDefinition {
-      return { kind: "byWorkspace", ...input };
+    byWorkspace<F extends string>(input: { workspaceIdField: F; membershipTable: string }) {
+      return { kind: "byWorkspace", ...input } as const;
     },
-    byProject(input: { projectIdField: string; membershipTable: string }): ScopeDefinition {
-      return { kind: "byProject", ...input };
-    },
-    fieldLww(): ConflictPolicyName {
-      return "fieldLww";
-    },
-    /** Timestamp-ordered LWW: a scalar field-write carries the op's logical timestamp +
-     *  clientId tiebreaker, so a NEWER edit wins regardless of arrival order (the offline-first
-     *  fix). Set/counter delta fields stay convergent and are exempt. Requires the bundled
-     *  component (or a store implementing get/putFieldClocks). */
-    timestampLww(): ConflictPolicyName {
-      return "timestampLww";
+    byProject<F extends string>(input: { projectIdField: F; membershipTable: string }) {
+      return { kind: "byProject", ...input } as const;
     },
     table<
       Shape extends PropertyValidators,
+      S extends ScopeDefinition,
       IdField extends string = DefaultIdField,
-      const Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>
-    >(tableName: string, tableOptions: TableOptions<Shape, IdField, Indexes>) {
-      type Row = RowOf<Shape, IdField>;
+      const Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>,
+      const Ts extends TimestampsOption | undefined = undefined
+    >(tableName: string, tableOptions: TableOptions<Shape, IdField, Indexes, S, Ts>) {
+      type Row = RowOf<Shape, IdField> & Record<TsFieldNames<Ts>, number>;
+      // Derived-args types: what a bare insert()/patch()/remove() accepts. The scope's
+      // partition field and the timestamp fields are stamped by the engine, never typed in.
+      type DerivedInsertArgs = Omit<
+        ObjectType<Shape>,
+        (S extends { kind: "byUser" } ? PartitionFieldOf<S> : never) | TsFieldNames<Ts>
+      >;
+      type DerivedPatchArgs = { id: string } & Partial<Omit<ObjectType<Shape>, PartitionFieldOf<S> | TsFieldNames<Ts>>>;
       const idField = tableOptions.idField ?? options.defaults?.idField ?? "localId";
-      const conflict = tableOptions.conflict ?? options.defaults?.conflict ?? "fieldLww";
       const indexes = tableOptions.indexes ?? {};
+      const scope: ScopeDefinition = tableOptions.scope;
+      const ts = tableOptions.timestamps;
+      const tsFields =
+        ts === true
+          ? { createdAt: "createdAt", updatedAt: "updatedAt" }
+          : ts
+            ? { createdAt: ts[0], updatedAt: ts[1] }
+            : undefined;
+      const partitionField =
+        scope.kind === "byUser" ? scope.field : scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
       const metadata = {
         tableName,
         idField,
-        conflict,
         scope: tableOptions.scope,
         indexes,
         setFields: tableOptions.setFields,
         counterFields: tableOptions.counterFields,
+        timestamps: tsFields,
+        // The complete synced surface — what bootstrap may ship (never `extra` columns).
+        syncedFields: [
+          ...Object.keys(tableOptions.shape),
+          ...(tsFields ? [tsFields.createdAt, tsFields.updatedAt] : []),
+          idField
+        ],
         schemaVersion: options.schemaVersion
       };
+
+      /** Shape minus the given fields, as arg validators. */
+      const shapeWithout = (excluded: readonly string[]): PropertyValidators =>
+        Object.fromEntries(Object.entries(tableOptions.shape).filter(([field]) => !excluded.includes(field)));
+      /** Same, but every validator optional-wrapped (for derived patch args). */
+      const optionalized = (fields: PropertyValidators): PropertyValidators =>
+        Object.fromEntries(
+          Object.entries(fields).map(([field, validator]) => [
+            field,
+            (validator as { isOptional?: string }).isOptional === "optional" ? validator : v.optional(validator as never)
+          ])
+        );
+      const tsNames = tsFields ? [tsFields.createdAt, tsFields.updatedAt] : [];
+
+      /** The spec a bare insert() means: args = shape minus stamped fields; a byUser owner
+       *  comes from auth, timestamps from the engine (collect.ts stamps them). */
+      const derivedInsertSpec = (): InsertSpec<PropertyValidators, Ctx> => ({
+        args: shapeWithout(scope.kind === "byUser" ? [partitionField, ...tsNames] : tsNames),
+        value: ({ auth, args }) =>
+          scope.kind === "byUser" ? { ...args, [partitionField]: auth.userId } : { ...args }
+      });
+      /** The spec a bare patch() means: `id` + every non-partition field, optional. The
+       *  default plan forwards present args 1:1 (absent args never clobber). */
+      const derivedPatchSpec = (): PatchSpec<PropertyValidators, Ctx> => ({
+        args: { id: v.string(), ...optionalized(shapeWithout([partitionField, ...tsNames])) }
+      });
 
       return {
         /**
@@ -175,14 +235,15 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
          * local-first shape (they are never written by the sync engine).
          */
         table(withExtra?: { readonly extra?: PropertyValidators }): TableDefinition<
-          // Sound: the runtime object IS shape + the id field (+ extra, which stays
-          // outside the local-first type surface on purpose).
-          ReturnType<typeof v.object<Shape & Record<IdField, VString>>>,
+          // Sound: the runtime object IS shape + the id field + timestamps (+ extra,
+          // which stays outside the local-first type surface on purpose).
+          ReturnType<typeof v.object<Shape & Record<IdField, VString> & Record<TsFieldNames<Ts>, VFloat64>>>,
           { [K in keyof Indexes]: string[] }
         > {
           const fields = {
             ...tableOptions.shape,
             ...(withExtra?.extra ?? {}),
+            ...(tsFields ? { [tsFields.createdAt]: v.number(), [tsFields.updatedAt]: v.number() } : {}),
             [idField]: v.string()
           } as Shape & Record<IdField, VString>;
           let definition = defineTable(fields);
@@ -207,44 +268,46 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
             Row[]
           >;
         },
-        insert<A extends PropertyValidators>(spec: InsertSpec<A, Ctx>): RegisteredMutation<"public", ObjectType<A>, null> {
+        /** Omit `spec` to derive it from the shape: args = every field except the
+         *  stamped ones (a byUser owner comes from auth; timestamps auto). */
+        insert<A extends PropertyValidators = never>(
+          spec?: InsertSpec<A, Ctx>
+        ): RegisteredMutation<"public", [A] extends [never] ? DerivedInsertArgs : ObjectType<A>, null> {
+          const resolved = (spec as InsertSpec<PropertyValidators, Ctx> | undefined) ?? derivedInsertSpec();
           const fn = registerFunction(() =>
             mutation({
-              args: spec.args as never,
+              args: resolved.args as never,
               handler: async () => unsupportedLocalFirstCall("insert", tableName)
             })
           );
-          return attachMetadata(fn, { kind: "insert", ...metadata, spec }) as unknown as RegisteredMutation<
-            "public",
-            ObjectType<A>,
-            null
-          >;
+          return attachMetadata(fn, { kind: "insert", ...metadata, spec: resolved }) as never;
         },
-        patch<A extends PropertyValidators>(spec: PatchSpec<A, Ctx>): RegisteredMutation<"public", ObjectType<A>, null> {
+        /** Omit `spec` to derive it: `id` + every non-partition field as an optional
+         *  arg, forwarded 1:1 when present (updatedAt stamps automatically). */
+        patch<A extends PropertyValidators = never>(
+          spec?: PatchSpec<A, Ctx>
+        ): RegisteredMutation<"public", [A] extends [never] ? DerivedPatchArgs : ObjectType<A>, null> {
+          const resolved = (spec as PatchSpec<PropertyValidators, Ctx> | undefined) ?? derivedPatchSpec();
           const fn = registerFunction(() =>
             mutation({
-              args: spec.args as never,
+              args: resolved.args as never,
               handler: async () => unsupportedLocalFirstCall("patch", tableName)
             })
           );
-          return attachMetadata(fn, { kind: "patch", ...metadata, spec }) as unknown as RegisteredMutation<
-            "public",
-            ObjectType<A>,
-            null
-          >;
+          return attachMetadata(fn, { kind: "patch", ...metadata, spec: resolved }) as never;
         },
-        remove<A extends PropertyValidators>(spec: RemoveSpec<A>): RegisteredMutation<"public", ObjectType<A>, null> {
+        /** Omit `spec` for the default `{ id }` arg. */
+        remove<A extends PropertyValidators = never>(
+          spec?: RemoveSpec<A>
+        ): RegisteredMutation<"public", [A] extends [never] ? { id: string } : ObjectType<A>, null> {
+          const resolved = (spec as RemoveSpec<PropertyValidators> | undefined) ?? { args: { id: v.string() } };
           const fn = registerFunction(() =>
             mutation({
-              args: spec.args as never,
+              args: resolved.args as never,
               handler: async () => unsupportedLocalFirstCall("remove", tableName)
             })
           );
-          return attachMetadata(fn, { kind: "remove", ...metadata, spec }) as unknown as RegisteredMutation<
-            "public",
-            ObjectType<A>,
-            null
-          >;
+          return attachMetadata(fn, { kind: "remove", ...metadata, spec: resolved }) as never;
         }
       };
     }
@@ -339,8 +402,9 @@ function attachMetadata<T>(value: T, metadata: Record<string, unknown>): T {
 type AttachedTableMeta = {
   readonly tableName: string;
   readonly idField: string;
-  readonly conflict: ConflictPolicyName;
   readonly scope: ScopeDefinition;
+  readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
+  readonly syncedFields?: readonly string[];
   readonly schemaVersion?: number;
 };
 
@@ -379,15 +443,16 @@ export function collectTables(modules: Record<string, unknown>): Record<string, 
         | undefined;
       if (!meta || typeof meta.tableName !== "string") continue;
       if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
-      const config: ServerTableConfig = { scope: meta.scope, idField: meta.idField, conflict: meta.conflict };
+      const config: ServerTableConfig = {
+        scope: meta.scope,
+        idField: meta.idField,
+        ...(meta.timestamps ? { timestamps: meta.timestamps } : {}),
+        ...(meta.syncedFields ? { syncedFields: meta.syncedFields } : {})
+      };
       const existing = out[meta.tableName];
       if (!existing) {
         out[meta.tableName] = config;
-      } else if (
-        existing.idField !== config.idField ||
-        existing.conflict !== config.conflict ||
-        JSON.stringify(existing.scope) !== JSON.stringify(config.scope)
-      ) {
+      } else if (JSON.stringify(existing) !== JSON.stringify(config)) {
         // Fail closed: a divergent config for the same table can only come from
         // hand-tampering the metadata — never from a single lf.table definition.
         throw new Error(

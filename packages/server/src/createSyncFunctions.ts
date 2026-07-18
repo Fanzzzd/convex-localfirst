@@ -1,7 +1,8 @@
 import { convexToJson, jsonToConvex, v } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
-import { handlePull, handlePush } from "./serverSync.js";
-import type { ServerOperation, ServerStore, StoredChange, SyncConfig, ValueCodec } from "./serverSync.js";
+import { createDefaultIdFactory } from "@convex-localfirst/core/internal";
+import { applyServerWrite, handlePull, handlePush } from "./serverSync.js";
+import type { ServerOperation, ServerStore, ServerWriteResult, StoredChange, SyncConfig, ValueCodec } from "./serverSync.js";
 
 // Lossless Convex-value <-> JSON-string codec for the component's text columns.
 // convexToJson/jsonToConvex preserve bigint/bytes/nested-undefined where JSON.stringify
@@ -49,16 +50,34 @@ export type CreateSyncFunctionsOptions = {
    * data, violating I7). Defaults to false (fail closed).
    */
   readonly devUnsafeAllowClientUserId?: boolean;
+  /**
+   * How long delivered changes stay in the log before opportunistic GC may prune
+   * them (default 30 days). Clients offline longer than this re-bootstrap from
+   * current rows instead of replaying history. Pass Infinity to never GC.
+   */
+  readonly changeRetentionMs?: number;
+};
+
+/** Trusted server-side writer for local-first tables — the third writer besides
+ *  client push and nothing. Call it from an ordinary Convex mutation (activity
+ *  fan-out, importer, cron) with that mutation's ctx: rows land in ctx.db AND the
+ *  change log, so every client syncs them like any other change. */
+export type ServerWriter = {
+  insert(table: string, value: Record<string, unknown>, options?: { localId?: string }): Promise<ServerWriteResult>;
+  patch(table: string, localId: string, patch: Record<string, unknown>): Promise<ServerWriteResult>;
+  remove(table: string, localId: string): Promise<ServerWriteResult>;
 };
 
 /** The endpoints local-first clients talk to. Opaque to app code — they are
  *  driven by the client transport / `usePresence`, not called via
- *  `useMutation`/`useQuery`. */
+ *  `useMutation`/`useQuery`. `serverWriter(ctx)` is the exception: a helper for
+ *  YOUR mutations to write local-first tables server-side (see ServerWriter). */
 export type SyncFunctions = {
   readonly push: RegisteredMutation<"public", Record<string, unknown>, unknown>;
   readonly pull: RegisteredQuery<"public", Record<string, unknown>, unknown>;
   readonly presence: RegisteredMutation<"public", Record<string, unknown>, unknown>;
   readonly presenceList: RegisteredQuery<"public", Record<string, unknown>, unknown>;
+  readonly serverWriter: (ctx: unknown) => ServerWriter;
 };
 
 function storedFromComponent(r: any): StoredChange {
@@ -86,12 +105,13 @@ function storedFromComponent(r: any): StoredChange {
  * export const { push, pull } = createSyncFunctions({
  *   component: components.convexLocalFirst,
  *   mutation, query,
- *   tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" } }
+ *   tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
  * });
  * ```
  */
 export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFunctions {
   const lf = options.component;
+  const changeRetentionMs = options.changeRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
   // The version rides on collectTables' result (declared once, in createLocalFirst).
   const collectedVersion = (options.tables as Record<PropertyKey, unknown>)[
     Symbol.for("convexLocalFirst.schemaVersion")
@@ -176,7 +196,7 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       async putIdMap(userId, table, localId, serverId) {
         await ctx.runMutation(lf.idMaps.put, { userId, table, localId, serverId });
       },
-      async appendChange(change) {
+      async appendChange(change, serverId) {
         return await ctx.runMutation(lf.changes.append, {
           scopeKey: change.scopeKey,
           table: change.table,
@@ -186,7 +206,9 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
           patchJson: change.patch ? valueCodec.encode(change.patch) : undefined,
           version: change.version,
           serverTime: change.serverTime,
-          opId: change.opId
+          opId: change.opId,
+          serverId,
+          retentionMs: Number.isFinite(changeRetentionMs) ? changeRetentionMs : undefined
         });
       },
       async changesAfter(scopeKey, cursor, limit) {
@@ -199,36 +221,30 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       async scopeForLocalId(table, localId) {
         return await ctx.runQuery(lf.changes.scopeForLocal, { table, localId });
       },
-      // Per-field write clocks for `timestampLww` tables. clocks is a plain JSON map
-      // (field -> {ts, tiebreaker}: number + string), so JSON.stringify/parse is lossless —
-      // no valueCodec needed. Absent these two, serverSync rejects a timestamped timestampLww
-      // op (loud) rather than silently degrading to arrival-order.
-      async getFieldClocks(table, localId) {
-        const json = await ctx.runQuery(lf.fieldClocks.get, { table, localId });
-        return json ? JSON.parse(json) : {};
-      },
-      async putFieldClocks(table, localId, clocks) {
-        await ctx.runMutation(lf.fieldClocks.put, { table, localId, clocksJson: JSON.stringify(clocks) });
-      },
       async isMember(userId, scopeValue, membershipTable) {
         return await isMember(ctx, { userId, scopeValue, membershipTable });
       }
     };
   }
 
-  // Pull-side store: read-only, so only the change log + membership are wired.
+  // Pull-side store: read-only — the change log, bootstrap reads (rowVersions +
+  // app rows via the id map), and membership.
   function pullStore(ctx: AnyCtx): ServerStore {
     const unsupported = () => {
       throw new Error("pull is read-only");
     };
     return {
-      getRow: unsupported as never,
+      async getRow(_table, serverId) {
+        return (await ctx.db.get(serverId)) ?? null;
+      },
       insertRow: unsupported as never,
       patchRow: unsupported as never,
       deleteRow: unsupported as never,
       getLedger: unsupported as never,
       putLedger: unsupported as never,
-      getServerId: unsupported as never,
+      async getServerId(table, localId) {
+        return await ctx.runQuery(lf.idMaps.get, { table, localId });
+      },
       putIdMap: unsupported as never,
       appendChange: unsupported as never,
       latestChangeVersion: unsupported as never,
@@ -236,6 +252,15 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       async changesAfter(scopeKey, cursor, limit) {
         const rows = await ctx.runQuery(lf.changes.listAfter, { scopeKey, cursor: cursor ?? undefined, limit });
         return rows.map(storedFromComponent);
+      },
+      async firstChangeId(scopeKey) {
+        return await ctx.runQuery(lf.changes.firstId, { scopeKey });
+      },
+      async lastChangeId(scopeKey) {
+        return await ctx.runQuery(lf.changes.lastId, { scopeKey });
+      },
+      async rowVersionsByScope(scopeKey, afterRowKey, limit) {
+        return await ctx.runQuery(lf.changes.listVersions, { scopeKey, afterRowKey: afterRowKey ?? undefined, limit });
       },
       async isMember(userId, scopeValue, membershipTable) {
         return await isMember(ctx, { userId, scopeValue, membershipTable });
@@ -253,8 +278,8 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     localId: v.string(),
     value: v.optional(v.any()),
     patch: v.optional(v.any()),
-    // The op's logical timestamp (client monotonic clock). Optional — only `timestampLww`
-    // tables read it; older clients that omit it fall back to arrival-order LWW.
+    // Legacy field older client bundles still send (was the timestampLww logical
+    // clock). Accepted and ignored so their queued offline ops keep pushing.
     timestamp: v.optional(v.number())
   };
 
@@ -298,7 +323,9 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       userId: v.string(),
       schemaVersion: v.number(),
       scopes: v.array(v.object({ kind: v.string(), value: v.optional(v.string()) })),
-      cursors: v.any()
+      cursors: v.any(),
+      bootstrapCursors: v.optional(v.any()),
+      doorbell: v.optional(v.boolean())
     },
     handler: async (ctx: AnyCtx, args: any) => {
       const userId = await resolveUserId(ctx, args.userId);
@@ -307,7 +334,9 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
         clientId: args.clientId,
         schemaVersion: args.schemaVersion,
         scopes: args.scopes,
-        cursors: args.cursors ?? {}
+        cursors: args.cursors ?? {},
+        bootstrapCursors: args.bootstrapCursors ?? undefined,
+        doorbell: args.doorbell ?? undefined
       });
     }
   });
@@ -381,6 +410,17 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     }
   });
 
-  return { push, pull, presence, presenceList } as SyncFunctions;
+  const newLocalId = createDefaultIdFactory("sv");
+  const serverWriter = (ctx: AnyCtx): ServerWriter => {
+    const store = pushStore(ctx);
+    return {
+      insert: (table, value, opts) =>
+        applyServerWrite(store, config, { kind: "insert", table, value, localId: opts?.localId }, () => newLocalId(table)),
+      patch: (table, localId, patch) => applyServerWrite(store, config, { kind: "patch", table, localId, patch }, () => newLocalId(table)),
+      remove: (table, localId) => applyServerWrite(store, config, { kind: "delete", table, localId }, () => newLocalId(table))
+    };
+  };
+
+  return { push, pull, presence, presenceList, serverWriter } as SyncFunctions;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

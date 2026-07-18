@@ -44,9 +44,15 @@ These are intentionally out of scope for now, with a clear seam to add them:
 
 - **Yjs rich text** (`@convex-localfirst/yjs`) — collaborative documents over the
   local-first log (`useCollaborativeDoc`). See [Document mode](/docs/document-mode).
-- **Convergent merges + timestamp-ordered LWW** — opt-in `setFields` / `counterFields`
-  (concurrent array/counter edits merge), and `conflict: lf.timestampLww()` (a newer
-  edit wins regardless of arrival order). See [Defining tables](/docs/defining-tables#conflict-policies).
+- **Convergent merges** — opt-in `setFields` / `counterFields` (concurrent
+  array/counter edits merge instead of clobbering). See
+  [Defining tables](/docs/defining-tables#merges).
+- **Server-authored writes** — `serverWriter(ctx)` lets ordinary mutations
+  (activity feeds, importers, crons) write local-first tables through the change
+  log. See [the API reference](/docs/reference/api).
+- **Snapshot bootstrap + change-log GC** — cold clients load current rows instead
+  of replaying history; delivered changes are pruned opportunistically after the
+  retention window (`changeRetentionMs`, default 30 days).
 - **`createSyncFunctions`** — the server `sync.ts` is now a dozen lines, not ~150.
   See [Syncing](/docs/syncing#createsyncfunctions).
 - **Full type inference** — `useQuery` / `useMutation` infer args and result from

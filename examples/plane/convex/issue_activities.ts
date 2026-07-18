@@ -19,14 +19,14 @@ export const activities = lf.table("issue_activities", {
     old_identifier: v.optional(v.union(v.string(), v.null())),
     new_identifier: v.optional(v.union(v.string(), v.null())),
     comment: v.optional(v.string()),
-    created_at: v.number(),
-    updated_at: v.number(),
     created_by: v.string()
   },
   scope: scopeWorkspace,
+  timestamps: ["created_at", "updated_at"],
   indexes: { byWorkspace: ["workspace", "created_at"] }
 });
 
+// created_by mirrors the actor; everything else is derived from the shape.
 export const create = activities.insert({
   args: {
     workspace: v.string(),
@@ -41,22 +41,7 @@ export const create = activities.insert({
     new_identifier: v.optional(v.union(v.string(), v.null())),
     comment: v.optional(v.string())
   },
-  value: ({ args, now }) => ({
-    workspace: String(args.workspace),
-    project: String(args.project),
-    issue: String(args.issue),
-    actor: String(args.actor),
-    verb: String(args.verb),
-    field: args.field,
-    old_value: args.old_value,
-    new_value: args.new_value,
-    old_identifier: args.old_identifier,
-    new_identifier: args.new_identifier,
-    comment: args.comment,
-    created_at: now,
-    updated_at: now,
-    created_by: String(args.actor)
-  })
+  value: ({ args }) => ({ ...args, created_by: args.actor })
 });
 
-export const remove = activities.remove({ args: { id: v.string() } });
+export const remove = activities.remove();

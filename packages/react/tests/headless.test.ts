@@ -4,7 +4,6 @@ import {
   MemoryLocalStore,
   byUser,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localQuery,
   localTable
@@ -19,7 +18,7 @@ function manifest() {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), conflict: fieldLww() })
+      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId") })
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly unknown[]>({

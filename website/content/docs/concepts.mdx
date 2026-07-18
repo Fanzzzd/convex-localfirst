@@ -88,17 +88,11 @@ a refresh or a closed tab.
 
 ## Conflicts
 
-When two clients edit the same row, the table's **conflict policy** decides the
-result deterministically:
+When two clients edit the same row, merges are **last-writer-wins per field**:
+two clients editing different fields both keep their change; same-field
+collisions resolve by arrival order at the server.
 
-- **`fieldLww`** (default) — last-writer-wins **per field**, so two clients
-  editing different fields both keep their change; same-field collisions resolve
-  by arrival order at the server.
-- **`timestampLww`** — same per-field merge, but same-field collisions resolve by
-  the op's logical timestamp (+ clientId tiebreaker), so a **newer** edit wins
-  regardless of arrival order (the offline-first fix).
-
-Convergent per-field merges (`setFields`, `counterFields`) compose with either,
+Convergent per-field merges (`setFields`, `counterFields`) compose with that,
 so concurrent array/counter edits accumulate instead of clobbering. For
 collaborative documents where field-LWW isn't enough, use
 [document mode](/docs/document-mode) (CRDTs).

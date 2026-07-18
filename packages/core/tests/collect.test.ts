@@ -13,7 +13,6 @@ function lfFn(meta: Record<string, unknown>): Record<string, unknown> {
 const tableMeta = {
   tableName: "todos",
   idField: "localId",
-  conflict: "fieldLww",
   scope: { kind: "byUser", field: "ownerId" },
   indexes: { byList: ["ownerId", "listId", "createdAt"] }
 };
@@ -133,7 +132,6 @@ describe("collectManifest", () => {
         kind: "query",
         tableName: "issues",
         idField: "localId",
-        conflict: "fieldLww",
         scope: { kind: "byWorkspace", workspaceIdField: "workspaceId", membershipTable: "members" },
         indexes: { byWorkspace: ["workspaceId", "createdAt"] },
         spec: {

@@ -126,6 +126,24 @@ export class MemoryLocalStore implements LocalStore {
     this.cursors.set(scopeKey, cursor);
   }
 
+  async removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void> {
+    const rows = this.tableMap(table);
+    let removed = false;
+    for (const [id, row] of rows) {
+      if (row[field] === value && !keepIds?.has(id)) {
+        rows.delete(id);
+        removed = true;
+      }
+    }
+    if (removed) {
+      this.notify();
+    }
+  }
+
+  async removeCursor(scopeKey: ScopeKey): Promise<void> {
+    this.cursors.delete(scopeKey);
+  }
+
   async clear(): Promise<void> {
     this.canonical.clear();
     this.operations.clear();

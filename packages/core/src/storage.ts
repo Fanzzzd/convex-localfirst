@@ -61,6 +61,16 @@ export type LocalStore = {
   getCursor(scopeKey: ScopeKey): Promise<Cursor>;
   setCursor(scopeKey: ScopeKey, cursor: string): Promise<void>;
 
+  /** Delete canonical rows of `table` whose `field` equals `value`, except ids in
+   *  `keepIds`. Ghost eviction after a snapshot bootstrap (keepIds = rows the
+   *  snapshot delivered) and full scope eviction on membership revocation (no
+   *  keepIds). Pending operations are untouched: they replay/push as usual. */
+  removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void>;
+
+  /** Forget a scope's cursor entirely (revocation): a later re-grant must
+   *  re-bootstrap instead of resuming from a cursor whose rows were evicted. */
+  removeCursor(scopeKey: ScopeKey): Promise<void>;
+
   /** Drop all data for this namespace (logout). */
   clear(): Promise<void>;
 

@@ -6,7 +6,7 @@ import { collectTables, createLocalFirst } from "../src/index";
 // definitions) instead of being restated — and silently drifting — in sync.ts.
 
 const lf = createLocalFirst({
-  defaults: { idField: "id", conflict: "fieldLww" }
+  defaults: { idField: "id" }
 });
 
 const wsScope = lf.byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "ws_members" });
@@ -37,13 +37,13 @@ describe("collectTables", () => {
     expect(tables.issues).toEqual({
       scope: { kind: "byWorkspace", workspaceIdField: "workspace_id", membershipTable: "ws_members" },
       idField: "id",
-      conflict: "fieldLww"
+      syncedFields: ["id"], // empty shape → just the id field
     });
     // byUser scope + a per-table idField override both flow through unchanged.
     expect(tables.todos).toEqual({
       scope: { kind: "byUser", field: "ownerId" },
       idField: "localId",
-      conflict: "fieldLww"
+      syncedFields: ["localId"],
     });
     // No setFields leaks into the server config — the server materializes set-deltas
     // by shape, not per-table config.

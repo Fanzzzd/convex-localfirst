@@ -6,7 +6,6 @@ import {
   byWorkspace,
   MemoryLocalStore,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localQuery,
   localTable,
@@ -50,21 +49,18 @@ function manifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        conflict: fieldLww(),
         indexes: {}
       }),
       issues: localTable({
         table: "issues",
         idField: "localId",
         scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-        conflict: fieldLww(),
         indexes: {}
       }),
       comments: localTable({
         table: "comments",
         idField: "localId",
         scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-        conflict: fieldLww(),
         indexes: {}
       })
     },

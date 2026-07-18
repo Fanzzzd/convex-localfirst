@@ -1,5 +1,5 @@
-import type { ConflictPolicyName, ScopeDefinition } from "@convex-localfirst/core";
-import { applyCounterDelta, applySetDelta, isCounterDelta, isSetDelta, lwwWins, type FieldClock } from "@convex-localfirst/core/internal";
+import type { ScopeDefinition } from "@convex-localfirst/core";
+import { applyCounterDelta, applySetDelta, isCounterDelta, isSetDelta } from "@convex-localfirst/core/internal";
 
 /**
  * Pure, runtime-agnostic server sync engine. It enforces scope/ownership,
@@ -14,18 +14,20 @@ import { applyCounterDelta, applySetDelta, isCounterDelta, isSetDelta, lwwWins, 
  *  - I2: a re-pushed opId is idempotent (ledger lookup short-circuits).
  */
 
+// Merge model: field-scoped patches merge field-by-field on the client
+// (view.ts/rebase.ts use {...row, ...patch}) and here via ctx.db.patch, so concurrent
+// edits to DIFFERENT fields both survive; same-field collisions resolve by ARRIVAL order.
+// Convergent merges are per-field (setFields/counterFields) and never clobber.
 export type ServerTableConfig = {
   readonly scope: ScopeDefinition;
   readonly idField: string;
-  // The conflict policy (see ConflictPolicyName — only REAL policies are offered):
-  //  - "fieldLww" (default): field-scoped patches merge field-by-field on the client
-  //    (view.ts/rebase.ts use {...row, ...patch}) and here via ctx.db.patch, so concurrent
-  //    edits to DIFFERENT fields both survive; same-field collisions resolve by ARRIVAL order.
-  //  - "timestampLww": same field merge, but same-field collisions resolve by the op's logical
-  //    timestamp (+clientId tiebreaker) via per-field write clocks — see the patch path below.
-  // Orthogonal convergent merges are per-field (setFields/counterFields), not a row policy,
-  // and are exempt from the LWW rule (they never clobber).
-  readonly conflict: ConflictPolicyName;
+  /** Auto-timestamp field names (lf.table's `timestamps` option); serverWriter stamps them. */
+  readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
+  /** The declared local-first surface (shape + id + timestamps). Snapshot bootstrap
+   *  projects app rows to EXACTLY these fields, so server-only `extra` columns never
+   *  leak to clients. Absent (hand-written config): bootstrap strips only Convex
+   *  system fields. collectTables always fills it. */
+  readonly syncedFields?: readonly string[];
 };
 
 export type ServerOperation = {
@@ -38,9 +40,6 @@ export type ServerOperation = {
   readonly localId: string;
   readonly value?: Record<string, unknown>;
   readonly patch?: Record<string, unknown>;
-  // The op's logical timestamp (the client's monotonic clock at write time). Used only by
-  // `timestampLww` tables to resolve same-field collisions by recency, not arrival order.
-  readonly timestamp?: number;
 };
 
 export type StoredChange = {
@@ -97,8 +96,10 @@ export type ServerStore = {
   getServerId(table: string, localId: string): Promise<string | null>;
   putIdMap(userId: string, table: string, localId: string, serverId: string): Promise<void>;
 
-  // Append-only change log. Returns the assigned monotonic changeId.
-  appendChange(change: Omit<StoredChange, "changeId">): Promise<string>;
+  // Append-only change log. Returns the assigned monotonic changeId. `serverId`
+  // (when known) is denormalized onto the row-version entry so snapshot bootstrap
+  // can load app rows without a per-row id-map lookup.
+  appendChange(change: Omit<StoredChange, "changeId">, serverId?: string): Promise<string>;
   changesAfter(scopeKey: string, cursor: string | null, limit: number): Promise<readonly StoredChange[]>;
   /** Highest change version recorded for a row (0 if none). Row versions live in
    *  the change log, never on the user row, so user schemas stay clean.
@@ -115,13 +116,20 @@ export type ServerStore = {
    *  no longer come from the row itself) so it can't become a cross-scope oracle. */
   scopeForLocalId(table: string, localId: string): Promise<string | null>;
 
-  /** OPTIONAL on the type, but REQUIRED for any `timestampLww` table: per-field write clocks
-   *  (field → {ts, tiebreaker}). A timestampLww table whose store lacks these REJECTS the op
-   *  loudly (no silent arrival-order degrade — see applyOp). A store with only `fieldLww` tables
-   *  never needs them. Like the version RMW, the get→put pair must share the push mutation's
-   *  transaction (it does in the real Convex adapter) so concurrent writers can't lose a clock update. */
-  getFieldClocks?(table: string, localId: string): Promise<Record<string, FieldClock>>;
-  putFieldClocks?(table: string, localId: string, clocks: Record<string, FieldClock>): Promise<void>;
+  // OPTIONAL: snapshot bootstrap + change-log GC support (the bundled component
+  // provides all three). Absent, pull always replays full history and the log is
+  // never GC'd — correct, just unbounded.
+  /** Oldest / newest RETAINED changeId for a scope (null when the log is empty). */
+  firstChangeId?(scopeKey: string): Promise<string | null>;
+  lastChangeId?(scopeKey: string): Promise<string | null>;
+  /** Page of per-row versions for a scope, ordered by rowKey (`table:localId`),
+   *  strictly after `afterRowKey`. Drives snapshot bootstrap: each entry resolves
+   *  to the CURRENT app row (deleted rows resolve to nothing and are skipped). */
+  rowVersionsByScope?(
+    scopeKey: string,
+    afterRowKey: string | null,
+    limit: number
+  ): Promise<ReadonlyArray<{ table: string; localId: string; version: number; rowKey: string; serverId?: string | null }>>;
 
   // Workspace/project membership check.
   isMember(userId: string, scopeValue: string, membershipTable: string): Promise<boolean>;
@@ -153,6 +161,11 @@ export type PullInput = {
   readonly schemaVersion: number;
   readonly scopes: readonly PullScope[];
   readonly cursors: Record<string, string | null>;
+  /** Mid-bootstrap continuation tokens (echoed from a prior PullResult). Opaque. */
+  readonly bootstrapCursors?: Record<string, string>;
+  /** True for the reactive watch subscription: the result is a content-free
+   *  doorbell, so the expensive bootstrap path is skipped and pages stay tiny. */
+  readonly doorbell?: boolean;
 };
 
 export type PullResult = {
@@ -162,6 +175,20 @@ export type PullResult = {
   readonly schemaMismatch?: boolean;
   /** Per-scope: true when this page hit the pull limit, so more changes remain. */
   readonly hasMore: Record<string, boolean>;
+  /** Scopes whose changes in THIS response are snapshot-bootstrap pages (cold
+   *  client, or a cursor that fell behind the GC horizon). When such a scope
+   *  completes (its cursor is delivered and it is absent from bootstrapCursors),
+   *  the client evicts canonical rows the snapshot did not contain — ghost rows
+   *  whose delete changes were pruned. No upfront clear: the local cache stays
+   *  fully readable throughout, and an aborted bootstrap changes nothing. */
+  readonly snapshotScopes: string[];
+  /** Per-scope bootstrap continuation; pass back via PullInput.bootstrapCursors.
+   *  A scope absent here (with hasMore false) has finished bootstrapping. */
+  readonly bootstrapCursors: Record<string, string>;
+  /** Requested scopes the caller is NOT a member of (revoked or never granted).
+   *  The client evicts the scope's rows and forgets its cursor: after a
+   *  revocation, data leaves the device on the next sync. */
+  readonly deniedScopes: string[];
 };
 
 /**
@@ -395,14 +422,6 @@ export async function handlePush(store: ServerStore, config: SyncConfig, input: 
   return result;
 }
 
-// Bound how far a client's logical write-clock may lead the server clock. op.timestamp
-// is the client's own clock (legitimately ahead of serverTime by real skew), so we don't
-// clamp to serverTime exactly — but an UNBOUNDED future timestamp would let an authorized
-// writer pin a timestampLww field forever (every later honest write has a smaller ts and
-// loses). Clamping to serverTime + this bound caps that abuse to a small window while
-// leaving every real write (op.createdAt ≈ now) untouched.
-const MAX_CLOCK_SKEW_MS = 5 * 60_000;
-
 async function applyOp(
   store: ServerStore,
   tableConfig: ServerTableConfig,
@@ -432,15 +451,18 @@ async function applyOp(
     }
     const version = (await store.latestChangeVersion(op.table, op.localId)) + 1;
     await store.deleteRow(op.table, existingId as string);
-    const changeId = await store.appendChange({
-      scopeKey,
-      table: op.table,
-      localId: op.localId,
-      kind: "delete",
-      version,
-      serverTime,
-      opId: op.opId
-    });
+    const changeId = await store.appendChange(
+      {
+        scopeKey,
+        table: op.table,
+        localId: op.localId,
+        kind: "delete",
+        version,
+        serverTime,
+        opId: op.opId
+      },
+      existingId as string
+    );
     return changeAsStored(changeId, scopeKey, op, "delete", version, serverTime, undefined, undefined);
   }
 
@@ -474,16 +496,19 @@ async function applyOp(
     await store.putIdMap(userId, op.table, op.localId, serverId);
     // First change for a fresh row is version 1 (I5 monotonicity).
     const version = (await store.latestChangeVersion(op.table, op.localId)) + 1;
-    const changeId = await store.appendChange({
-      scopeKey,
-      table: op.table,
-      localId: op.localId,
-      kind: "insert",
-      data: value,
-      version,
-      serverTime,
-      opId: op.opId
-    });
+    const changeId = await store.appendChange(
+      {
+        scopeKey,
+        table: op.table,
+        localId: op.localId,
+        kind: "insert",
+        data: value,
+        version,
+        serverTime,
+        opId: op.opId
+      },
+      serverId
+    );
     return changeAsStored(changeId, scopeKey, op, "insert", version, serverTime, value, undefined);
   }
 
@@ -515,8 +540,6 @@ async function applyOp(
     // delta-free (clients pull concrete values). Shape-driven (the delta is self-describing),
     // so no per-table server config; only loads the row when a delta is actually present
     // (zero overhead otherwise). A delta over a wrong-typed field is a client bug/forge — reject.
-    // Convergent (set/counter) delta fields are merged commutatively below and are EXEMPT
-    // from timestamp-LWW (they never clobber by design). Capture them before materialization.
     const deltaFields = new Set(
       Object.keys(patch).filter((f) => isSetDelta(patch[f]) || isCounterDelta(patch[f]))
     );
@@ -538,63 +561,26 @@ async function applyOp(
       }
       patch = materialized;
     }
-    // Timestamp-ordered LWW: for a `timestampLww` table, resolve each plain scalar field-write
-    // against the field's last-write clock so a newer edit wins regardless of arrival order; a
-    // stale write is dropped. Delta fields (set/counter) are exempt (they never clobber), so a
-    // delta-only patch skips this. A patch writing ANY plain field MUST carry a timestamp and a
-    // field-clock store — applying by arrival order without updating the clock would desync it
-    // and wrongly drop a later write — so we fail closed loudly rather than corrupt.
-    if (tableConfig.conflict === "timestampLww") {
-      const plainFields = Object.keys(patch).filter((f) => !deltaFields.has(f));
-      if (plainFields.length > 0) {
-        if (op.timestamp === undefined) {
-          throw new RejectOp(
-            `Table "${op.table}" uses conflict: "timestampLww" but this op writes scalar field(s) [${plainFields.join(", ")}] without a timestamp — upgrade the client (the local-first transport sends one automatically).`
-          );
-        }
-        if (!store.getFieldClocks || !store.putFieldClocks) {
-          throw new RejectOp(
-            `Table "${op.table}" uses conflict: "timestampLww" but the ServerStore has no getFieldClocks/putFieldClocks. Use the bundled component or implement both.`
-          );
-        }
-        const ts = Math.min(op.timestamp, serverTime + MAX_CLOCK_SKEW_MS); // cap far-future pinning
-        const incoming: FieldClock = { ts, tiebreaker: op.clientId };
-        const clocks = await store.getFieldClocks(op.table, op.localId);
-        const winners: Record<string, unknown> = {};
-        const updated: Record<string, FieldClock> = {};
-        for (const [field, value] of Object.entries(patch)) {
-          if (deltaFields.has(field)) {
-            winners[field] = value; // convergent delta — always kept, no clock
-          } else if (lwwWins(incoming, clocks[field])) {
-            winners[field] = value;
-            updated[field] = incoming;
-          }
-          // else: a stale plain field-write — drop it, keeping the current (newer) value.
-        }
-        if (Object.keys(updated).length > 0) {
-          await store.putFieldClocks(op.table, op.localId, { ...clocks, ...updated });
-        }
-        patch = winners;
-      }
-    }
-    // A patch that resolved to no fields — every plain field lost the timestamp-LWW race,
-    // or the op carried an empty patch — is an ACCEPTED no-op (like an already-gone delete):
-    // skip the write so it never appends a spurious empty change, consumes a version, or
-    // gets re-delivered to every puller. Do NOT leak the serverId (handlePush noop path).
+    // An empty patch is an ACCEPTED no-op (like an already-gone delete): skip the write so
+    // it never appends a spurious empty change, consumes a version, or gets re-delivered to
+    // every puller. Do NOT leak the serverId (handlePush noop path).
     if (Object.keys(patch).length === 0) {
       return null;
     }
     await store.patchRow(op.table, serverId, patch);
-    const changeId = await store.appendChange({
-      scopeKey,
-      table: op.table,
-      localId: op.localId,
-      kind: "patch",
-      patch,
-      version,
-      serverTime,
-      opId: op.opId
-    });
+    const changeId = await store.appendChange(
+      {
+        scopeKey,
+        table: op.table,
+        localId: op.localId,
+        kind: "patch",
+        patch,
+        version,
+        serverTime,
+        opId: op.opId
+      },
+      serverId
+    );
     return changeAsStored(changeId, scopeKey, op, "patch", version, serverTime, undefined, patch);
   }
 
@@ -614,6 +600,104 @@ function changeAsStored(
   patch: Record<string, unknown> | undefined
 ): StoredChange {
   return { changeId, scopeKey, table: op.table, localId: op.localId, kind, data, patch, version, serverTime, opId: op.opId };
+}
+
+// ---- Server-authored writes ------------------------------------------------
+// Ordinary Convex code (activity fan-out, notifications, importers, crons, HTTP
+// endpoints) cannot call the client mutations (their handlers refuse) and must not
+// write local-first tables via ctx.db directly (the change log would never see the
+// write, so no client would sync it). This is the missing third writer: it applies
+// a TRUSTED server-side write through the same row + id-map + change-log path the
+// push endpoint uses, so every client pulls it like any other change. No ledger —
+// server code is not a flaky network client; Convex OCC retries keep it atomic.
+
+export type ServerWrite =
+  | { readonly kind: "insert"; readonly table: string; readonly localId?: string; readonly value: Record<string, unknown> }
+  | { readonly kind: "patch"; readonly table: string; readonly localId: string; readonly patch: Record<string, unknown> }
+  | { readonly kind: "delete"; readonly table: string; readonly localId: string };
+
+export type ServerWriteResult = { readonly localId: string; readonly serverId?: string };
+
+export async function applyServerWrite(
+  store: ServerStore,
+  config: SyncConfig,
+  write: ServerWrite,
+  newLocalId: () => string
+): Promise<ServerWriteResult> {
+  const tableConfig = config.tables[write.table];
+  if (!tableConfig) {
+    throw new Error(`serverWriter: unknown local-first table "${write.table}"`);
+  }
+  const now = config.now ?? (() => Date.now());
+  const serverTime = now();
+  const partition = partitionFieldOf(tableConfig.scope);
+  const ts = tableConfig.timestamps;
+
+  if (write.kind === "insert") {
+    const localId = write.localId ?? newLocalId();
+    const value = { ...write.value, [tableConfig.idField]: localId };
+    if (ts) {
+      value[ts.createdAt] ??= serverTime;
+      value[ts.updatedAt] ??= serverTime;
+    }
+    const scopeValue = partition ? value[partition] : null;
+    if (typeof scopeValue !== "string") {
+      throw new Error(`serverWriter: insert into "${write.table}" is missing its scope field "${partition}"`);
+    }
+    const scopeKey =
+      tableConfig.scope.kind === "byUser" ? scopeKeyForUser(scopeValue) : scopeKeyForValue(tableConfig.scope.kind, scopeValue);
+    if (await store.getServerId(write.table, localId)) {
+      throw new Error(`serverWriter: duplicate localId for ${write.table}:${localId}`);
+    }
+    const serverId = await store.insertRow(write.table, value);
+    await store.putIdMap("server", write.table, localId, serverId);
+    const version = (await store.latestChangeVersion(write.table, localId)) + 1;
+    await store.appendChange({ scopeKey, table: write.table, localId, kind: "insert", data: value, version, serverTime }, serverId);
+    return { localId, serverId };
+  }
+
+  const serverId = await store.getServerId(write.table, write.localId);
+  const row = serverId ? await store.getRow(write.table, serverId) : null;
+
+  if (write.kind === "delete") {
+    // Deletes commute: deleting an already-gone row is a no-op (matches push).
+    if (!row || !serverId) {
+      return { localId: write.localId };
+    }
+    const scopeKey = scopeKeyForRow(tableConfig, row);
+    if (!scopeKey) {
+      throw new Error(`serverWriter: row ${write.table}:${write.localId} has no usable scope field`);
+    }
+    const version = (await store.latestChangeVersion(write.table, write.localId)) + 1;
+    await store.deleteRow(write.table, serverId);
+    await store.appendChange({ scopeKey, table: write.table, localId: write.localId, kind: "delete", version, serverTime }, serverId);
+    return { localId: write.localId, serverId };
+  }
+
+  if (!row || !serverId) {
+    throw new Error(`serverWriter: no row for ${write.table}:${write.localId}`);
+  }
+  const patch = { ...write.patch };
+  // Same defense as push: a patch never moves a row across scopes or rewrites its id.
+  for (const field of [partition, tableConfig.idField]) {
+    if (field && Object.prototype.hasOwnProperty.call(patch, field)) {
+      throw new Error(`serverWriter: cannot patch the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
+    }
+  }
+  if (ts && Object.keys(patch).length > 0) {
+    patch[ts.updatedAt] ??= serverTime;
+  }
+  if (Object.keys(patch).length === 0) {
+    return { localId: write.localId, serverId };
+  }
+  const scopeKey = scopeKeyForRow(tableConfig, row);
+  if (!scopeKey) {
+    throw new Error(`serverWriter: row ${write.table}:${write.localId} has no usable scope field`);
+  }
+  const version = (await store.latestChangeVersion(write.table, write.localId)) + 1;
+  await store.patchRow(write.table, serverId, patch);
+  await store.appendChange({ scopeKey, table: write.table, localId: write.localId, kind: "patch", patch, version, serverTime }, serverId);
+  return { localId: write.localId, serverId };
 }
 
 /**
@@ -638,10 +722,27 @@ function membershipTableForScope(config: SyncConfig, kind: "byWorkspace" | "byPr
   return tables.size === 1 ? [...tables][0] : null;
 }
 
+// A completed bootstrap of a scope whose change log is empty still needs a cursor
+// (so the client doesn't re-bootstrap forever). Sorts before every real changeId.
+const ZERO_CURSOR = "000000000000";
+// Bootstrap continuation token: `${endCursor}\u0001${lastRowKey}`. U+0001 cannot
+// appear in a changeId (digits only), so the split is unambiguous.
+const BOOT_SEP = "\u0001";
+
 export async function handlePull(store: ServerStore, config: SyncConfig, input: PullInput): Promise<PullResult> {
   const now = config.now ?? (() => Date.now());
-  const limit = config.pullLimit ?? 500;
-  const out: PullResult = { changes: [], cursors: {}, hasMore: {}, serverTime: now() };
+  // A doorbell (the reactive watch) only needs its read-set to cover "new changes
+  // past the cursors" — one row per scope, and never the expensive bootstrap path.
+  const limit = input.doorbell ? 1 : config.pullLimit ?? 500;
+  const out: PullResult = {
+    changes: [],
+    cursors: {},
+    hasMore: {},
+    snapshotScopes: [],
+    bootstrapCursors: {},
+    deniedScopes: [],
+    serverTime: now()
+  };
 
   if (input.schemaVersion !== config.schemaVersion) {
     return { ...out, schemaMismatch: true };
@@ -665,6 +766,10 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
       }
       const member = await store.isMember(input.userId, scope.value, membershipTable);
       if (!member) {
+        // Revoked (or never granted): tell the client so it evicts the scope's
+        // rows and forgets its cursor. The value came from the client's own
+        // request, so echoing it reveals nothing new.
+        out.deniedScopes.push(scopeKeyForValue(scope.kind, scope.value));
         continue;
       }
       scopeKey = scopeKeyForValue(scope.kind, scope.value);
@@ -673,6 +778,71 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     }
 
     const cursor = input.cursors[scopeKey] ?? null;
+    const bootCursor = input.bootstrapCursors?.[scopeKey] ?? null;
+
+    // Snapshot bootstrap (store support required): a COLD client (no cursor) reads the
+    // scope's CURRENT rows instead of replaying its entire history, and a client whose
+    // cursor fell behind the GC horizon (its next changes were pruned) is refreshed the
+    // same way. Everything else is the ordinary incremental read.
+    if (!input.doorbell && store.rowVersionsByScope && store.firstChangeId && store.lastChangeId) {
+      let bootstrap = bootCursor !== null || cursor === null;
+      if (!bootstrap) {
+        const first = await store.firstChangeId(scopeKey);
+        // Gap: the change right after the cursor was GC'd. (A cursor exactly one
+        // before the first retained change has missed nothing.)
+        bootstrap = first !== null && Number(cursor) < Number(first) - 1;
+      }
+      if (bootstrap) {
+        // endCursor is captured on the FIRST page and carried through the token:
+        // changes appended DURING a multi-page bootstrap have changeId > endCursor,
+        // so they replay incrementally afterwards (version-folded — never lost,
+        // never double-applied).
+        let endCursor: string;
+        let afterRowKey: string | null;
+        if (bootCursor === null) {
+          endCursor = (await store.lastChangeId(scopeKey)) ?? "";
+          afterRowKey = null;
+        } else {
+          const sep = bootCursor.indexOf(BOOT_SEP);
+          endCursor = bootCursor.slice(0, sep);
+          afterRowKey = bootCursor.slice(sep + 1);
+        }
+        out.snapshotScopes.push(scopeKey); // every page: this scope's changes are snapshot rows
+        const page = await store.rowVersionsByScope(scopeKey, afterRowKey, limit);
+        for (const rv of page) {
+          // Prefer the denormalized serverId (one point read); fall back to the id map.
+          const serverId = rv.serverId ?? (await store.getServerId(rv.table, rv.localId));
+          const row = serverId ? await store.getRow(rv.table, serverId) : null;
+          if (!row) {
+            continue; // deleted row: a cold client simply never sees it
+          }
+          out.changes.push({
+            changeId: "", // synthetic — clients fold by version, cursors come from out.cursors
+            scopeKey,
+            table: rv.table,
+            localId: rv.localId,
+            kind: "insert",
+            data: projectSyncedFields(row as Record<string, unknown>, config.tables[rv.table]),
+            version: rv.version,
+            serverTime: out.serverTime
+          });
+        }
+        if (page.length >= limit) {
+          out.bootstrapCursors[scopeKey] = `${endCursor}${BOOT_SEP}${page[page.length - 1]!.rowKey}`;
+          // NO cursor entry mid-bootstrap: the client's persisted cursor stays put,
+          // so an interrupted bootstrap restarts as a bootstrap (never as a full
+          // history replay from the "" sentinel).
+          out.hasMore[scopeKey] = true;
+        } else {
+          out.cursors[scopeKey] = endCursor || ZERO_CURSOR;
+          // Changes appended DURING the bootstrap (changeId > endCursor) still owe
+          // an incremental pass — report them so the drain loop keeps going.
+          out.hasMore[scopeKey] = (((await store.lastChangeId(scopeKey)) ?? "") > endCursor);
+        }
+        continue;
+      }
+    }
+
     const changes = await store.changesAfter(scopeKey, cursor, limit);
     out.changes.push(...changes);
     const last = changes[changes.length - 1];
@@ -682,4 +852,21 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
   }
 
   return out;
+}
+
+/** Project an app row to the table's declared local-first surface. Server-only
+ *  `extra` columns must never ride a bootstrap page (they never ride the change
+ *  log either). Without a declared field list, strip Convex system fields. */
+function projectSyncedFields(row: Record<string, unknown>, table: ServerTableConfig | undefined): Record<string, unknown> {
+  if (table?.syncedFields) {
+    const out: Record<string, unknown> = {};
+    for (const field of table.syncedFields) {
+      if (field in row) {
+        out[field] = row[field];
+      }
+    }
+    return out;
+  }
+  const { _id, _creationTime, ...data } = row as Record<string, unknown> & { _id?: unknown; _creationTime?: unknown };
+  return data;
 }

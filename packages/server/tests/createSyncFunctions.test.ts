@@ -9,6 +9,7 @@ function makeCtx() {
   const ops = new Map<string, unknown>();
   const idMaps = new Map<string, string>();
   const changes: any[] = [];
+  const rowVersions = new Map<string, { table: string; localId: string; rowKey: string; scopeKey: string; version: number }>();
   let changeSeq = 0;
   let rowSeq = 0;
   const rows = new Map<string, any>();
@@ -20,7 +21,10 @@ function makeCtx() {
       append: "changes.append",
       listAfter: "changes.listAfter",
       latestVersion: "changes.latestVersion",
-      scopeForLocal: "changes.scopeForLocal"
+      scopeForLocal: "changes.scopeForLocal",
+      firstId: "changes.firstId",
+      lastId: "changes.lastId",
+      listVersions: "changes.listVersions"
     }
   };
 
@@ -32,17 +36,28 @@ function makeCtx() {
         return ops.get(`${a.userId}:${a.opId}`) ?? null;
       case "idMaps.get":
         return idMaps.get(`${a.table}:${a.localId}`) ?? null;
-      case "changes.scopeForLocal": {
-        const rel = changes.filter((c) => c.table === a.table && c.localId === a.localId);
-        return rel.length ? rel[rel.length - 1].scopeKey : null;
-      }
+      case "changes.scopeForLocal":
+        return rowVersions.get(`${a.table}:${a.localId}`)?.scopeKey ?? null;
       case "changes.listAfter": {
         const after = a.cursor ?? "";
         return changes.filter((c) => c.scopeKey === a.scopeKey && c.changeId > after).slice(0, a.limit);
       }
-      case "changes.latestVersion": {
-        const rel = changes.filter((c) => c.table === a.table && c.localId === a.localId);
-        return rel.length ? Math.max(...rel.map((c) => c.version)) : 0;
+      case "changes.latestVersion":
+        return rowVersions.get(`${a.table}:${a.localId}`)?.version ?? 0;
+      case "changes.firstId": {
+        const rel = changes.filter((c) => c.scopeKey === a.scopeKey);
+        return rel.length ? rel[0].changeId : null;
+      }
+      case "changes.lastId": {
+        const rel = changes.filter((c) => c.scopeKey === a.scopeKey);
+        return rel.length ? rel[rel.length - 1].changeId : null;
+      }
+      case "changes.listVersions": {
+        const after = a.afterRowKey ?? "";
+        return [...rowVersions.values()]
+          .filter((r) => r.scopeKey === a.scopeKey && r.rowKey > after)
+          .sort((x, y) => (x.rowKey < y.rowKey ? -1 : 1))
+          .slice(0, a.limit);
       }
       default:
         throw new Error(`unexpected runQuery ${fn}`);
@@ -60,6 +75,13 @@ function makeCtx() {
       case "changes.append": {
         const changeId = String(++changeSeq).padStart(12, "0");
         changes.push({ changeId, ...a });
+        rowVersions.set(`${a.table}:${a.localId}`, {
+          table: a.table,
+          localId: a.localId,
+          rowKey: `${a.table}:${a.localId}`,
+          scopeKey: a.scopeKey,
+          version: a.version
+        });
         return changeId;
       }
       default:
@@ -95,7 +117,7 @@ describe("createSyncFunctions", () => {
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" } },
+      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } },
       devUnsafeAllowClientUserId: true // local demo ctx has no auth identity
     }) as unknown as { push: any; pull: any };
 
@@ -146,7 +168,6 @@ describe("createSyncFunctions", () => {
         issues: {
           scope: { kind: "byWorkspace", workspaceIdField: "workspaceId", membershipTable: "ws_members" },
           idField: "localId",
-          conflict: "fieldLww"
         }
       },
       isMember: async () => false,
@@ -181,7 +202,7 @@ describe("createSyncFunctions", () => {
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" } }
+      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
     }) as unknown as { push: any };
 
     await expect(
@@ -196,7 +217,7 @@ describe("createSyncFunctions", () => {
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "fieldLww" } }
+      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
     }) as unknown as { push: any };
 
     await push.handler(ctx, {
@@ -208,19 +229,5 @@ describe("createSyncFunctions", () => {
       ]
     });
     expect([...rows.values()][0]).toMatchObject({ ownerId: "real-user" });
-  });
-
-  it("accepts conflict: timestampLww (the bundled component now wires per-field write clocks)", () => {
-    const { lf } = makeCtx();
-    const fns = createSyncFunctions({
-      component: lf,
-      mutation: (d) => d,
-      query: (d) => d,
-      tables: { notes: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId", conflict: "timestampLww" } }
-    }) as unknown as { push: any; pull: any };
-    // No throw — timestampLww is live. push/pull are composed; the pushStore wires
-    // getFieldClocks/putFieldClocks to the component's fieldClocks module.
-    expect(fns.push).toBeDefined();
-    expect(fns.pull).toBeDefined();
   });
 });

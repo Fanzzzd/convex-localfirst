@@ -1,6 +1,5 @@
 import { compareValues } from "./ordering.js";
 import type {
-  ConflictPolicyName,
   LocalFirstManifest,
   LocalMutationDefinition,
   LocalQueryDefinition,
@@ -43,11 +42,13 @@ export type LocalFirstFunctionMeta = {
   readonly kind: "query" | "insert" | "patch" | "remove";
   readonly tableName: string;
   readonly idField: string;
-  readonly conflict: ConflictPolicyName;
   readonly scope: ScopeDefinition;
   readonly indexes: Record<string, readonly string[]>;
   readonly setFields?: readonly string[];
   readonly counterFields?: readonly string[];
+  /** Auto-timestamp field names (lf.table's `timestamps` option). Stamped by the
+   *  mutation plans below: insert sets both, patch sets updatedAt. */
+  readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
   /** Declared once in createLocalFirst({ schemaVersion }); flows to the client
    *  manifest AND the server sync config so the two can never drift. */
   readonly schemaVersion?: number;
@@ -128,7 +129,6 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     table: meta.tableName,
     idField: meta.idField,
     scope: meta.scope,
-    conflict: meta.conflict,
     indexes: meta.indexes,
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
     ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {})
@@ -215,6 +215,7 @@ function interpretQuery(name: string, meta: LocalFirstFunctionMeta): LocalQueryD
 function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMutationDefinition<AnyArgs> {
   const spec = meta.spec;
   const table = meta.tableName;
+  const ts = meta.timestamps;
   if (meta.kind === "insert") {
     const value = spec.value;
     if (typeof value !== "function") {
@@ -226,12 +227,12 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
       table,
       plan(args, ctx) {
         const id = ctx.localId(table);
-        return {
-          kind: "insert",
-          table,
-          id,
-          value: value({ ctx: forbiddenCtx(name), auth: { userId: ctx.userId }, args, now: ctx.now, localId: id })
-        };
+        const row = value({ ctx: forbiddenCtx(name), auth: { userId: ctx.userId }, args, now: ctx.now, localId: id });
+        if (ts) {
+          row[ts.createdAt] ??= ctx.now;
+          row[ts.updatedAt] ??= ctx.now;
+        }
+        return { kind: "insert", table, id, value: row };
       }
     };
   }
@@ -276,6 +277,11 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
           if (idArg === null && value === id) continue;
           patch[field] = value;
         }
+      }
+      // Auto-timestamp: a patch that changes anything refreshes updatedAt (an
+      // explicit value in the patch wins; an empty patch stays a no-op).
+      if (ts && Object.keys(patch).length > 0) {
+        patch[ts.updatedAt] ??= ctx.now;
       }
       return { kind: "patch", table, id, patch };
     }

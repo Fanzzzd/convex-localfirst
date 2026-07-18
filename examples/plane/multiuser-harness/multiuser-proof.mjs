@@ -56,10 +56,7 @@ function clientFor(subject, { envelopeUserId } = {}) {
           kind: m.kind,
           localId: m.localId,
           value: m.value,
-          patch: m.patch,
-          // Mirror the real transport, which always forwards the op's logical clock. Required for
-          // plain-field patches to timestampLww tables (e.g. issues name/priority).
-          timestamp: m.timestamp ?? Date.now()
+          patch: m.patch
         }))
       });
     },

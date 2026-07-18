@@ -33,7 +33,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           localId: string;
           opId?: string;
           patchJson?: string;
+          retentionMs?: number;
           scopeKey: string;
+          serverId?: string;
           serverTime: number;
           table: string;
           version: number;
@@ -41,6 +43,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      firstId: FunctionReference<"query", "internal", { scopeKey: string }, any, Name>;
+      lastId: FunctionReference<"query", "internal", { scopeKey: string }, any, Name>;
       latestVersion: FunctionReference<
         "query",
         "internal",
@@ -55,26 +59,17 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      listVersions: FunctionReference<
+        "query",
+        "internal",
+        { afterRowKey?: string; limit: number; scopeKey: string },
+        any,
+        Name
+      >;
       scopeForLocal: FunctionReference<
         "query",
         "internal",
         { localId: string; table: string },
-        any,
-        Name
-      >;
-    };
-    fieldClocks: {
-      get: FunctionReference<
-        "query",
-        "internal",
-        { localId: string; table: string },
-        any,
-        Name
-      >;
-      put: FunctionReference<
-        "mutation",
-        "internal",
-        { clocksJson: string; localId: string; table: string },
         any,
         Name
       >;

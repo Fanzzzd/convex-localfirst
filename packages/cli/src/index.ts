@@ -43,11 +43,10 @@ export const todos = lf.table("todos", {
   shape: {
     ownerId: v.string(),
     text: v.string(),
-    done: v.boolean(),
-    createdAt: v.number(),
-    updatedAt: v.number()
+    done: v.boolean()
   },
   scope: lf.byUser("ownerId"),
+  timestamps: true, // adds createdAt/updatedAt, stamped automatically
   indexes: { byOwner: ["ownerId", "createdAt"] }
 });
 
@@ -59,25 +58,19 @@ export const list = todos.query({
   initial: []
 });
 
+// Custom insert only because \`done\` defaults to false instead of being an arg.
+// (\`todos.insert()\` with no spec derives args from the shape.)
 export const create = todos.insert({
   args: { text: v.string() },
-  value: ({ auth, args, now }) => ({
-    ownerId: auth.userId,
-    text: args.text,
-    done: false,
-    createdAt: now,
-    updatedAt: now
-  })
+  value: ({ auth, args }) => ({ ownerId: auth.userId, text: args.text, done: false })
 });
 
-// id() defaults to the "id" arg; patch() is explicit only because it computes updatedAt.
+// No patch() closure: args forward 1:1, updatedAt stamps automatically.
 export const toggle = todos.patch({
-  args: { id: v.string(), done: v.boolean() },
-  patch: ({ args, now }) => ({ done: args.done, updatedAt: now })
+  args: { id: v.string(), done: v.boolean() }
 });
 
-// No id() / patch() needed — remove defaults to the "id" arg.
-export const remove = todos.remove({ args: { id: v.string() } });
+export const remove = todos.remove();
 `
     },
     {
@@ -99,7 +92,7 @@ export default defineSchema({
 import localfirst from "convex-localfirst/component/convex.config.js";
 
 // Mount the local-first component — the whole "no hand-written backend" promise:
-// the sync ledger / change log / id map / cursors / tombstones come as a drop-in,
+// the sync ledger / change log / id map / row versions come as a drop-in,
 // referenced via components.convexLocalFirst.* in convex/sync.ts.
 const app = defineApp();
 app.use(localfirst);
@@ -114,7 +107,7 @@ import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import * as todos from "./todos";
 
-// The entire server sync surface. collectTables derives scope/idField/conflict
+// The entire server sync surface. collectTables derives scope/idField
 // from the imported lf.table modules — add a new table by adding its import.
 export const { push, pull, presence, presenceList } = createSyncFunctions({
   component: components.convexLocalFirst,

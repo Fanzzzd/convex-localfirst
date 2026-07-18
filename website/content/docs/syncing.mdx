@@ -15,7 +15,8 @@ the sync bookkeeping so you never define those tables yourself:
 - the append-only **change log** (the source of versions and pulls; deletes ride it
   too, as `kind: "delete"` changes — there is no separate tombstone table),
 - the **id map** (local id ↔ server id),
-- per-field **write clocks** (the `timestampLww` registers).
+- **row versions** (per-row version authority; survives change-log GC and drives
+  snapshot bootstrap for cold clients).
 
 Pull position (the cursor) is tracked **client-side** and sent on each pull — the
 component keeps no per-client cursor state.
@@ -40,7 +41,7 @@ The parent app calls only the component's **public** functions via
 
 This builds the `push` mutation and `pull` query local-first clients sync
 against. `collectTables` derives which tables are local-first — and each one's
-scope / idField / conflict — straight from your imported `lf.table` modules, so
+scope / idField / timestamps — straight from your imported `lf.table` modules, so
 the declaration lives in **one** place (the same modules the client's
 [`modules`](/docs/react-hooks#the-provider) consumes). The helper wires app rows
 to `ctx.db` and every bookkeeping operation to the mounted component.
@@ -69,7 +70,7 @@ export const { push, pull } = createSyncFunctions({
 ```
 
 Adding a local-first table later is one more `import` + one key in
-`collectTables`. (A hand-written `tables: { todos: { scope, idField, conflict } }`
+`collectTables`. (A hand-written `tables: { todos: { scope, idField } }`
 record is also accepted, for the rare config that must differ from the `lf.table`
 definition.)
 
@@ -80,7 +81,27 @@ definition.)
 | `tables` | Which app tables are local-first, and how each is scoped. |
 | `isMember` | **Required if any table is `byWorkspace`/`byProject`.** The server-side membership check. |
 | `schemaVersion` | Normally omitted — `collectTables` carries the version declared in `createLocalFirst`. |
+| `changeRetentionMs` | How long change-log entries live before opportunistic GC (default 30 days; `Infinity` disables). |
 | `now` | Optional clock override (tests). |
+
+## Cold start, GC, and revocation
+
+The pull protocol handles the full client lifecycle without any extra wiring:
+
+- **Snapshot bootstrap.** A client with no cursor for a scope gets the *current
+  rows* (paged via `bootstrapCursors`), not a replay of history — so a
+  year-old change log doesn't slow down a fresh device, and GC'd history is
+  never needed. Pages are marked in `snapshotScopes`; the client evicts rows the
+  snapshot didn't deliver only once the bootstrap completes, so an interrupted
+  bootstrap never loses data.
+- **Change-log GC.** Entries older than `changeRetentionMs` are pruned
+  opportunistically during appends — no cron to set up. Row versions survive GC,
+  so idempotency and bootstrap stay correct.
+- **Doorbell.** The reactive `subscribe` path watches the pull query with
+  `doorbell: true` — a content-free wake-up that reads at most one change per
+  scope, so Convex reactivity stays cheap.
+- **Revocation.** When membership is revoked, the next pull lists the scope in
+  `deniedScopes`; the client evicts those rows and forgets the cursor.
 
 ## Schema changes: bump the version, clients reset
 
@@ -135,16 +156,12 @@ re-runs your mutations.
   can write any *schema-valid* field value. Encode hard invariants as Convex schema
   validators; server-side mutation re-execution is a future milestone. Treat the
   schema as your server-side validation surface.
-- **Concurrent-write conflict policy.** With the default `fieldLww`, same-field
-  writes are last-writer-wins by **arrival order**, so a stale offline write can
-  overwrite a newer server edit. To fix that, declare `conflict: lf.timestampLww()`:
-  same-field collisions then resolve by the op's logical timestamp (+ clientId
-  tiebreaker), so the **newer** edit wins regardless of arrival order — enforced
-  server-side via per-field write clocks. Convergent per-field merges (`setFields`,
+- **Concurrent-write recency.** Same-field writes are last-writer-wins by
+  **arrival order** at the server, so a stale offline write can overwrite a newer
+  edit of the *same field*. Convergent per-field merges (`setFields`,
   `counterFields`) never clobber. Client-side rebase
   ([I1](/docs/reference/invariants)) keeps each device's *local* view consistent
-  throughout. Only `fieldLww` and `timestampLww` exist — both are real and
-  server-enforced; there are no silent-no-op policies to mistake for working.
+  throughout.
 
 ## What runs underneath
 

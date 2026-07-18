@@ -12,7 +12,6 @@ import {
   byUser,
   createConvexTransport,
   defineLocalFirstManifest,
-  fieldLww,
   localMutation,
   localQuery,
   localTable
@@ -33,7 +32,6 @@ function manifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        conflict: fieldLww(),
         indexes: { byList: ["ownerId", "listId", "createdAt"] }
       })
     },

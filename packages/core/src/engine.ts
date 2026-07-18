@@ -943,6 +943,30 @@ export class LocalFirstEngine {
     this.setStatus({ lastPushAt: response.serverTime });
   }
 
+  /** Evict canonical rows of every table living in `scopeKey`. With `keep`
+   *  (table → ids a completed snapshot bootstrap delivered), rows the snapshot did
+   *  not contain are removed — ghost eviction. Without it (membership revoked),
+   *  the whole scope leaves the device. Tables are matched by scope kind; rows by
+   *  their partition field. */
+  private async evictScope(scopeKey: string, keep: ReadonlyMap<string, ReadonlySet<string>> | null): Promise<void> {
+    const sep = scopeKey.indexOf(":");
+    if (sep === -1) {
+      return;
+    }
+    const prefix = scopeKey.slice(0, sep);
+    const value = scopeKey.slice(sep + 1);
+    const kind = prefix === "u" ? "byUser" : prefix;
+    for (const table of Object.values(this.manifest.tables)) {
+      const scope = table.scope;
+      if (scope.kind !== kind) {
+        continue;
+      }
+      const field =
+        scope.kind === "byUser" ? scope.field : scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
+      await this.store.removeCanonicalRows(table.table, field, value, keep ? keep.get(table.table) ?? new Set() : undefined);
+    }
+  }
+
   private async pullScopes(scopes: readonly SyncScope[]): Promise<void> {
     if (scopes.length === 0) {
       return;
@@ -957,6 +981,14 @@ export class LocalFirstEngine {
     for (const scope of scopes) {
       cursors[scope.key] = await this.store.getCursor(scope.key);
     }
+    // In-flight bootstrap continuations (opaque server tokens). Deliberately NOT
+    // persisted: an interrupted bootstrap simply restarts from its first page.
+    let bootstrapCursors: Record<string, string> = {};
+    // Rows delivered by an in-flight snapshot bootstrap, per scope per table. On
+    // completion, canonical rows NOT in this set are evicted (ghosts whose delete
+    // changes were GC'd). Accumulating instead of clearing upfront keeps the local
+    // cache whole during the bootstrap and makes an aborted bootstrap a no-op.
+    const snapshotSeen = new Map<string, Map<string, Set<string>>>();
     // Drain: the server caps each scope per pull, so keep pulling with the advanced cursors
     // until every scope reports no hasMore (a cold client may be many pages behind). Exits
     // early — marking the cache partial — if a round advances no cursor or hits the backstop.
@@ -971,7 +1003,8 @@ export class LocalFirstEngine {
                 userId: this.userId,
                 schemaVersion: this.manifest.schemaVersion,
                 scopes,
-                cursors
+                cursors,
+                bootstrapCursors
               })
             ),
           "pull"
@@ -982,14 +1015,52 @@ export class LocalFirstEngine {
         this.blockForSchemaMismatch();
         return;
       }
+      // Track which rows each in-flight snapshot bootstrap delivers; eviction of
+      // rows the snapshot did NOT contain happens only at completion (below).
+      for (const scopeKey of response.snapshotScopes ?? []) {
+        if (!snapshotSeen.has(scopeKey)) {
+          snapshotSeen.set(scopeKey, new Map());
+        }
+      }
+      for (const change of response.changes) {
+        const tables = snapshotSeen.get(change.scopeKey);
+        if (tables) {
+          let ids = tables.get(change.table);
+          if (!ids) {
+            ids = new Set();
+            tables.set(change.table, ids);
+          }
+          ids.add(change.id);
+        }
+      }
       await this.store.applyServerChanges(response.changes);
-      let advanced = false;
+      // Membership revoked (or never held): the scope's data leaves the device and
+      // its cursor is forgotten, so a later re-grant re-bootstraps cleanly.
+      for (const scopeKey of response.deniedScopes ?? []) {
+        await this.evictScope(scopeKey, null);
+        await this.store.removeCursor(scopeKey);
+        cursors[scopeKey] = null;
+        snapshotSeen.delete(scopeKey);
+      }
+      // Bootstrap progress counts as advancement (real cursors hold still while a
+      // multi-page bootstrap runs; a repeated identical token means we're stuck).
+      const nextBootstrap = response.bootstrapCursors ?? {};
+      let advanced = JSON.stringify(nextBootstrap) !== JSON.stringify(bootstrapCursors) && Object.keys(nextBootstrap).length > 0;
+      bootstrapCursors = nextBootstrap;
       for (const [scopeKey, cursor] of Object.entries(response.cursors)) {
         if (cursors[scopeKey] !== cursor) {
           advanced = true;
         }
         await this.store.setCursor(scopeKey, cursor);
         cursors[scopeKey] = cursor;
+      }
+      // A bootstrap completes when its scope's cursor is delivered with no
+      // continuation token: evict canonical rows the snapshot never mentioned.
+      for (const [scopeKey, tables] of Array.from(snapshotSeen)) {
+        if (scopeKey in response.cursors && !(scopeKey in nextBootstrap)) {
+          await this.evictScope(scopeKey, tables);
+          snapshotSeen.delete(scopeKey);
+        }
       }
       this.setStatus({ lastPullAt: response.serverTime });
       // Prefer the server's explicit per-scope hasMore; fall back to "this round

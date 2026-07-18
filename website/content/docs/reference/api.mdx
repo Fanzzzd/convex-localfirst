@@ -148,7 +148,7 @@ Its server twin is [`collectTables`](#collecttables).
 
 Also exported: `LocalStore`, `SyncTransport`, `LocalFirstManifest`,
 `FunctionNameResolver`, `LocalCommit`, `MutationStatus`, `ScopeDefinition`,
-`ConflictPolicyName`, and `SyncScope`.
+and `SyncScope`.
 
 ## `@convex-localfirst/server`
 
@@ -156,7 +156,8 @@ Also exported: `LocalStore`, `SyncTransport`, `LocalFirstManifest`,
 
 ```ts
 function createLocalFirst<Ctx>(options?: {
-  defaults?: { idField?: string; conflict?: ConflictPolicyName };
+  defaults?: { idField?: string };
+  schemaVersion?: number;
 }): LfFactory
 ```
 
@@ -167,11 +168,10 @@ Returns the `lf` factory:
 
 | Member | Signature |
 | --- | --- |
-| `lf.table(name, options)` | `{ shape; scope; idField?; conflict?; indexes?; setFields?; counterFields? }` → `{ table, query, insert, patch, remove }` |
+| `lf.table(name, options)` | `{ shape; scope; idField?; timestamps?; indexes?; setFields?; counterFields? }` → `{ table, query, insert, patch, remove }` |
 | `lf.byUser(field)` | `ScopeDefinition` |
 | `lf.byWorkspace({ workspaceIdField, membershipTable })` | `ScopeDefinition` |
 | `lf.byProject({ projectIdField, membershipTable })` | `ScopeDefinition` |
-| `lf.fieldLww()` / `lf.timestampLww()` | `ConflictPolicyName` |
 
 The builder specs:
 
@@ -181,6 +181,11 @@ table.insert({ args, value })   // value: ({ ctx, auth, args, now, localId }) =>
 table.patch({  args, id, patch })
 table.remove({ args, id })
 ```
+
+Every builder's spec is optional — a bare call derives it from the shape:
+`insert()` takes every field except the stamped ones (a `byUser` owner comes
+from auth, timestamps stamp automatically), `patch()` takes `id` plus any
+subset of non-partition fields, `remove()` takes `id`.
 
 ### `createSyncFunctions`
 
@@ -195,10 +200,23 @@ function createSyncFunctions(options: {
   isMember?: (ctx, info: { userId; scopeValue; membershipTable }) => Promise<boolean>;
   schemaVersion?: number;
   now?: () => number;
-}): { push; pull }
+  changeRetentionMs?: number;  // change-log GC horizon, default 30 days
+}): { push; pull; presence; presenceList; serverWriter }
 ```
 
 See [Syncing](/docs/syncing#createsyncfunctions).
+
+`serverWriter(ctx)` is the trusted server-side writer: call it from your own
+mutations (activity fan-out, importers, crons) to insert/patch/remove rows in
+local-first tables **through the change log**, so every client syncs the write
+like any other change:
+
+```ts
+const w = serverWriter(ctx);
+const { localId } = await w.insert("activities", { workspaceId, verb: "created" });
+await w.patch("issues", issueId, { sub_issues_count: 3 });
+await w.remove("comments", commentId);
+```
 
 ### `serverSync` engine (advanced)
 
@@ -215,7 +233,7 @@ Plus the types `ServerStore`, `ServerOperation`, `StoredChange`, `SyncConfig`.
 
 A mountable Convex component. Mount with `app.use(localfirst)` from
 `@convex-localfirst/component/convex.config.js`; call its public functions via
-`components.convexLocalFirst.*` (`ops`, `changes`, `idMaps`, `cursors`). See
+`components.convexLocalFirst.*` (`ops`, `changes`, `idMaps`, `presence`). See
 [Syncing](/docs/syncing#the-component).
 
 ## `@convex-localfirst/cli`

@@ -10,11 +10,10 @@ export const issues = lf.table("issues", {
     title: v.string(),
     status: v.union(v.literal("backlog"), v.literal("in_progress"), v.literal("done")),
     priority: v.number(),
-    assignee: v.string(),
-    createdAt: v.number(),
-    updatedAt: v.number()
+    assignee: v.string()
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
+  timestamps: true,
   indexes: {
     byWorkspace: ["workspaceId", "createdAt"]
   }
@@ -28,28 +27,19 @@ export const list = issues.query({
   initial: []
 });
 
+// Custom insert: status starts at "backlog" instead of being a caller arg.
 export const create = issues.insert({
   args: { workspaceId: v.string(), projectId: v.optional(v.string()), title: v.string(), priority: v.number(), assignee: v.string() },
-  value: ({ args, now }) => ({
-    workspaceId: args.workspaceId,
-    projectId: args.projectId,
-    title: args.title,
-    status: "backlog",
-    priority: args.priority,
-    assignee: args.assignee,
-    createdAt: now,
-    updatedAt: now
-  })
+  value: ({ args }) => ({ ...args, status: "backlog" })
 });
 
+// No patch() closures: args forward 1:1 (updatedAt stamps automatically).
 export const setStatus = issues.patch({
-  args: { id: v.string(), status: v.string() },
-  patch: ({ args, now }) => ({ status: args.status, updatedAt: now })
+  args: { id: v.string(), status: v.string() }
 });
 
 export const setPriority = issues.patch({
-  args: { id: v.string(), priority: v.number() },
-  patch: ({ args, now }) => ({ priority: args.priority, updatedAt: now })
+  args: { id: v.string(), priority: v.number() }
 });
 
-export const remove = issues.remove({ args: { id: v.string() } });
+export const remove = issues.remove();

@@ -53,11 +53,10 @@ export const todos = lf.table("todos", {
     ownerId: v.string(),
     listId: v.string(),
     text: v.string(),
-    done: v.boolean(),
-    createdAt: v.number(),
-    updatedAt: v.number()
+    done: v.boolean()
   },
   scope: lf.byUser("ownerId"),
+  timestamps: true, // adds createdAt/updatedAt, stamped automatically
   indexes: {
     byList: ["ownerId", "listId", "createdAt"]
   }
@@ -71,16 +70,23 @@ export const list = todos.query({
   initial: []
 });
 
-export const create = todos.insert({
-  args: { listId: v.string(), text: v.string() },
-  value: ({ auth, args, now }) => ({
-    ownerId: auth.userId,
-    listId: args.listId,
-    text: args.text,
-    done: false,
-    createdAt: now,
-    updatedAt: now
-  })
+// Derived from the shape: create takes { listId, text, done } (the owner comes
+// from auth), update takes { id } + any subset of fields, remove takes { id }.
+export const create = todos.insert();
+export const update = todos.patch();
+export const remove = todos.remove();
+```
+
+Server-side code (activity feeds, importers, crons) writes the same tables
+through `serverWriter` — rows land in the change log, so every client syncs them:
+
+```ts
+export const { push, pull, serverWriter } = createSyncFunctions({ ... });
+
+export const logActivity = mutation({
+  handler: async (ctx) => {
+    await serverWriter(ctx).insert("activities", { workspaceId, verb: "created" });
+  }
 });
 ```
 
@@ -115,7 +121,7 @@ membership, schema version, and an idempotency ledger.
 | [`@convex-localfirst/core`](./packages/core) | Local engine: derived live view (`canonical + replay(pending)`), IndexedDB store, multi-tab leader election, sync protocol, convergent merges (set / counter / timestamp-LWW) |
 | [`@convex-localfirst/react`](./packages/react) | Convex-compatible `useQuery` / `useMutation`, `useSyncStatus`, Convex fallback |
 | [`@convex-localfirst/server`](./packages/server) | The `lf.table` DSL and the server sync engine (`createSyncFunctions`, `collectTables`) |
-| [`@convex-localfirst/component`](./packages/component) | Mountable Convex component holding the sync bookkeeping: ledger, change log, id map, field clocks |
+| [`@convex-localfirst/component`](./packages/component) | Mountable Convex component holding the sync bookkeeping: ledger, change log (GC'd opportunistically), id map, row versions |
 | [`@convex-localfirst/cli`](./packages/cli) | `init` (scaffold a complete starter), `check` (no direct writes to local-first tables) |
 | [`@convex-localfirst/yjs`](./packages/yjs) | Yjs CRDT (rich text) over the local-first append-only log, plus `useCollaborativeDoc` |
 

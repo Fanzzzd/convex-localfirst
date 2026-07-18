@@ -7,22 +7,12 @@ export const comments = lf.table("comments", {
     workspaceId: v.string(),
     issueId: v.string(), // FK -> issues.localId (relation: issue.comments, one-to-many)
     author: v.string(),
-    body: v.string(),
-    createdAt: v.number()
+    body: v.string()
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
+  timestamps: true,
   indexes: { byWorkspace: ["workspaceId", "createdAt"] }
 });
 
-export const add = comments.insert({
-  args: { workspaceId: v.string(), issueId: v.string(), author: v.string(), body: v.string() },
-  value: ({ args, now }) => ({
-    workspaceId: args.workspaceId,
-    issueId: args.issueId,
-    author: args.author,
-    body: args.body,
-    createdAt: now
-  })
-});
-
-export const remove = comments.remove({ args: { id: v.string() } });
+export const add = comments.insert();
+export const remove = comments.remove();

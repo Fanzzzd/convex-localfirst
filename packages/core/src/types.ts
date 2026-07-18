@@ -62,7 +62,6 @@ export type LocalOperation = {
   readonly args: JsonValue;
   readonly value?: Record<string, unknown>;
   readonly patch?: Record<string, unknown>;
-  readonly baseVersion?: number;
   readonly createdAt: number;
   readonly status: OperationStatus;
   readonly error?: string;
@@ -130,6 +129,8 @@ export type PullRequest = {
   readonly schemaVersion: number;
   readonly scopes: readonly SyncScope[];
   readonly cursors: Record<ScopeKey, Cursor>;
+  /** Mid-bootstrap continuation tokens (opaque; echoed from the prior PullResponse). */
+  readonly bootstrapCursors?: Record<ScopeKey, string>;
 };
 
 export type PullResponse = {
@@ -142,6 +143,17 @@ export type PullResponse = {
    *  returned cursor. Lets the client drain to completion and report partial hydration
    *  (a large cold start) instead of silently stopping behind. */
   readonly hasMore?: Record<ScopeKey, boolean>;
+  /** Scopes whose changes in THIS response are snapshot-bootstrap pages. When such
+   *  a scope completes (cursor delivered, no continuation token), the client evicts
+   *  canonical rows the snapshot did not contain — ghost rows whose delete changes
+   *  were GC'd. No upfront clear: reads stay whole throughout, and an aborted
+   *  bootstrap changes nothing. */
+  readonly snapshotScopes?: readonly ScopeKey[];
+  /** Per-scope bootstrap continuation tokens to echo back in the next pull. */
+  readonly bootstrapCursors?: Record<ScopeKey, string>;
+  /** Requested scopes this user is not (or no longer) a member of: evict their
+   *  rows and forget their cursors — revocation removes data from the device. */
+  readonly deniedScopes?: readonly ScopeKey[];
 };
 
 export type SyncStatus = {

@@ -41,26 +41,6 @@ export function applyCounterDelta(current: unknown, delta: number): number {
   return (typeof current === "number" ? current : 0) + delta;
 }
 
-/**
- * Timestamp-ordered last-writer-wins for a scalar field (an LWW-register). A field write
- * carries the originating op's logical timestamp + a stable tiebreaker (the clientId); the
- * write with the higher `(ts, tiebreaker)` WINS, deterministically and regardless of the
- * order writes arrive at the server. This fixes the offline-first hazard that plain
- * arrival-order LWW has — an OLDER edit that syncs LATER must NOT overwrite a NEWER one.
- *
- * Provably convergent: `(ts, tiebreaker)` is a total order, so all replicas pick the same
- * winner no matter the apply order. The tiebreaker breaks equal-timestamp ties (lexicographic
- * on the clientId string) so two truly-concurrent writes still resolve deterministically.
- */
-export type FieldClock = { readonly ts: number; readonly tiebreaker: string };
-
-/** True if an incoming write `(ts, tiebreaker)` beats the current field clock (absent = wins). */
-export function lwwWins(incoming: FieldClock, current: FieldClock | undefined): boolean {
-  if (!current) return true;
-  if (incoming.ts !== current.ts) return incoming.ts > current.ts;
-  return incoming.tiebreaker > current.tiebreaker;
-}
-
 /** Stable identity key for a set element. Strings (the common case: ids) key as-is;
  *  anything else by JSON so distinct shapes never collide and types don't alias. */
 function keyOf(element: unknown): string {

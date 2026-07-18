@@ -17,23 +17,15 @@ export const docUpdates = lf.table("doc_updates", {
   shape: {
     workspaceId: v.string(),
     docId: v.string(), // FK -> documents.localId
-    update: v.string(), // base64(Yjs update)
-    createdAt: v.number()
+    update: v.string() // base64(Yjs update)
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
+  timestamps: true,
   indexes: { byWorkspace: ["workspaceId", "createdAt"], byDoc: ["workspaceId", "docId", "createdAt"] }
 });
 
-export const append = docUpdates.insert({
-  args: { workspaceId: v.string(), docId: v.string(), update: v.string() },
-  value: ({ args, now }) => ({
-    workspaceId: args.workspaceId,
-    docId: args.docId,
-    update: args.update,
-    createdAt: now
-  })
-});
+export const append = docUpdates.insert();
 
 // Prune a row subsumed by a snapshot (compaction). Safe: its effect lives on in
 // the snapshot, so removing it never loses content.
-export const prune = docUpdates.remove({ args: { id: v.string() } });
+export const prune = docUpdates.remove();
