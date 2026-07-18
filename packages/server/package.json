@@ -1,6 +1,6 @@
 {
   "name": "@convex-localfirst/server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Convex-side DSL (lf.table) and runtime-agnostic sync engine for local-first tables: scopes, ownership, idempotency.",
   "license": "MIT",
   "keywords": [
