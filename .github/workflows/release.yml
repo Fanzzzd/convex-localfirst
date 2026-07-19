@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: write # create the version PR + git tags
       pull-requests: write # open/update the "Version Packages" PR
-      id-token: write # npm provenance attestation
+      id-token: write # npm trusted publishing (OIDC) + provenance attestation
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +25,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Auth for `changeset publish` (which calls `pnpm publish` under the hood).
-      - run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # No npm token: every package is configured with a Trusted Publisher on
+      # npmjs.com (this repo + this workflow file), so `changeset publish` (which
+      # calls `pnpm publish` under the hood; pnpm >= 10.13) authenticates via
+      # GitHub's OIDC id-token — nothing to rotate, nothing to expire.
 
       # When changesets exist on main, opens a "Version Packages" PR. When that PR is
       # merged (versions bumped, changesets consumed), this run instead publishes.
@@ -40,5 +40,4 @@ jobs:
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
