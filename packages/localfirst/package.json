@@ -1,6 +1,6 @@
 {
   "name": "convex-localfirst",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Local-first collections for Convex \u2014 one install: optimistic, offline-capable React hooks with Convex as the source of truth.",
   "license": "MIT",
   "keywords": [
