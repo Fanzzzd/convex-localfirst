@@ -33,7 +33,7 @@ Concretely:
 ## The client you write
 
 ```tsx
-import { useMutation, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { useMutation, useQuery, useSyncStatus } from "convex-localfirst/react";
 import { api } from "../convex/_generated/api";
 
 export function Todos({ listId }: { listId: string }) {
@@ -100,14 +100,16 @@ It also does not sync your whole database. Local-first tables require an explici
 **scope** (per-user, per-workspace, or per-project) so a client only ever holds
 data it is allowed to see.
 
-## The packages
+## One package
 
-| Package | Role |
+`npm install convex-localfirst` — everything ships in a single package (like
+`convex` itself), split by subpath entry:
+
+| Entry | Role |
 | --- | --- |
-| `convex-localfirst` | **The one-line install**: the client surface at the root, `./server` for the DSL, `./component/convex.config` for the mount. |
-| `@convex-localfirst/react` | Drop-in `ConvexProvider`, `useQuery`, `useMutation`, `useSyncStatus`. |
-| `@convex-localfirst/core` | The local engine, store contract, sync protocol, IndexedDB store, transport. |
-| `@convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`handlePush` / `handlePull`). |
-| `@convex-localfirst/component` | A mountable Convex component holding all sync bookkeeping (ledger, change log, id map, row versions). |
-| `@convex-localfirst/cli` | `init` (scaffold a starter), `check` (forbid direct writes to local-first tables). |
-| `@convex-localfirst/yjs` | Yjs rich-text CRDT over the local-first log (`useCollaborativeDoc`). |
+| `convex-localfirst` | The client surface: drop-in `ConvexProvider`, `useQuery`, `useMutation`, `useSyncStatus`. |
+| `convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`handlePush` / `handlePull`). |
+| `convex-localfirst/component` | A mountable Convex component holding all sync bookkeeping (ledger, change log, id map, row versions). |
+| `convex-localfirst/core` | The local engine, store contract, sync protocol, IndexedDB store, transport. |
+| `convex-localfirst/yjs` | Yjs rich-text CRDT over the local-first log (`useCollaborativeDoc`); `yjs` is an optional peer. |
+| `npx convex-localfirst` | The CLI: `init` (scaffold a starter), `check` (forbid direct writes to local-first tables). |

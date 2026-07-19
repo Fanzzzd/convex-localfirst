@@ -15,9 +15,9 @@ import {
   localMutation,
   localQuery,
   localTable
-} from "@convex-localfirst/core";
+} from "convex-localfirst/core";
 // The engine is internal (I13); this diagnostic script drives it directly.
-import { LocalFirstEngine } from "@convex-localfirst/core/internal";
+import { LocalFirstEngine } from "convex-localfirst/core/internal";
 import { api } from "../convex/_generated/api.js";
 
 const url = process.env.VITE_CONVEX_URL ?? "http://127.0.0.1:3210";

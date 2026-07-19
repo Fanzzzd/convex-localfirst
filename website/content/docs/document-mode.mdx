@@ -1,6 +1,6 @@
 ---
 title: Document mode (Yjs CRDT)
-description: Collaborative rich text and ordered structures over the local-first log, via @convex-localfirst/yjs.
+description: Collaborative rich text and ordered structures over the local-first log, via convex-localfirst/yjs.
 ---
 
 Field-level LWW ([merges](/docs/defining-tables#merges)) handles most
@@ -10,11 +10,11 @@ clobbering.
 
 What field-level merge can't do is **concurrent edits to the same rich text or
 ordered list** (two people typing in one paragraph). For that, reach for a real
-sequence CRDT: `@convex-localfirst/yjs`.
+sequence CRDT: `convex-localfirst/yjs`.
 
-## Yjs rich text — `@convex-localfirst/yjs`
+## Yjs rich text — `convex-localfirst/yjs`
 
-`@convex-localfirst/yjs` rides a Yjs CRDT on the local-first log: every Yjs binary
+`convex-localfirst/yjs` rides a Yjs CRDT on the local-first log: every Yjs binary
 update is one insert-only row, and Yjs updates are commutative + idempotent, so
 edits converge with **zero conflict handling**. `react` and `yjs` are peer deps.
 
@@ -38,7 +38,7 @@ export const prune = docUpdates.remove({ args: { id: v.string() } }); // used fo
 echo-guard; you supply the live rows and the append/prune callbacks (backend-agnostic):
 
 ```tsx
-import { useCollaborativeDoc } from "@convex-localfirst/yjs";
+import { useCollaborativeDoc } from "convex-localfirst/yjs";
 
 const updates =
   useLiveQuery(collection("doc_updates").scope({ workspaceId }).where((u) => u.docId === docId)) ?? [];

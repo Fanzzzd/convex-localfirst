@@ -8,7 +8,7 @@ The server side has two parts: a **component** you mount (no code), and your
 
 ## The component
 
-`@convex-localfirst/component` is a real, mountable Convex component. It owns all
+`convex-localfirst/component` is a real, mountable Convex component. It owns all
 the sync bookkeeping so you never define those tables yourself:
 
 - the **ledger** (idempotency — dedupes re-pushed ops),
@@ -25,7 +25,7 @@ Mount it once:
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
-import localfirst from "@convex-localfirst/component/convex.config.js";
+import localfirst from "convex-localfirst/component/convex.config.js";
 
 const app = defineApp();
 app.use(localfirst);
@@ -47,7 +47,7 @@ the declaration lives in **one** place (the same modules the client's
 to `ctx.db` and every bookkeeping operation to the mounted component.
 
 ```ts title="convex/sync.ts"
-import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
+import { collectTables, createSyncFunctions } from "convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import * as todos from "./todos";
@@ -214,7 +214,7 @@ plus the component.
 If you need full control (custom storage, batching component writes, extra
 validation), you can implement `ServerStore` yourself and call `handlePush` /
 `handlePull` directly — `createSyncFunctions` is the turnkey path, not the only
-one. Both are exported from `@convex-localfirst/server`.
+one. Both are exported from `convex-localfirst/server`.
 
 <Callout title="Auth in production">
 The helper derives identity from `ctx.auth` and falls back to a supplied id only

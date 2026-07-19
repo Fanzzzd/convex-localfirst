@@ -1,0 +1,698 @@
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import * as ConvexReact from "convex/react";
+import { getFunctionName, makeFunctionReference } from "convex/server";
+import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
+import {
+  IndexedDbStore,
+  MemoryLocalStore,
+  collectManifest,
+  collection,
+  createClientId,
+  createConvexTransport,
+  createLocalFirstEngine,
+  many,
+  manyToMany,
+  one,
+  viaIds,
+  type FunctionNameResolver,
+  type LocalFirstManifest,
+  type LocalFirstMutationCall,
+  type LocalQueryPlan,
+  type LocalStore,
+  type RelationSpec,
+  type RowValue,
+  type SyncStatus,
+  type SyncTransport
+} from "../core/index.js";
+// Engine + low-level helpers are INTERNAL (I13): imported from the internal subpath,
+// never re-exported to app authors. See convex-localfirst/core/internal.
+import {
+  LocalFirstEngine,
+  coordinationName,
+  createFallbackMutationCall,
+  createMultiTabSync,
+  defaultFunctionName
+} from "../core/internal.js";
+
+export { collection, many, manyToMany, one, viaIds };
+export type { LocalQueryPlan, RelationSpec };
+
+export const ConvexReactClient = ConvexReact.ConvexReactClient;
+export const Authenticated = ConvexReact.Authenticated;
+export const Unauthenticated = ConvexReact.Unauthenticated;
+export const AuthLoading = ConvexReact.AuthLoading;
+export const useConvex = ConvexReact.useConvex;
+export const useConvexAuth = ConvexReact.useConvexAuth;
+
+const EMPTY_STATUS: SyncStatus = {
+  online: true,
+  syncing: false,
+  pendingMutations: 0,
+  lastPushAt: null,
+  lastPullAt: null,
+  lastError: null,
+  blockedBySchemaMismatch: false,
+  partial: false
+};
+
+export type LocalFirstProviderConfig = {
+  /**
+   * Your imported `lf.table` modules — the client manifest is built from them at
+   * runtime, running the SAME declarations the server deploys (no codegen step):
+   *
+   * ```tsx
+   * import * as todos from "../convex/todos";
+   * <ConvexProvider client={convex} localFirst={{ modules: { todos }, userId }}>
+   * ```
+   *
+   * Keys mirror the Convex module path (`{ todos }` → `api.todos.*`; a nested
+   * module as `{ "tasks/todos": todos }`).
+   */
+  readonly modules?: Record<string, unknown>;
+  /** Bump when a local-first table's shape changes incompatibly (gates sync). Default 1. */
+  readonly schemaVersion?: number;
+  /** Escape hatch / tests: a prebuilt manifest instead of `modules`. */
+  readonly manifest?: LocalFirstManifest;
+  readonly userId?: string | null;
+  readonly clientId?: string;
+  /** Local store. Defaults to IndexedDB in the browser (namespaced by `namespace`
+   *  ?? `userId`), in-memory elsewhere (SSR, tests). */
+  readonly store?: LocalStore;
+  /** Database name for the default IndexedDB store. Default "convex-localfirst". */
+  readonly databaseName?: string;
+  /** Store namespace — isolates one user's local data from another's on a shared
+   *  device. Defaults to `userId`; switch it on logout. */
+  readonly namespace?: string;
+  /** Sync function refs. Default to the conventional `api.sync.push` / `api.sync.pull`
+   *  (and `api.sync.presence` / `api.sync.presenceList` for `usePresence`). */
+  readonly sync?: {
+    readonly push?: FunctionReference<"mutation">;
+    readonly pull?: FunctionReference<"query">;
+    readonly presence?: FunctionReference<"mutation">;
+    readonly presenceList?: FunctionReference<"query">;
+  };
+  /** Escape hatch: bring your own transport (replaces the default Convex wiring). */
+  readonly transport?: SyncTransport;
+  readonly nameOf?: FunctionNameResolver;
+};
+
+type LocalFirstReactContextValue = {
+  readonly engine: LocalFirstEngine;
+  /** What usePresence needs; presence rides plain Convex reactivity, not the engine. */
+  readonly presence: {
+    readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+    readonly clientId: string;
+    readonly userId: string | null;
+    readonly beatName: string;
+    readonly listName: string;
+  };
+};
+
+const LocalFirstReactContext = createContext<LocalFirstReactContextValue | null>(null);
+
+/**
+ * Default name resolver: use Convex's getFunctionName for real function
+ * references (api.todos.list -> "todos:list"); fall back to the core resolver
+ * for plain strings/objects (used in tests).
+ */
+function reactDefaultFunctionName(reference: unknown): string {
+  try {
+    return getFunctionName(reference as never);
+  } catch {
+    return defaultFunctionName(reference);
+  }
+}
+
+/**
+ * The convex-aware name resolver (`api.todos.list` → `"todos:list"`) the provider and the
+ * headless factory wire by default. Exported so an imperative consumer building its own
+ * engine doesn't have to inject one.
+ */
+export const convexFunctionName: FunctionNameResolver = reactDefaultFunctionName;
+
+/**
+ * The engine from createConvexLocalFirst, with convex-typed `mutate`/`query`: args and
+ * result infer from the function reference, like the hooks — so headless consumers get the
+ * same inference instead of core's backend-agnostic `reference: unknown`. Core stays
+ * convex-free; the typing lives here in the adapter.
+ */
+export type ConvexLocalFirstEngine = Omit<LocalFirstEngine, "mutate" | "query"> & {
+  mutate<Mutation extends FunctionReference<"mutation">>(
+    reference: Mutation,
+    args: FunctionArgs<Mutation>
+  ): LocalFirstMutationCall<FunctionReturnType<Mutation>>;
+  query<Query extends FunctionReference<"query">>(
+    reference: Query,
+    args: FunctionArgs<Query>
+  ): Promise<FunctionReturnType<Query> | undefined>;
+};
+
+export type CreateConvexLocalFirstOptions = {
+  /** Your imported lf.table modules (see LocalFirstProviderConfig.modules) — or a
+   *  prebuilt `manifest`. */
+  readonly modules?: Record<string, unknown>;
+  readonly schemaVersion?: number;
+  readonly manifest?: LocalFirstManifest;
+  /** Pass a Convex client, or a `url` to construct a (reactive) ConvexReactClient. */
+  readonly client?: InstanceType<typeof ConvexReact.ConvexReactClient>;
+  readonly url?: string;
+  readonly userId?: string | null;
+  readonly clientId?: string;
+  /** Local store. Defaults to IndexedDb in the browser, in-memory elsewhere. */
+  readonly store?: LocalStore;
+  /** Names for the default browser IndexedDb store. */
+  readonly databaseName?: string;
+  readonly namespace?: string;
+  /** Sync function refs. Default to the conventional `sync:push` / `sync:pull`. */
+  readonly sync?: {
+    readonly push?: FunctionReference<"mutation">;
+    readonly pull?: FunctionReference<"query">;
+  };
+};
+
+/**
+ * One-call headless setup for an imperative (non-hook) consumer — a service layer, store,
+ * or Node script. Wires the Convex transport, name resolver, a browser/Node store default,
+ * and a client id (the provider's plumbing minus the React lifecycle). Returns the engine
+ * plus the Convex client (for server-only, non-local-first functions).
+ */
+export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): {
+  readonly engine: ConvexLocalFirstEngine;
+  readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+} {
+  const manifest =
+    options.manifest ??
+    (options.modules
+      ? collectManifest(options.modules, { schemaVersion: options.schemaVersion })
+      : raise("createConvexLocalFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."));
+  const client =
+    options.client ??
+    new ConvexReact.ConvexReactClient(
+      options.url ?? raise("createConvexLocalFirst: pass either `client` or `url`.")
+    );
+  const clientId = options.clientId ?? createClientId();
+  const userId = options.userId ?? null;
+  const store =
+    options.store ??
+    (typeof indexedDB !== "undefined"
+      ? new IndexedDbStore({
+          databaseName: options.databaseName ?? "convex-localfirst",
+          namespace: options.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
+        })
+      : new MemoryLocalStore());
+  const transport = createConvexTransport({
+    client,
+    push: options.sync?.push ?? makeFunctionReference<"mutation">("sync:push"),
+    pull: options.sync?.pull ?? makeFunctionReference<"query">("sync:pull"),
+    clientId,
+    // The transport envelope wants a string; an anonymous (null-userId) engine sends
+    // "" — the server resolves the real identity from auth and ignores this anyway.
+    userId: userId ?? ""
+  });
+  const engine = createLocalFirstEngine({
+    manifest,
+    store,
+    transport,
+    clientId,
+    userId,
+    nameOf: convexFunctionName
+  });
+  // Runtime is core's engine; the cast only adds the convex-typed mutate/query overloads
+  // (same methods, inferred arg/return types). Sound: the runtime signatures are wider.
+  return { engine: engine as unknown as ConvexLocalFirstEngine, client };
+}
+
+function raise(message: string): never {
+  throw new Error(message);
+}
+
+/** Default IndexedDB namespace: per user, and per schemaVersion past v1 — bumping the
+ *  version yields a fresh local store (clean reset + full resync) instead of a
+ *  mismatch-blocked dead end. v1 stays unsuffixed so existing stores keep working. */
+function defaultNamespace(userId: string | null, schemaVersion: number): string {
+  const base = userId ?? "default";
+  return schemaVersion > 1 ? `${base}::v${schemaVersion}` : base;
+}
+
+export function ConvexProvider(props: {
+  readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+  readonly children: React.ReactNode;
+  readonly localFirst?: LocalFirstProviderConfig;
+}) {
+  if (!props.localFirst) {
+    return <ConvexReact.ConvexProvider client={props.client}>{props.children}</ConvexReact.ConvexProvider>;
+  }
+  return (
+    <ConvexReact.ConvexProvider client={props.client}>
+      <LocalFirstProvider {...props.localFirst} client={props.client}>
+        {props.children}
+      </LocalFirstProvider>
+    </ConvexReact.ConvexProvider>
+  );
+}
+
+// Internal: the explicit-config provider. Users mount the local-first layer via
+// the public `ConvexProvider` (drop-in name) + its `localFirst` prop.
+function LocalFirstProvider(
+  props: LocalFirstProviderConfig & {
+    readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
+    readonly children: React.ReactNode;
+  }
+) {
+  // Resolved ONCE per provider instance: the manifest is pure data derived from the
+  // imported modules (stable), and rebuilding it on an inline `modules={{ todos }}`
+  // object would thrash the engine every render.
+  const [manifest] = useState<LocalFirstManifest>(() => {
+    if (props.manifest) return props.manifest;
+    if (props.modules) return collectManifest(props.modules, { schemaVersion: props.schemaVersion });
+    throw new Error(
+      "ConvexProvider localFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."
+    );
+  });
+  const [clientId] = useState(() => props.clientId ?? createClientId());
+  const userId = props.userId ?? null;
+
+  // Default transport: the conventional sync endpoints over the SAME Convex client the
+  // provider already holds. Deps use the resolved function NAMES — `api.sync.push` is a
+  // fresh proxy object per access, so depending on the reference would thrash.
+  const pushName = props.sync?.push ? reactDefaultFunctionName(props.sync.push) : "sync:push";
+  const pullName = props.sync?.pull ? reactDefaultFunctionName(props.sync.pull) : "sync:pull";
+  const transport = useMemo(
+    () =>
+      props.transport ??
+      createConvexTransport({
+        client: props.client,
+        push: makeFunctionReference<"mutation">(pushName),
+        pull: makeFunctionReference<"query">(pullName),
+        clientId,
+        // The transport envelope wants a string; an anonymous (null-userId) engine sends
+        // "" — the server resolves the real identity from auth and ignores this anyway.
+        userId: userId ?? ""
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [props.transport, props.client, pushName, pullName, clientId, userId]
+  );
+
+  // Resolve the store with the SAME deps as the engine, so (a) an app that inlines a
+  // fresh store object each render doesn't thrash the engine, and (b) the multi-tab
+  // coordination key below is derived from the EXACT store the engine holds — never an
+  // old-engine-under-a-new-store-namespace mismatch. Browser default is durable
+  // IndexedDB, namespaced per user (switch user → separate local data, I9) and per
+  // schemaVersion past v1 — so bumping the version in createLocalFirst gives every
+  // client a clean local store + full resync (the schema-migration escape hatch),
+  // instead of a mismatch-blocked dead end.
+  const store = useMemo(
+    () =>
+      props.store ??
+      (typeof indexedDB !== "undefined"
+        ? new IndexedDbStore({
+            databaseName: props.databaseName ?? "convex-localfirst",
+            namespace: props.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
+          })
+        : new MemoryLocalStore()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manifest, userId, transport, props.nameOf]
+  );
+  const engine = useMemo(() => {
+    return new LocalFirstEngine({
+      manifest,
+      store,
+      clientId,
+      userId,
+      transport,
+      nameOf: props.nameOf ?? reactDefaultFunctionName
+    });
+    // clientId is intentionally captured once; store moves in lockstep (same deps).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manifest, userId, transport, props.nameOf, store]);
+
+  // The engine self-wires browser connectivity in its constructor — reflecting
+  // navigator.onLine into the sync status and flushing the offline outbox on reconnect
+  // (see LocalFirstEngine.wireConnectivity). Dispose those listeners when the engine is
+  // replaced or the provider unmounts. resume() on setup is what makes this StrictMode-
+  // safe: React's dev mount→cleanup→mount cycle reuses the memoized engine after its
+  // cleanup disposed it, which would otherwise leave it deaf to online/offline events.
+  useEffect(() => {
+    engine.resume();
+    return () => engine.dispose();
+  }, [engine]);
+
+  // Multi-tab coordination: elect one leader (only it runs the background batch push)
+  // and poke other tabs to re-read the shared IndexedDB after a pull. Engaged only with
+  // the crash-safe Web Locks primitive present (every modern browser); without it — SSR,
+  // jsdom tests, old browsers — every tab syncs independently exactly as before.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("locks" in navigator)) {
+      return;
+    }
+    // Coordinate on the SHARED-data boundary (the store the engine actually holds), not
+    // just the user — see coordinationName. engine + store move in lockstep, so this can
+    // never key an engine under another store's namespace.
+    const dispose = createMultiTabSync(engine, { name: coordinationName(store, userId), id: engine.clientId });
+    return dispose;
+  }, [engine, userId, store]);
+
+  const beatName = props.sync?.presence ? reactDefaultFunctionName(props.sync.presence) : "sync:presence";
+  const listName = props.sync?.presenceList ? reactDefaultFunctionName(props.sync.presenceList) : "sync:presenceList";
+  const value = useMemo(
+    () => ({ engine, presence: { client: props.client, clientId, userId, beatName, listName } }),
+    [engine, props.client, clientId, userId, beatName, listName]
+  );
+  return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
+}
+
+// Internal: the engine never appears in the public type surface (I13).
+function useLocalFirstEngine(): LocalFirstEngine | null {
+  return useContext(LocalFirstReactContext)?.engine ?? null;
+}
+
+export type UseLocalFirstQueryOptions<TResult> = {
+  readonly initial?: TResult;
+  /** `"auto"` (default): pull from the server on mount + subscribe to live changes.
+   *  `"off"`: read local data only, never sync this query. (No silent middle ground —
+   *  a "manual" mode with no trigger API would just behave as "auto", so it isn't offered.) */
+  readonly sync?: "auto" | "off";
+};
+
+/**
+ * Convex-compatible useQuery. Args and result type are inferred from the Convex
+ * function reference (drop-in, no explicit generics — exactly like `convex/react`).
+ * Local-first functions read from the engine and subscribe to local changes;
+ * everything else falls through to Convex.
+ *
+ * All hooks below run unconditionally on every render (no rules-of-hooks
+ * violation): the Convex hook is fed "skip" for local-first functions, and the
+ * local subscription is inert when there is no engine/local definition.
+ */
+export function useQuery<Query extends FunctionReference<"query">>(
+  reference: Query,
+  args?: FunctionArgs<Query> | "skip",
+  options?: UseLocalFirstQueryOptions<FunctionReturnType<Query>>
+): FunctionReturnType<Query> | undefined {
+  const engine = useLocalFirstEngine();
+  const isLocal = engine !== null && engine.hasLocalQuery(reference);
+  const resolvedArgs = (args ?? {}) as FunctionArgs<Query> | "skip";
+
+  const convexResult = ConvexReact.useQuery(
+    reference as never,
+    (isLocal ? "skip" : resolvedArgs) as never
+  ) as FunctionReturnType<Query> | undefined;
+
+  const localResult = useLocalQuery<FunctionArgs<Query>, FunctionReturnType<Query>>(
+    isLocal ? engine : null,
+    reference,
+    resolvedArgs,
+    options
+  );
+
+  return isLocal ? localResult : convexResult;
+}
+
+function useLocalQuery<TArgs, TResult>(
+  engine: LocalFirstEngine | null,
+  reference: unknown,
+  args: TArgs | "skip",
+  options?: UseLocalFirstQueryOptions<TResult>
+): TResult | undefined {
+  const [value, setValue] = useState<TResult | undefined>(options?.initial);
+  const argsKey = useMemo(() => JSON.stringify(args), [args]);
+  // Key the effect on the resolved function NAME, not the reference object:
+  // Convex's `api` proxy returns a fresh object per access, so using the object
+  // identity would re-run this effect every render (an infinite sync loop).
+  const refKey = useMemo(() => (engine ? engine.functionName(reference) : null), [engine, reference]);
+
+  useEffect(() => {
+    if (!engine || args === "skip") {
+      // "skip" must read as no data (Convex returns undefined), not the last
+      // value from before the query was skipped.
+      setValue(options?.initial);
+      return;
+    }
+    let alive = true;
+    const run = () => {
+      void engine.query<TArgs, TResult>(reference, args as TArgs).then((result) => {
+        if (alive) {
+          setValue((result as TResult) ?? options?.initial);
+        }
+      });
+    };
+    run();
+    const unsubscribe = engine.subscribe(run);
+    let unwatch: (() => void) | null = null;
+    if (options?.sync !== "off") {
+      void engine.refreshQuery(reference, args as TArgs);
+      // Reactive like convex/react: a reactive transport pushes server changes, which
+      // drain into the store and fire `run` via the local subscription above. Falls
+      // back to mount + local-change pulls when the transport isn't reactive.
+      unwatch = engine.watchQuery(reference, args as TArgs);
+    }
+    return () => {
+      alive = false;
+      unsubscribe();
+      unwatch?.();
+    };
+    // refKey/argsKey are the stable identity of (function, args); reference and
+    // options are read at effect time. eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, refKey, argsKey]);
+
+  // "skip" must read as no data SYNCHRONOUSLY (Convex returns undefined): the
+  // effect's clear runs after render, so returning `value` here would surface the
+  // previous result for one render.
+  if (args === "skip") {
+    return options?.initial;
+  }
+  return value;
+}
+
+/**
+ * Reactive local-first query for the chainable `collection(...)` builder. Re-renders on
+ * local data change and refines the derived view with where/order/limit on the client.
+ * The query is rebuilt inline each render, so effects key on the stable (table, scope)
+ * identity, never the per-render object — keeping dynamic predicates live without resubscribing.
+ */
+export type UseLiveQueryOptions = {
+  /**
+   * Real-time FALLBACK for non-reactive transports only. A reactive transport (the default
+   * ConvexReactClient) pushes changes and ignores this; an HTTP client re-pulls the scope
+   * every N ms while mounted. Leave unset for normal data.
+   */
+  readonly pollMs?: number;
+};
+
+export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
+  query: LocalQueryPlan<Row, Rel> | "skip",
+  options?: UseLiveQueryOptions
+): Array<Row & Rel> | undefined {
+  const engine = useLocalFirstEngine();
+  const [rowsByTable, setRowsByTable] = useState<Record<string, readonly RowValue[]> | undefined>(undefined);
+  const lastResult = useRef<Array<Row & Rel> | undefined>(undefined);
+
+  // The tables this query reads: its base table + any relation targets/join
+  // tables. A stable sorted key so an inline-rebuilt query object (or added
+  // relations) re-subscribes only when the table SET actually changes.
+  const tables = query === "skip" || !engine ? [] : engine.tablesForPlan(query);
+  const tablesKey = tables.length ? [...tables].sort().join(",") : null;
+
+  // Subscribe to every read table's live rows; re-pull all on any local change.
+  useEffect(() => {
+    if (!engine || query === "skip") {
+      setRowsByTable(undefined);
+      return;
+    }
+    const wanted = engine.tablesForPlan(query);
+    let alive = true;
+    const pull = () => {
+      void Promise.all(wanted.map((t) => engine.tableRows(t).then((rows) => [t, rows] as const))).then((entries) => {
+        if (alive) {
+          setRowsByTable(Object.fromEntries(entries));
+        }
+      });
+    };
+    pull();
+    const unsubscribe = engine.subscribe(pull);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+    // query is read at effect time; tablesKey is the stable identity of its read set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, tablesKey]);
+
+  // Background sync for this query's scope (push pending + pull). Keyed on the
+  // scope values + read set, not the per-render query object.
+  const scopeKey = query === "skip" ? null : JSON.stringify(query.scopeValues ?? null);
+  const pollMs = options?.pollMs;
+  useEffect(() => {
+    if (!engine || query === "skip") {
+      return;
+    }
+    void engine.refreshPlan(query);
+    // Prefer true server-push: a reactive transport drains this scope the instant
+    // the server has a change — no idle polling, instant cross-client updates.
+    const unwatch = engine.watchPlan(query);
+    if (unwatch) {
+      return unwatch;
+    }
+    // Fallback for a non-reactive transport (e.g. the HTTP client, or tests): poll
+    // the scope when the caller opted in. refreshPlan never throws and pulls only
+    // changes after the cursor, so an idle poll is cheap.
+    if (!pollMs) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void engine.refreshPlan(query);
+    }, pollMs);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, tablesKey, scopeKey, pollMs]);
+
+  if (query === "skip" || rowsByTable === undefined || !engine) {
+    lastResult.current = undefined;
+    return undefined;
+  }
+  // Route through the engine (not query.run directly) so the scoped fail-closed
+  // guard + relation attach are enforced. Return a stable array reference when the
+  // result is unchanged (no-relation case), so it's safe in downstream deps.
+  const next = engine.applyLocalQuery(query, rowsByTable);
+  const prev = lastResult.current;
+  if (prev && prev.length === next.length && prev.every((row, i) => row === next[i])) {
+    return prev;
+  }
+  lastResult.current = next;
+  return next;
+}
+
+/** Mutators always return the hybrid call shape (await it like Convex, or use .local/.server). */
+export type LocalFirstMutator<TArgs, TResult> = (args: TArgs) => LocalFirstMutationCall<TResult>;
+
+/**
+ * Convex-compatible useMutation. Args and result type are inferred from the
+ * function reference (no explicit generics). The returned mutator yields the
+ * hybrid call: `await it` resolves to the server result (Convex-identical), and
+ * `.local` / `.server` are separately awaitable.
+ */
+export function useMutation<Mutation extends FunctionReference<"mutation">>(
+  reference: Mutation
+): LocalFirstMutator<FunctionArgs<Mutation>, FunctionReturnType<Mutation>> {
+  type TArgs = FunctionArgs<Mutation>;
+  type TResult = FunctionReturnType<Mutation>;
+  const engine = useLocalFirstEngine();
+  const convexMutation = ConvexReact.useMutation(reference as never) as (args: TArgs) => Promise<TResult>;
+  const isLocal = engine !== null && engine.hasLocalMutation(reference);
+  // Stable function NAME, not the per-access `api` proxy object — otherwise the
+  // returned mutator changes every render and re-runs any effect that depends on it.
+  const refKey = useMemo(() => (engine ? engine.functionName(reference) : null), [engine, reference]);
+
+  return useMemo<LocalFirstMutator<TArgs, TResult>>(() => {
+    if (isLocal && engine) {
+      return (args: TArgs) => engine.mutate<TArgs, TResult>(reference, args);
+    }
+    // Fallback to Convex, but keep the uniform return type so .local/.server work.
+    return (args: TArgs) => createFallbackMutationCall<TResult>(convexMutation(args));
+    // reference is read at call time; refKey is its stable identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, convexMutation, isLocal, refKey]);
+}
+
+export function useSyncStatus(): SyncStatus {
+  const engine = useLocalFirstEngine();
+  const [status, setStatus] = useState<SyncStatus>(() => engine?.getStatus() ?? EMPTY_STATUS);
+
+  useEffect(() => {
+    if (!engine) {
+      return;
+    }
+    setStatus(engine.getStatus());
+    return engine.subscribeStatus(() => setStatus(engine.getStatus()));
+  }, [engine]);
+
+  return status;
+}
+
+export type PresencePeer = {
+  readonly clientId: string;
+  readonly userId: string;
+  readonly data: Record<string, unknown>;
+  readonly updatedAt: number;
+};
+
+const EMPTY_PEERS: PresencePeer[] = [];
+
+/**
+ * Who is here right now — live avatars, "N online", typing indicators. Ephemeral
+ * by design: presence rides plain Convex reactivity (heartbeats into the mounted
+ * component, TTL-expired reads), never the sync log, and nothing persists locally.
+ *
+ * ```tsx
+ * const { others } = usePresence({ workspace: workspaceId }, { name: "Ada", color: "#7c5cff" });
+ * ```
+ *
+ * The scope is a sync scope, so the server enforces the same access rules as
+ * pull: your own user scope (the default), or a workspace/project you are a
+ * member of. `data` is broadcast to peers on each heartbeat.
+ */
+export function usePresence(
+  scope?: { readonly workspace?: string; readonly project?: string },
+  data?: Record<string, unknown>,
+  options?: { readonly heartbeatMs?: number }
+): { readonly peers: PresencePeer[]; readonly others: PresencePeer[] } {
+  const presence = useContext(LocalFirstReactContext)?.presence ?? null;
+  const heartbeatMs = options?.heartbeatMs ?? 10_000;
+  const scopeKey = scope?.workspace
+    ? `byWorkspace:${scope.workspace}`
+    : scope?.project
+      ? `byProject:${scope.project}`
+      : `u:${presence?.userId ?? ""}`;
+
+  // Live peers via plain Convex useQuery — every heartbeat is a table write, so
+  // subscribers re-render at heartbeat granularity without polling.
+  const listRef = makeFunctionReference<"query">(presence?.listName ?? "sync:presenceList");
+  const peers =
+    (ConvexReact.useQuery(
+      listRef as never,
+      (presence ? { scopeKey, userId: presence.userId ?? "" } : "skip") as never
+    ) as PresencePeer[] | undefined) ?? EMPTY_PEERS;
+
+  // The heartbeat loop reads `data` through a ref so a changing object doesn't
+  // restart it. ponytail: a data change is broadcast on the NEXT beat (≤ heartbeatMs);
+  // lower heartbeatMs if you push fast-changing data like cursors.
+  const dataRef = useRef<Record<string, unknown>>(data ?? {});
+  dataRef.current = data ?? {};
+  useEffect(() => {
+    if (!presence) {
+      return;
+    }
+    const beatRef = makeFunctionReference<"mutation">(presence.beatName);
+    const send = (leaving?: boolean) =>
+      void presence.client
+        .mutation(
+          beatRef as never,
+          {
+            scopeKey,
+            clientId: presence.clientId,
+            userId: presence.userId ?? "",
+            data: dataRef.current,
+            leaving
+          } as never
+        )
+        .catch(() => {
+          // Presence is best-effort: an offline or rejected beat simply means we
+          // appear absent until the next successful one.
+        });
+    send();
+    const timer = setInterval(() => send(), heartbeatMs);
+    const onUnload = () => send(true);
+    window.addEventListener("beforeunload", onUnload);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", onUnload);
+      send(true);
+    };
+  }, [presence, scopeKey, heartbeatMs]);
+
+  return useMemo(
+    () => ({ peers, others: presence ? peers.filter((p) => p.clientId !== presence.clientId) : peers }),
+    [peers, presence]
+  );
+}
+

@@ -1,12 +1,12 @@
 ---
 title: API reference
-description: The complete public API surface of @convex-localfirst/* — React hooks, core wiring, the server DSL, and CRDTs.
+description: The complete public API surface of convex-localfirst — React hooks, core wiring, the server DSL, and CRDTs.
 ---
 
 Everything below is the public surface. Engine internals (rebase, the engine
 class, the store implementation details) are intentionally not exported.
 
-## `@convex-localfirst/react`
+## `convex-localfirst/react`
 
 ### `ConvexProvider`
 
@@ -82,7 +82,7 @@ function useSyncStatus(): SyncStatus
 `ConvexReactClient`, `Authenticated`, `Unauthenticated`, `AuthLoading`,
 `useConvex`, `useConvexAuth`.
 
-## `@convex-localfirst/core`
+## `convex-localfirst/core`
 
 ### `IndexedDbStore`
 
@@ -150,7 +150,7 @@ Also exported: `LocalStore`, `SyncTransport`, `LocalFirstManifest`,
 `FunctionNameResolver`, `LocalCommit`, `MutationStatus`, `ScopeDefinition`,
 and `SyncScope`.
 
-## `@convex-localfirst/server`
+## `convex-localfirst/server`
 
 ### `createLocalFirst`
 
@@ -231,18 +231,18 @@ function handlePull(store: ServerStore, config: SyncConfig, request): Promise<Pu
 
 Plus the types `ServerStore`, `ServerOperation`, `StoredChange`, `SyncConfig`.
 
-## `@convex-localfirst/component`
+## `convex-localfirst/component`
 
 A mountable Convex component. Mount with `app.use(localfirst)` from
-`@convex-localfirst/component/convex.config.js`; call its public functions via
+`convex-localfirst/component/convex.config.js`; call its public functions via
 `components.convexLocalFirst.*` (`ops`, `changes`, `idMaps`, `presence`). See
 [Syncing](/docs/syncing#the-component).
 
-## `@convex-localfirst/cli`
+## `convex-localfirst/cli`
 
 `init`, `check` — see [The CLI](/docs/cli).
 
-## `@convex-localfirst/yjs`
+## `convex-localfirst/yjs`
 
 Wire a Yjs CRDT (rich text, nested lists) onto the local-first log. `react` and `yjs`
 are peer deps. See [Document mode](/docs/document-mode).

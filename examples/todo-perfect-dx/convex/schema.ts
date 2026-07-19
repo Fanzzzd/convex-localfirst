@@ -11,7 +11,7 @@ import { todos } from "./todos";
 // The schema is DERIVED from the lf.table declarations — each .table() call adds
 // the localId field + the declared indexes, so a table's shape lives in exactly
 // one place (its module). All local-first sync bookkeeping (ledger / change log /
-// id map / row versions) lives in the mounted @convex-localfirst/component.
+// id map / row versions) lives in the mounted convex-localfirst/component.
 export default defineSchema({
   todos: todos.table(),
   issues: issues.table(),

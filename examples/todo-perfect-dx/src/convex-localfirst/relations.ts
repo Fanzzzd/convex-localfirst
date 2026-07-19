@@ -1,4 +1,4 @@
-import { many, manyToMany, one } from "@convex-localfirst/react";
+import { many, manyToMany, one } from "convex-localfirst/react";
 import type { Doc, TableNames } from "../../convex/_generated/dataModel";
 
 // DataModel-aware relation helpers: the target Doc type is INFERRED from the

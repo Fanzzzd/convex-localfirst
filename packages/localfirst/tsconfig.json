@@ -7,9 +7,5 @@
     "noEmit": true,
     "declaration": true
   },
-  "include": [
-    "src/react",
-    "src/server",
-    "src/core"
-  ]
+  "include": ["src"]
 }

@@ -9,7 +9,6 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "test:core": "pnpm --filter @convex-localfirst/core test",
     "ci": "pnpm --filter \"./packages/*\" build && pnpm --filter \"./packages/*\" typecheck && pnpm --filter \"./packages/*\" test",
     "changeset": "changeset",
     "version-packages": "changeset version",

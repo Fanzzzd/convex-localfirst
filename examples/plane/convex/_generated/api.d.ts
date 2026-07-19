@@ -71,5 +71,5 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  convexLocalFirst: import("@convex-localfirst/component/_generated/component.js").ComponentApi<"convexLocalFirst">;
+  convexLocalFirst: import("convex-localfirst/component/_generated/component.js").ComponentApi<"convexLocalFirst">;
 };

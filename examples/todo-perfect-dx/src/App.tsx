@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { collection, useLiveQuery, useMutation, usePresence, useQuery, useSyncStatus } from "@convex-localfirst/react";
+import { collection, useLiveQuery, useMutation, usePresence, useQuery, useSyncStatus } from "convex-localfirst/react";
 import { ChevronLeft, ChevronRight, Loader2, MessageSquare, Plus, Tag, Users, Wifi, WifiOff, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";

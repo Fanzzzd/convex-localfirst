@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, useLiveQuery, useMutation } from "@convex-localfirst/react";
+import { collection, useLiveQuery, useMutation } from "convex-localfirst/react";
 import { ChevronRight, FileText, Plus, Trash2 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";

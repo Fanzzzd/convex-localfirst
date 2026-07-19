@@ -1,4 +1,4 @@
-import { collectTables, createSyncFunctions } from "@convex-localfirst/server";
+import { collectTables, createSyncFunctions } from "convex-localfirst/server";
 import { components } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 

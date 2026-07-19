@@ -2,8 +2,8 @@ import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 import { BlockNoteView } from "@blocknote/mantine";
 import { useCreateBlockNote } from "@blocknote/react";
-import { collection, useLiveQuery, useMutation } from "@convex-localfirst/react";
-import { useCollaborativeDoc } from "@convex-localfirst/yjs";
+import { collection, useLiveQuery, useMutation } from "convex-localfirst/react";
+import { useCollaborativeDoc } from "convex-localfirst/yjs";
 import { api } from "../convex/_generated/api";
 import type { Doc } from "../convex/_generated/dataModel";
 
@@ -12,7 +12,7 @@ import type { Doc } from "../convex/_generated/dataModel";
 // pass a `key={docId}` so the editor + Y.Doc are rebuilt when the doc changes.
 //
 // All the Yjs↔log machinery (Y.Doc lifecycle, dedup, apply, compaction, echo-guard)
-// lives in @convex-localfirst/yjs's `useCollaborativeDoc`. This component only wires
+// lives in convex-localfirst/yjs's `useCollaborativeDoc`. This component only wires
 // it to THIS app's doc_updates table: a live query for the rows + append/prune.
 export function DocEditor({ docId, workspaceId, user }: { docId: string; workspaceId: string; user: string }) {
   const updates =

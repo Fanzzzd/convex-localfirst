@@ -16,10 +16,8 @@
     "inc:proof": "node local-backend/incremental-proof.mjs"
   },
   "dependencies": {
-    "@convex-localfirst/component": "workspace:*",
-    "@convex-localfirst/core": "workspace:*",
-    "@convex-localfirst/server": "workspace:*",
-    "convex": ">=1.0.0"
+    "convex": ">=1.0.0",
+    "convex-localfirst": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

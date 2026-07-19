@@ -2,7 +2,7 @@
 //
 // Two ConvexHttpClients, each setAuth'd with its OWN locally-minted JWT (alice,
 // bob), drive the package's sync:push / sync:pull endpoints directly (the exact
-// wire shape @convex-localfirst/core's transport uses). Identity is resolved by
+// wire shape convex-localfirst/core's transport uses). Identity is resolved by
 // the SERVER from the JWT (ctx.auth.getUserIdentity().subject), so each client
 // genuinely acts as a different authenticated user. Every claim is a hard assert.
 //

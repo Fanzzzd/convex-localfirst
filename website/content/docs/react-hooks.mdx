@@ -4,7 +4,7 @@ description: The drop-in ConvexProvider plus useQuery, useMutation, useSyncStatu
 ---
 
 Import everything from `convex-localfirst` (or the standalone
-`@convex-localfirst/react`). It re-exports Convex's own
+`convex-localfirst/react`). It re-exports Convex's own
 client and auth helpers (`ConvexReactClient`, `Authenticated`, `useConvexAuth`,
 …) so it's a true drop-in for `convex/react`.
 
@@ -86,7 +86,7 @@ read the local data in a new shape, skip the round-trip and the extra function:
 write the query on the client with the chainable builder.
 
 ```ts
-import { collection, useLiveQuery } from "@convex-localfirst/react";
+import { collection, useLiveQuery } from "convex-localfirst/react";
 
 const issues = useLiveQuery(
   collection<Doc<"issues">>("issues")

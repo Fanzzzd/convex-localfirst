@@ -113,17 +113,22 @@ The server stays authoritative: every pushed operation is validated against
 auth, table scope (`byUser` / `byWorkspace` / `byProject`), row ownership or
 membership, schema version, and an idempotency ledger.
 
-## Packages
+## One package, subpath entries
 
-| Package | What it is |
+`npm install convex-localfirst` is the whole install (like `convex` itself).
+Everything lives behind subpath exports:
+
+| Entry | What it is |
 | --- | --- |
-| [`convex-localfirst`](./packages/localfirst) | **The one-line install** — client surface at the root, `./server` for the DSL, `./component/convex.config` for the mount (scoped packages below are also published individually) |
-| [`@convex-localfirst/core`](./packages/core) | Local engine: derived live view (`canonical + replay(pending)`), IndexedDB store, multi-tab leader election, sync protocol, convergent merges (set / counter / timestamp-LWW) |
-| [`@convex-localfirst/react`](./packages/react) | Convex-compatible `useQuery` / `useMutation`, `useSyncStatus`, Convex fallback |
-| [`@convex-localfirst/server`](./packages/server) | The `lf.table` DSL and the server sync engine (`createSyncFunctions`, `collectTables`) |
-| [`@convex-localfirst/component`](./packages/component) | Mountable Convex component holding the sync bookkeeping: ledger, change log (GC'd opportunistically), id map, row versions |
-| [`@convex-localfirst/cli`](./packages/cli) | `init` (scaffold a complete starter), `check` (no direct writes to local-first tables) |
-| [`@convex-localfirst/yjs`](./packages/yjs) | Yjs CRDT (rich text) over the local-first append-only log, plus `useCollaborativeDoc` |
+| [`convex-localfirst`](./packages/localfirst/src/react) | The client surface: Convex-compatible `useQuery` / `useMutation`, `useSyncStatus`, drop-in `ConvexProvider` |
+| [`convex-localfirst/server`](./packages/localfirst/src/server) | The `lf.table` DSL and the server sync engine (`createSyncFunctions`, `collectTables`) |
+| [`convex-localfirst/component`](./packages/localfirst/component) | Mountable Convex component holding the sync bookkeeping: ledger, change log (GC'd opportunistically), id map, row versions |
+| [`convex-localfirst/core`](./packages/localfirst/src/core) | Local engine: derived live view (`canonical + replay(pending)`), IndexedDB store, multi-tab leader election, sync protocol, convergent merges |
+| [`convex-localfirst/yjs`](./packages/localfirst/src/yjs) | Yjs CRDT (rich text) over the local-first append-only log, plus `useCollaborativeDoc` (optional `yjs` peer) |
+| [`npx convex-localfirst`](./packages/localfirst/src/cli) | The CLI: `init` (scaffold a complete starter), `check` (no direct writes to local-first tables) |
+
+(The pre-0.3 `@convex-localfirst/*` scoped packages are legacy — frozen at 0.2.1;
+all future releases ship only `convex-localfirst`.)
 
 ## Documentation
 

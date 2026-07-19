@@ -24,10 +24,9 @@ npm install convex-localfirst
 ```
 
 One package: the client surface is the root import, the DSL is
-`convex-localfirst/server`, and the mountable component ships inside it.
-(Optionally `npm install -D @convex-localfirst/cli` for `npx convex-localfirst init`,
-which scaffolds every file below, and `check`, a CI guard against illegal direct
-writes. The `@convex-localfirst/*` packages are also published individually.)
+`convex-localfirst/server`, the mountable component ships inside it, and the
+CLI comes with it — `npx convex-localfirst init` scaffolds every file below,
+and `npx convex-localfirst check` is a CI guard against illegal direct writes.
 
 ## 2. Mount the component
 

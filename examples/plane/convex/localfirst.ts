@@ -1,4 +1,4 @@
-import { createLocalFirst } from "@convex-localfirst/server";
+import { createLocalFirst } from "convex-localfirst/server";
 
 // Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
 // not here — this factory only declares the local-first tables.
