@@ -1,6 +1,6 @@
 {
   "name": "@convex-localfirst/core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local-first engine, store contract, and sync protocol for Convex — optimistic writes, offline cache, rebase/replay.",
   "license": "MIT",
   "keywords": [
