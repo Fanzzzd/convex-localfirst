@@ -20,7 +20,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # npm >= 11.5 required for trusted publishing (OIDC); node 24 bundles it.
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
