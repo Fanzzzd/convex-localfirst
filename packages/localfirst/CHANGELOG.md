@@ -1,5 +1,11 @@
 # convex-localfirst
 
+## 0.3.1
+
+### Patch Changes
+
+- 9475e93: Ship the README with the package (the npm page was blank after the one-package consolidation).
+
 ## 0.3.0
 
 ### Minor Changes
