@@ -1,5 +1,14 @@
 # convex-localfirst
 
+## 0.2.1
+
+### Patch Changes
+
+- 410d35c: Releases are now published via npm trusted publishing (GitHub Actions OIDC) — no npm tokens involved. No library changes.
+  - @convex-localfirst/core@0.2.1
+  - @convex-localfirst/react@0.2.1
+  - @convex-localfirst/server@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
