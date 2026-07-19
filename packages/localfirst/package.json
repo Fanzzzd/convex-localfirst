@@ -1,9 +1,15 @@
 {
   "name": "convex-localfirst",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Local-first collections for Convex — one install: optimistic, offline-capable React hooks with Convex as the source of truth.",
   "license": "MIT",
-  "keywords": ["convex", "local-first", "offline-first", "sync", "react"],
+  "keywords": [
+    "convex",
+    "local-first",
+    "offline-first",
+    "sync",
+    "react"
+  ],
   "author": "Fanzzzd",
   "repository": {
     "type": "git",
@@ -11,25 +17,57 @@
     "directory": "packages/localfirst"
   },
   "homepage": "https://github.com/Fanzzzd/convex-localfirst#readme",
-  "bugs": { "url": "https://github.com/Fanzzzd/convex-localfirst/issues" },
-  "engines": { "node": ">=18" },
+  "bugs": {
+    "url": "https://github.com/Fanzzzd/convex-localfirst/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "type": "module",
-  "bin": { "convex-localfirst": "./dist/cli/index.js" },
+  "bin": {
+    "convex-localfirst": "./dist/cli/index.js"
+  },
   "exports": {
-    ".": { "types": "./dist/react/index.d.ts", "import": "./dist/react/index.js" },
-    "./react": { "types": "./dist/react/index.d.ts", "import": "./dist/react/index.js" },
-    "./react/shadow": { "types": "./dist/react/shadow.d.ts", "import": "./dist/react/shadow.js" },
-    "./server": { "types": "./dist/server/index.d.ts", "import": "./dist/server/index.js" },
-    "./core": { "types": "./dist/core/index.d.ts", "import": "./dist/core/index.js" },
-    "./core/internal": { "types": "./dist/core/internal.d.ts", "import": "./dist/core/internal.js" },
-    "./yjs": { "types": "./dist/yjs/index.d.ts", "import": "./dist/yjs/index.js" },
+    ".": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./react/shadow": {
+      "types": "./dist/react/shadow.d.ts",
+      "import": "./dist/react/shadow.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./core/internal": {
+      "types": "./dist/core/internal.d.ts",
+      "import": "./dist/core/internal.js"
+    },
+    "./yjs": {
+      "types": "./dist/yjs/index.d.ts",
+      "import": "./dist/yjs/index.js"
+    },
     "./component/convex.config.js": "./component/convex/convex.config.ts",
     "./component/convex.config": "./component/convex/convex.config.ts",
     "./component/_generated/component.js": "./component/convex/_generated/component.ts",
     "./component/_generated/api.js": "./component/convex/_generated/api.ts"
   },
-  "files": ["dist", "component"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist",
+    "component"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit false --emitDeclarationOnly false",
     "typecheck": "tsc -p tsconfig.json",
@@ -42,9 +80,15 @@
     "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "yjs": { "optional": true },
-    "typescript": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "yjs": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
