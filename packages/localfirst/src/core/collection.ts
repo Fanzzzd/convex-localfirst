@@ -35,6 +35,9 @@ export type LocalQueryPlan<Row extends Record<string, unknown> = Record<string, 
    * chainable builder methods.)
    */
   readonly orderBy?: { readonly field: string; readonly dir: "asc" | "desc" };
+  /** Planning metadata for typed roots, whose public `.orderBy()` method occupies
+   *  the legacy metadata name. Existing collection plans expose both fields. */
+  readonly orderSpec?: { readonly field: string; readonly dir: "asc" | "desc" };
   /** Declared row cap, exposed for incremental maintenance (the sorted result is
    *  kept in full and sliced to this on output). */
   readonly rowLimit?: number;
@@ -157,6 +160,10 @@ export class LocalQuery<Row extends Record<string, unknown> = RowValue, Rel = un
   /** Planning metadata (see LocalQueryPlan.orderBy). Populated from `.order(...)`. */
   get orderBy(): { readonly field: string; readonly dir: "asc" | "desc" } | undefined {
     return this.ops.orderKey !== undefined ? { field: String(this.ops.orderKey), dir: this.ops.orderDir } : undefined;
+  }
+
+  get orderSpec(): { readonly field: string; readonly dir: "asc" | "desc" } | undefined {
+    return this.orderBy;
   }
 
   /** Planning metadata (see LocalQueryPlan.rowLimit). Populated from `.limit(...)`. */

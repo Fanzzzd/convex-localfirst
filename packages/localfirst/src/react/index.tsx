@@ -7,6 +7,7 @@ import {
   MemoryLocalStore,
   collectManifest,
   collection,
+  createLocalDb,
   createClientId,
   createConvexTransport,
   createLocalFirstEngine,
@@ -22,8 +23,15 @@ import {
   type AttachmentUploadState,
   type FunctionNameResolver,
   type LocalFirstManifest,
+  type LocalDb,
   type LocalFirstMutationCall,
   type LocalQueryPlan,
+  type TypedTableQuery,
+  type BackrefRelationDescriptor,
+  type DeclaredRelationDescriptor,
+  type DeclaredRelations,
+  type ManyRelationDescriptor,
+  type OneRelationDescriptor,
   type LocalStore,
   type RelationSpec,
   type RecoveryOperation,
@@ -42,8 +50,18 @@ import {
   defaultFunctionName
 } from "../core/internal.js";
 
-export { collection, many, manyToMany, one, viaIds, rankBetween, rankCompare, isValidRank, rebalance };
-export type { LocalQueryPlan, RelationSpec };
+export { collection, createLocalDb, many, manyToMany, one, viaIds, rankBetween, rankCompare, isValidRank, rebalance };
+export type {
+  BackrefRelationDescriptor,
+  DeclaredRelationDescriptor,
+  DeclaredRelations,
+  LocalDb,
+  LocalQueryPlan,
+  ManyRelationDescriptor,
+  OneRelationDescriptor,
+  RelationSpec,
+  TypedTableQuery
+};
 
 export const ConvexReactClient = ConvexReact.ConvexReactClient;
 export const Authenticated = ConvexReact.Authenticated;
@@ -632,7 +650,7 @@ export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel
       : JSON.stringify({
           t: [...engine.tablesForPlan(query)].sort(),
           s: query.scopeValues ?? null,
-          o: query.orderBy ?? null,
+          o: query.orderSpec ?? (typeof query.orderBy === "function" ? null : (query.orderBy ?? null)),
           l: query.rowLimit ?? null,
           p: query.predicateCount ?? 0
         });

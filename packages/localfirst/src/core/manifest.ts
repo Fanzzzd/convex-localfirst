@@ -5,6 +5,7 @@ import type {
   SyncScope,
   TableName
 } from "./types.js";
+import type { DeclaredRelations } from "./relations.js";
 
 export type ScopeDefinition =
   | {
@@ -45,6 +46,8 @@ export type LocalTableDefinition = {
   // (search.ts) is built from these and maintained from row deltas. Absent/empty = the
   // table is not searchable (useSearch yields nothing). See search.ts.
   readonly searchFields?: readonly string[];
+  /** Named client-side relations declared on `lf.table`. */
+  readonly relations?: DeclaredRelations;
 };
 
 export type LocalQueryContext = {

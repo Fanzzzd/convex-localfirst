@@ -3,12 +3,26 @@ import type { RegisteredMutation, RegisteredQuery, TableDefinition } from "conve
 import { v } from "convex/values";
 import type { ObjectType, PropertyValidators, VFloat64, VString } from "convex/values";
 import type { ScopeDefinition } from "../core/index.js";
+import type { LocalTableDeclaration } from "../core/db.js";
+import type {
+  BackrefRelationDescriptor,
+  DeclaredRelations,
+  ManyRelationDescriptor,
+  OneRelationDescriptor
+} from "../core/relations.js";
 import { LF_METADATA_KEY } from "../core/internal.js";
 import type { ServerTableConfig } from "./serverSync.js";
 
 export * from "./serverSync.js";
 export * from "./createSyncFunctions.js";
 export * from "./createAttachmentFunctions.js";
+export type {
+  BackrefRelationDescriptor,
+  DeclaredRelationDescriptor,
+  DeclaredRelations,
+  ManyRelationDescriptor,
+  OneRelationDescriptor
+} from "../core/relations.js";
 
 // Identity is NOT configured here: this factory only declares local-first tables
 // and their spec closures. The server-authoritative user id is resolved at sync
@@ -50,7 +64,8 @@ export type TableOptions<
   IdField extends string,
   Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>,
   S extends ScopeDefinition = ScopeDefinition,
-  Ts extends TimestampsOption | undefined = undefined
+  Ts extends TimestampsOption | undefined = undefined,
+  Relations extends DeclaredRelations = Record<never, never>
 > = {
   /** The table's fields (Convex validators) — the ONE place the row shape lives.
    *  `todos.table()` turns it into the Convex table definition (adding the id
@@ -62,6 +77,7 @@ export type TableOptions<
   readonly idField?: IdField;
   readonly indexes?: Indexes;
   readonly timestamps?: Ts;
+  readonly relations?: Relations;
   // Array fields merged as SETS (convergent add/remove) instead of whole-array LWW — so
   // concurrent adds to e.g. `label_ids` don't clobber. Opt-in; omit for plain LWW fields.
   readonly setFields?: readonly string[];
@@ -80,6 +96,28 @@ export type TableOptions<
  *  carries it only after its first sync.) */
 type RowOf<Shape extends PropertyValidators, IdField extends string> = ObjectType<Shape> &
   Record<IdField, string> & { _id: string; _creationTime: number };
+
+/** Pure descriptors for the `relations` table option. */
+export function one<const Table extends string, const ForeignKey extends string>(
+  table: Table,
+  foreignKey: ForeignKey
+): OneRelationDescriptor<Table, ForeignKey> {
+  return { kind: "one", table, foreignKey };
+}
+
+export function many<const Table extends string, const Via extends string>(
+  table: Table,
+  options: { readonly via: Via }
+): ManyRelationDescriptor<Table, Via> {
+  return { kind: "many", table, via: options.via };
+}
+
+export function backref<const Table extends string, const ForeignKey extends string>(
+  table: Table,
+  foreignKey: ForeignKey
+): BackrefRelationDescriptor<Table, ForeignKey> {
+  return { kind: "backref", table, foreignKey };
+}
 
 // The same lf.table modules are imported by the CLIENT (collectManifest reads the
 // attached metadata + closures at runtime — the codegen-free path). In a browser,
@@ -146,23 +184,29 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
   options: CreateLocalFirstOptions<DefaultIdField> = {}
 ) {
   return {
-    byUser<F extends string>(field: F) {
+    one,
+    many,
+    backref,
+    byUser<const F extends string>(field: F) {
       return { kind: "byUser", field } as const;
     },
-    byWorkspace<F extends string>(input: { workspaceIdField: F; membershipTable: string }) {
+    byWorkspace<const F extends string>(input: { workspaceIdField: F; membershipTable: string }) {
       return { kind: "byWorkspace", ...input } as const;
     },
-    byProject<F extends string>(input: { projectIdField: F; membershipTable: string }) {
+    byProject<const F extends string>(input: { projectIdField: F; membershipTable: string }) {
       return { kind: "byProject", ...input } as const;
     },
     table<
+      const Name extends string,
       Shape extends PropertyValidators,
       S extends ScopeDefinition,
       IdField extends string = DefaultIdField,
       const Indexes extends Record<string, readonly string[]> = Record<string, readonly string[]>,
-      const Ts extends TimestampsOption | undefined = undefined
-    >(tableName: string, tableOptions: TableOptions<Shape, IdField, Indexes, S, Ts>) {
+      const Ts extends TimestampsOption | undefined = undefined,
+      const Relations extends DeclaredRelations = Record<never, never>
+    >(tableName: Name, tableOptions: TableOptions<Shape, IdField, Indexes, S, Ts, Relations>) {
       type Row = RowOf<Shape, IdField> & Record<TsFieldNames<Ts>, number>;
+      type Declaration = LocalTableDeclaration<Name, Row, ObjectType<Shape>, S, Relations>;
       // Derived-args types: what a bare insert()/patch()/remove() accepts. The scope's
       // partition field and the timestamp fields are stamped by the engine, never typed in.
       type DerivedInsertArgs = Omit<
@@ -190,6 +234,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         setFields: tableOptions.setFields,
         counterFields: tableOptions.counterFields,
         searchFields: tableOptions.searchFields,
+        relations: tableOptions.relations,
         timestamps: tsFields,
         // The complete synced surface — what bootstrap may ship (never `extra` columns).
         syncedFields: [
@@ -226,7 +271,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         args: { id: v.string(), ...optionalized(shapeWithout([partitionField, ...tsNames])) }
       });
 
-      return {
+      const declaration = {
         /**
          * The Convex table definition for `defineSchema` — the schema is DERIVED from
          * this declaration, never restated:
@@ -259,7 +304,9 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
           }
           return definition as never;
         },
-        query<A extends PropertyValidators>(spec: QuerySpec<A, Row>): RegisteredQuery<"public", ObjectType<A>, Row[]> {
+        query<A extends PropertyValidators>(
+          spec: QuerySpec<A, Row>
+        ): RegisteredQuery<"public", ObjectType<A>, Row[]> & Declaration {
           const fn = registerFunction(() =>
             query({
               args: spec.args as never,
@@ -273,13 +320,13 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
             "public",
             ObjectType<A>,
             Row[]
-          >;
+          > & Declaration;
         },
         /** Omit `spec` to derive it from the shape: args = every field except the
          *  stamped ones (a byUser owner comes from auth; timestamps auto). */
         insert<A extends PropertyValidators = never>(
           spec?: InsertSpec<A, Ctx>
-        ): RegisteredMutation<"public", [A] extends [never] ? DerivedInsertArgs : ObjectType<A>, null> {
+        ): RegisteredMutation<"public", [A] extends [never] ? DerivedInsertArgs : ObjectType<A>, null> & Declaration {
           const resolved = (spec as InsertSpec<PropertyValidators, Ctx> | undefined) ?? derivedInsertSpec();
           const fn = registerFunction(() =>
             mutation({
@@ -293,7 +340,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
          *  arg, forwarded 1:1 when present (updatedAt stamps automatically). */
         patch<A extends PropertyValidators = never>(
           spec?: PatchSpec<A, Ctx>
-        ): RegisteredMutation<"public", [A] extends [never] ? DerivedPatchArgs : ObjectType<A>, null> {
+        ): RegisteredMutation<"public", [A] extends [never] ? DerivedPatchArgs : ObjectType<A>, null> & Declaration {
           const resolved = (spec as PatchSpec<PropertyValidators, Ctx> | undefined) ?? derivedPatchSpec();
           const fn = registerFunction(() =>
             mutation({
@@ -306,7 +353,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         /** Omit `spec` for the default `{ id }` arg. */
         remove<A extends PropertyValidators = never>(
           spec?: RemoveSpec<A>
-        ): RegisteredMutation<"public", [A] extends [never] ? { id: string } : ObjectType<A>, null> {
+        ): RegisteredMutation<"public", [A] extends [never] ? { id: string } : ObjectType<A>, null> & Declaration {
           const resolved = (spec as RemoveSpec<PropertyValidators> | undefined) ?? { args: { id: v.string() } };
           const fn = registerFunction(() =>
             mutation({
@@ -317,6 +364,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
           return attachMetadata(fn, { kind: "remove", ...metadata, spec: resolved }) as never;
         }
       };
+      return attachMetadata(declaration, { kind: "table", ...metadata, spec: {} }) as typeof declaration & Declaration;
     }
     // I8 "server-only by default" needs no wrapper: a mutation is local-first
     // ONLY if declared via lf.table(...).insert/patch/remove and known to the
@@ -407,7 +455,7 @@ function attachMetadata<T>(value: T, metadata: Record<string, unknown>): T {
 }
 
 type AttachedTableMeta = {
-  readonly kind: "query" | "insert" | "patch" | "remove";
+  readonly kind: "table" | "query" | "insert" | "patch" | "remove";
   readonly tableName: string;
   readonly idField: string;
   readonly scope: ScopeDefinition;
@@ -472,7 +520,7 @@ export function collectTables(modules: Record<string, unknown>): Record<string, 
           );
         }
       }
-      if (meta.kind !== "query") {
+      if (meta.kind !== "query" && meta.kind !== "table") {
         const table = out[meta.tableName]!;
         const fields =
           meta.kind === "insert"

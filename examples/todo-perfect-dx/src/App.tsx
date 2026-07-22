@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { db } from "./db";
 
 // Workspace is selectable via ?ws= so the demo is multi-workspace and the e2e
 // can isolate each run into a fresh scope (otherwise a shared workspace
@@ -47,7 +48,7 @@ export function App() {
   const memberCount = useQuery(api.workspaces.memberCount, { workspaceId: WORKSPACE });
 
   // Relation targets — workspace-scoped local-first tables, read locally.
-  const projectsRaw = useLiveQuery(collection<Doc<"projects">>("projects").scope({ workspaceId: WORKSPACE }).order("createdAt"));
+  const projectsRaw = useLiveQuery(db.projects.scope({ workspaceId: WORKSPACE }).orderBy("name"));
   const labels = useLiveQuery(collection<Doc<"labels">>("labels").scope({ workspaceId: WORKSPACE }).order("name")) ?? [];
   const projects = projectsRaw ?? [];
 

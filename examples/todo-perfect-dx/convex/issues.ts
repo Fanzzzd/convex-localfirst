@@ -14,6 +14,10 @@ export const issues = lf.table("issues", {
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
+  relations: {
+    project: lf.one("projects", "projectId"),
+    comments: lf.backref("comments", "issueId")
+  },
   indexes: {
     byWorkspace: ["workspaceId", "createdAt"]
   }

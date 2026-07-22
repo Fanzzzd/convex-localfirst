@@ -25,7 +25,38 @@ export type RelationSpec<_Target = unknown, _Many extends boolean = boolean> = {
   readonly through?: string;
   readonly localKey?: string;
   readonly targetKey?: string;
+  /** Declared `lf.one(...)` relations use null for a missing target. The legacy
+   *  per-query `one(...)` combinator omits this and keeps returning undefined. */
+  readonly nullWhenMissing?: true;
 };
+
+/** Pure relation descriptors stored by `lf.table({ relations })`. Target row
+ * types are intentionally resolved later by `createLocalDb`, once every module
+ * (and therefore every target table) is present. */
+export type OneRelationDescriptor<Table extends string = string, ForeignKey extends string = string> = {
+  readonly kind: "one";
+  readonly table: Table;
+  readonly foreignKey: ForeignKey;
+};
+
+export type ManyRelationDescriptor<Table extends string = string, Via extends string = string> = {
+  readonly kind: "many";
+  readonly table: Table;
+  readonly via: Via;
+};
+
+export type BackrefRelationDescriptor<Table extends string = string, ForeignKey extends string = string> = {
+  readonly kind: "backref";
+  readonly table: Table;
+  readonly foreignKey: ForeignKey;
+};
+
+export type DeclaredRelationDescriptor =
+  | OneRelationDescriptor
+  | ManyRelationDescriptor
+  | BackrefRelationDescriptor;
+
+export type DeclaredRelations = Readonly<Record<string, DeclaredRelationDescriptor>>;
 
 /** base[foreignKey] === target._id. Returns the single target (or undefined). */
 export function one<Target extends Record<string, unknown> = RowValue>(
@@ -96,7 +127,11 @@ export function attachRelations(
     const targets = rowsByTable[spec.table] ?? [];
     if (spec.kind === "one") {
       const byId = new Map(targets.map((t) => [t._id, t]));
-      return { name, resolve: (row: Record<string, unknown>) => byId.get(row[spec.foreignKey] as string) };
+      return {
+        name,
+        resolve: (row: Record<string, unknown>) =>
+          byId.get(row[spec.foreignKey] as string) ?? (spec.nullWhenMissing ? null : undefined)
+      };
     }
     if (spec.kind === "many") {
       const byFk = groupBy(targets, (t) => t[spec.foreignKey]);

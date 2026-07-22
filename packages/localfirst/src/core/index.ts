@@ -11,6 +11,7 @@
 // real app adopt the library without rewriting its components into hooks.
 export { createLocalFirstEngine } from "./engine.js";
 export type { LocalFirstEngine, LocalFirstEngineOptions } from "./engine.js";
+export * from "./db.js";
 // Attachment pipeline (P5): the injectable backend + XHR contracts are public so an
 // adapter can wire its own upload transport. AttachmentManager itself is internal.
 export type { AttachmentBackend, XhrLike } from "./attachments.js";

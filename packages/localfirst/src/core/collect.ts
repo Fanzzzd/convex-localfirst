@@ -7,6 +7,7 @@ import type {
   ScopeDefinition
 } from "./manifest.js";
 import type { RowValue } from "./types.js";
+import type { DeclaredRelations } from "./relations.js";
 
 /**
  * Non-enumerable key under which every `lf.table(...).query/insert/patch/remove`
@@ -39,7 +40,7 @@ type SpecMeta = {
 };
 
 export type LocalFirstFunctionMeta = {
-  readonly kind: "query" | "insert" | "patch" | "remove";
+  readonly kind: "table" | "query" | "insert" | "patch" | "remove";
   readonly tableName: string;
   readonly idField: string;
   readonly scope: ScopeDefinition;
@@ -48,6 +49,7 @@ export type LocalFirstFunctionMeta = {
   readonly counterFields?: readonly string[];
   /** Fields fed to the local full-text search index (client-only). See search.ts. */
   readonly searchFields?: readonly string[];
+  readonly relations?: DeclaredRelations;
   /** Auto-timestamp field names (lf.table's `timestamps` option). Stamped by the
    *  mutation plans below: insert sets both, patch sets updatedAt. */
   readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
@@ -95,7 +97,9 @@ export function collectManifest(
       const name = `${moduleKey}:${exportName}`;
       if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
       registerTable(tables, meta, name);
-      if (meta.kind === "query") {
+      if (meta.kind === "table") {
+        continue;
+      } else if (meta.kind === "query") {
         queries[name] = interpretQuery(name, meta);
       } else {
         mutations[name] = interpretMutation(name, meta);
@@ -134,7 +138,8 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     indexes: meta.indexes,
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
     ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {}),
-    ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {})
+    ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {}),
+    ...(meta.relations && Object.keys(meta.relations).length ? { relations: meta.relations } : {})
   };
   const existing = tables[meta.tableName];
   if (!existing) {
