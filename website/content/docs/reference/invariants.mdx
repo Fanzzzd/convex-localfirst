@@ -33,33 +33,49 @@ These hold by construction — they're the contract the framework is built to ke
 
 These are intentionally out of scope for now, with a clear seam to add them:
 
-- **Automerge rich-text.** Yjs already ships (`convex-localfirst/yjs` — see below);
-  Automerge rides the same append-only-log approach (one binary change per row) later.
-- **Devtools UI** beyond the snapshot bridge.
+- **Server-side mutation re-execution.** The server applies the client-computed
+  insert value / patch after its authz + schema checks; it does not re-run your
+  mutation body. Encode hard invariants as Convex schema validators for now — see
+  [Syncing → Trust model](/docs/syncing#trust-model--current-limitations).
+- **Automerge rich-text.** Yjs already ships (`convex-localfirst/yjs`); Automerge
+  rides the same append-only-log approach (one binary change per row) later.
 - **A full Next.js plugin.** The Vite alias strategy is implemented and
   documented; the Next variant is not yet shipped.
-- **Presence / awareness / multi-region.**
+- **Batched component writes** — one component mutation per push instead of a few
+  calls per op, for high-throughput backends.
 
 ## Shipped
 
+- **Typed client + declared relations** — `createLocalDb(modules)` and
+  `.with(...)` derive rows, scopes, and relations from the schema. See
+  [Typed client](/docs/typed-db).
+- **Serializable filter AST + saved views** — `.filter(spec)`, `serializeFilter` /
+  `parseFilter`. See [Filters](/docs/filters).
+- **Group-by, live counts & ranking** — `.groupBy()`, `useLiveCounts`, and the
+  fractional-rank helpers. See [Grouping](/docs/grouping).
+- **Incremental query engine** — local secondary indexes; subscribed queries
+  update by single-row deltas instead of re-scanning.
+- **Atomic write groups** — `useBatch()` lands or rejects a group as one
+  offline-durable unit. See [Batches](/docs/batches).
+- **Permission-aware UI** — the synced role plus a client-side write mirror
+  (`useRole` / `useCan`, `clientCan`). See [Permissions](/docs/permissions).
+- **Undo / redo** — scope-aware inverse-op stacks. See [Undo](/docs/undo).
+- **Full-text search** — incremental, memory-resident `useSearch` over declared
+  `searchFields`. See [Search](/docs/search).
+- **Offline attachments** — `createAttachmentFunctions` + `useCreateAttachment` /
+  `useAttachmentUpload`. See [Attachments](/docs/attachments).
+- **Devtools** — `<LocalFirstDevtools />`, a dev-only inspector. See [Devtools](/docs/devtools).
+- **Test harness** — `createTestHarness` (`convex-localfirst/testing`). See [Testing](/docs/testing).
+- **Presence & awareness** — `usePresence` and `useDocAwareness` (cursor/selection
+  presence). See [Presence](/docs/presence) and [Document mode](/docs/document-mode).
 - **Yjs rich text** (`convex-localfirst/yjs`) — collaborative documents over the
   local-first log (`useCollaborativeDoc`). See [Document mode](/docs/document-mode).
-- **Convergent merges** — opt-in `setFields` / `counterFields` (concurrent
-  array/counter edits merge instead of clobbering). See
+- **Convergent merges** — opt-in `setFields` / `counterFields`. See
   [Defining tables](/docs/defining-tables#merges).
-- **Server-authored writes** — `serverWriter(ctx)` lets ordinary mutations
-  (activity feeds, importers, crons) write local-first tables through the change
-  log. See [the API reference](/docs/reference/api).
+- **Server-authored writes** — `serverWriter(ctx)` writes local-first tables
+  through the change log from ordinary mutations.
 - **Snapshot bootstrap + change-log GC** — cold clients load current rows instead
-  of replaying history; delivered changes are pruned opportunistically after the
-  retention window (`changeRetentionMs`, default 30 days).
-- **`createSyncFunctions`** — the server `sync.ts` is now a dozen lines, not ~150.
-  See [Syncing](/docs/syncing#createsyncfunctions).
+  of replaying history; delivered changes are pruned after `changeRetentionMs`.
+- **`createSyncFunctions`** — the server `sync.ts` is a dozen lines, not ~150.
 - **Full type inference** — `useQuery` / `useMutation` infer args and result from
-  the function reference; no explicit generics. See [React hooks](/docs/react-hooks#type-inference).
-
-## Roadmap
-
-- **Batched component writes** — one component mutation per push instead of a few
-  calls per op, for high-throughput backends.
-- The deferred items above, as the seams they already have are exercised.
+  the function reference; no explicit generics.

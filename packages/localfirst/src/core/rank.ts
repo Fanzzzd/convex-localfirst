@@ -48,6 +48,11 @@ function between(a: string | null, b: string | null): string {
 /**
  * Compares two ranks. Since ranks are canonical strings over a
  * code-point-ascending alphabet, plain string comparison gives rank order.
+ *
+ * @example
+ * ```ts
+ * issues.sort((a, b) => rankCompare(a.sort_order, b.sort_order));
+ * ```
  */
 export function rankCompare(a: string, b: string): number {
   if (a < b) return -1;
@@ -58,6 +63,11 @@ export function rankCompare(a: string, b: string): number {
 /**
  * True iff `value` is a non-empty string, every char is in ALPHABET, and it
  * does not end with '0' (the lowest char). Never throws.
+ *
+ * @example
+ * ```ts
+ * if (!isValidRank(row.sort_order)) row.sort_order = rankBetween(null, null);
+ * ```
  */
 export function isValidRank(value: unknown): boolean {
   if (typeof value !== "string" || value.length === 0) return false;
@@ -71,7 +81,14 @@ export function isValidRank(value: unknown): boolean {
 /**
  * Returns a new rank strictly between `a` and `b` (a=null => smallest,
  * b=null => largest), with random jitter appended so concurrent calls with
- * the same inputs diverge.
+ * the same inputs diverge. Ideal for drag-and-drop: store the returned string on
+ * the moved row's order field, no renumbering of neighbours needed.
+ *
+ * @example
+ * ```ts
+ * // drop a card between `prev` and `next` in a kanban column
+ * update({ id, sort_order: rankBetween(prev?.sort_order ?? null, next?.sort_order ?? null) });
+ * ```
  */
 export function rankBetween(a: string | null, b: string | null): string {
   if (a != null && !isValidRank(a)) {
@@ -96,7 +113,14 @@ export function rankBetween(a: string | null, b: string | null): string {
 
 /**
  * Returns `ranks.length` new canonical ranks in strictly ascending order,
- * evenly re-spread to reclaim precision. Only the count of `ranks` matters.
+ * evenly re-spread to reclaim precision. Only the count of `ranks` matters — use
+ * it when repeated inserts in one spot have grown the rank strings long.
+ *
+ * @example
+ * ```ts
+ * const fresh = rebalance(column.map((r) => r.sort_order));
+ * column.forEach((row, i) => update({ id: row.id, sort_order: fresh[i] }));
+ * ```
  */
 export function rebalance(ranks: readonly string[]): string[] {
   const n = ranks.length;

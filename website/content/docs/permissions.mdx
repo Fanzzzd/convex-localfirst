@@ -1,0 +1,85 @@
+---
+title: Permission-aware UI
+description: Server-authoritative access rules plus an optional client-side mirror, so buttons disable before a push would be rejected.
+---
+
+Authorization has two sides. The **server** decides who may read and write — that
+is the security boundary. The **client** can mirror the write rule to enable or
+disable UI, so a button doesn't invite an action the server would reject. The
+mirror is **advisory**; the server stays authoritative.
+
+## Server: `access = { member, read, write }`
+
+Configure `access` on [`createSyncFunctions`](/docs/syncing). `byUser` tables stay
+owner-only and never call these hooks; workspace/project tables require at least
+`member`.
+
+```ts
+createSyncFunctions({
+  component, mutation, query,
+  tables: collectTables({ issues }),
+  access: {
+    // Returns a role (any value) to grant, or null/undefined to deny pull AND push.
+    member: (ctx, { userId, scopeValue, table, membershipTable }) =>
+      roleFor(ctx, userId, scopeValue),
+    // Optional per-row read filter within a scope the caller is a member of.
+    read: (ctx, { userId, role, table, row }) => role === "admin" || row.owner === userId,
+    // Runs on EVERY accepted op, including inserts.
+    write: (ctx, { userId, role, table, action, before, patch, proposed }) =>
+      role === "admin" || (action === "insert" && proposed?.created_by === userId)
+  }
+});
+```
+
+| Hook | Arguments | Returns |
+| --- | --- | --- |
+| `member` | `{ userId, scopeValue, table, membershipTable }` | role (any value) · `null`/`undefined` denies |
+| `read` | `{ userId, role, table, row }` | `boolean` |
+| `write` | `{ userId, role, table, action, before, patch?, proposed }` | `boolean` |
+
+## Client: the `clientCan` mirror
+
+Declare `clientCan.write` **once** on `lf.table`, in the same isomorphic module
+the shape lives in. The server **ignores** it; the client evaluates it in
+`useCan`. It's **pure** — no `ctx` — and receives the same argument shape as the
+server `write` hook, minus `ctx`:
+
+```ts
+export const issues = lf.table("issues", {
+  shape: { /* … */ },
+  scope: lf.byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "members" }),
+  clientCan: {
+    write: ({ role, action, proposed, before, userId }) =>
+      role === "admin" || (action === "insert" && proposed?.created_by === userId)
+  }
+});
+```
+
+## `useRole` and `useCan`
+
+```tsx
+import { useRole, useCan } from "convex-localfirst";
+import * as modules from "../convex/modules";
+
+const role = useRole<Role>({ workspace_id });
+// role: Role | null (denied / no access) | undefined (not synced yet)
+
+const can = useCan<typeof modules>();
+<Button disabled={!can.patch("issues", issue, { name })}>Rename</Button>
+```
+
+`useCan()` returns `{ insert(table, proposed), patch(table, row, patch?),
+remove(table, row) }`, each returning a boolean. Pass your `typeof modules` to
+type the table names and row shapes.
+
+<Callout type="warn">
+**The client mirror is advisory — the server is always authoritative.** Each
+`useCan` method returns `true` when the table declares no `clientCan.write`, or
+when the role hasn't synced yet, so it never blocks a legitimate action; the real
+enforcement happens in `access.write` on the server regardless of what the UI shows.
+</Callout>
+
+`useRole` returns `undefined` until the first pull lands (or against a 0.3.x
+server that omits roles), `null` when access is denied, otherwise the role.
+
+Next: [Offline attachments](/docs/attachments).

@@ -1,0 +1,64 @@
+---
+title: Recovery & scope status
+description: Surface durable writes that need attention, and read per-scope hydration so first paint skeletons correctly instead of flashing empty.
+---
+
+Local-first writes are durable, so a write the server rejects, or one stranded by
+a schema bump, must never disappear silently. `useSyncRecovery` surfaces those for
+an app-provided export / migrate / discard flow, and `useScopeStatus` tells you
+whether a scope has hydrated yet.
+
+## `useSyncRecovery`
+
+```tsx
+import { useSyncRecovery } from "convex-localfirst";
+
+const { rejectedOperations, olderSchemaOperations, failedAttachments, failedGroups } =
+  useSyncRecovery();
+```
+
+It is exactly `useSyncStatus().recovery`.
+
+| Bucket | What it holds |
+| --- | --- |
+| `rejectedOperations` | Durable writes the server rejected. Survive reload. |
+| `olderSchemaOperations` | Ops stranded in a prior schema-version IndexedDB namespace — read-only records for export/migrate/discard. |
+| `failedAttachments` | [Uploads](/docs/attachments) that exhausted retry or were rejected. The blob is retained for a retry. |
+| `failedGroups` | Rejected atomic [batches](/docs/batches) — one entry per group, not per member op. |
+
+Each operation record is `{ opId, table, id, kind, schemaVersion, createdAt,
+error, namespace? }`:
+
+```tsx
+{rejectedOperations.map((op) => (
+  <li key={op.opId}>
+    {op.kind} on {op.table} — {op.error}
+    <button onClick={() => exportAndDiscard(op)}>Resolve</button>
+  </li>
+))}
+```
+
+## `useScopeStatus`
+
+Per-scope hydration honesty, so first paint can skeleton instead of flashing a
+"0 results" state before the cache catches up:
+
+```tsx
+import { useScopeStatus } from "convex-localfirst";
+
+const { hydrated, partial, syncing, denied } = useScopeStatus({ workspace_id });
+if (!hydrated) return <Skeleton />;
+```
+
+Pass the scope-value object (`{ workspace_id }`, or `{}` for the user scope).
+
+| Field | Meaning |
+| --- | --- |
+| `hydrated` | The scope's pull has delivered a cursor at least once — real (possibly empty) data, not a pre-hydration flash. |
+| `partial` | A budget-limited cold-start drain left more rows to fetch for this scope. |
+| `syncing` | A pull for this scope is in flight right now. |
+| `denied` | The caller is no longer a member of this scope — its data has been evicted. |
+
+It's reactive and cheap, re-rendering only on this scope's transitions.
+
+Next: [The CLI](/docs/cli).

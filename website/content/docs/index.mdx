@@ -3,12 +3,25 @@ title: Convex Local-First
 description: Optimistic, offline-capable collections for Convex. Keep writing Convex queries, mutations, and React hooks — declared tables read and write locally and sync in the background, while Convex stays authoritative.
 ---
 
-`@convex-localfirst/*` adds **local-first collections** to Convex. You keep
-writing Convex the normal way — schema, query/mutation modules, `useQuery` /
-`useMutation` in React. For the specific tables you opt in, reads and writes
-happen **locally and optimistically first**, persist to IndexedDB, work
-**offline**, and sync to Convex in the background. Convex stays the source of
-truth.
+`convex-localfirst` adds **local-first collections** to Convex. For the specific
+tables you opt in, reads and writes happen **locally and optimistically first**,
+persist to IndexedDB, work **offline**, and sync to Convex in the background —
+Convex stays the source of truth.
+
+It works two ways, and you can use both at once:
+
+- **Build a Linear/Plane-class app on it.** A fully-typed [`db`
+  root](/docs/typed-db) with [declared relations](/docs/typed-db#relations),
+  [`useLiveQuery`](/docs/react-hooks#client-queries--collection--uselivequery)
+  with a serializable [filter AST](/docs/filters) and [group-by +
+  counts](/docs/grouping), atomic [write batches](/docs/batches),
+  [ranking](/docs/grouping#ranking), [search](/docs/search),
+  [attachments](/docs/attachments), [collaborative docs](/docs/document-mode),
+  [permission-aware UI](/docs/permissions), and [undo](/docs/undo).
+- **Drop it into an existing Convex app.** The Convex-compatible
+  [`useQuery` / `useMutation`](/docs/react-hooks) layer keeps Convex's exact
+  signatures, so a declared table becomes local-first with no rewrite and
+  everything else falls through to plain Convex untouched.
 
 ## The contract
 
@@ -107,9 +120,12 @@ data it is allowed to see.
 
 | Entry | Role |
 | --- | --- |
-| `convex-localfirst` | The client surface: drop-in `ConvexProvider`, `useQuery`, `useMutation`, `useSyncStatus`. |
-| `convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`handlePush` / `handlePull`). |
+| `convex-localfirst` | The client surface: drop-in `ConvexProvider`, the Convex-compatible `useQuery` / `useMutation`, the typed `createLocalDb` root, `useLiveQuery` / `useLiveCounts`, `useBatch`, `useUndo`, `useRole` / `useCan`, `useSearch`, `useSyncStatus`, `usePresence`, ranking helpers. |
+| `convex-localfirst/server` | The `lf.table` DSL and the pure `serverSync` engine (`createSyncFunctions`, `collectTables`, `createAttachmentFunctions`, `handlePush` / `handlePull`). |
 | `convex-localfirst/component` | A mountable Convex component holding all sync bookkeeping (ledger, change log, id map, row versions). |
 | `convex-localfirst/core` | The local engine, store contract, sync protocol, IndexedDB store, transport. |
 | `convex-localfirst/yjs` | Yjs rich-text CRDT over the local-first log (`useCollaborativeDoc`); `yjs` is an optional peer. |
+| `convex-localfirst/yjs/awareness` | Cursor / selection awareness (`useDocAwareness`), kept off the main `yjs` entry so it never pulls the optional `y-protocols` peer. |
+| `convex-localfirst/testing` | The deterministic [test harness](/docs/testing) (`createTestHarness`). |
+| `convex-localfirst/devtools` | The dev-only [`<LocalFirstDevtools />`](/docs/devtools) inspector. |
 | `npx convex-localfirst` | The CLI: `init` (scaffold a starter), `check` (forbid direct writes to local-first tables). |

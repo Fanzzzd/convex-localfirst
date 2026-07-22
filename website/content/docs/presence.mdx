@@ -1,0 +1,55 @@
+---
+title: Presence
+description: Ephemeral "who's here right now" — live avatars, "N online", typing indicators — over the mounted component's presence table.
+---
+
+`usePresence` answers "who is here right now" — live avatars, an "N online"
+badge, typing indicators. It is **ephemeral by design**: heartbeats write the
+mounted component's presence table, reads are TTL-expired (~30s), and nothing
+ever touches the sync log or local persistence, so a closed tab disappears on
+its own.
+
+```tsx
+import { usePresence } from "convex-localfirst";
+
+const { peers, others } = usePresence(
+  { workspace: workspaceId },        // or { project }, or omit for your own user scope
+  { name: "Ada", color: "#7c5cff" }, // broadcast to peers on each heartbeat
+  { heartbeatMs: 10_000 }
+);
+// peers: [{ clientId, userId, data, updatedAt }, ...]; others excludes this tab
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `scope` | `{ workspace }`, `{ project }`, or omit for your own user scope. |
+| `data` | Arbitrary payload broadcast to peers on each heartbeat (name, color, cursor…). |
+| `options.heartbeatMs` | Beat interval. Default `10_000`. Lower it for live cursors. |
+
+Each peer is `{ clientId: string; userId: string; data: Record<string, unknown>;
+updatedAt: number }`. `others` is `peers` minus this tab.
+
+## Access & delivery
+
+The scope is a real sync scope, so **the server enforces the same access rules
+as pull**: your own user scope (the default), or a workspace/project you are a
+member of (your [`access.member`](/docs/permissions)). A non-member sees an
+**empty room** and their beats are silently dropped — fail-soft, so a heartbeat
+racing a just-sent join converges on its own once membership lands.
+
+Delivery rides plain Convex reactivity: every heartbeat is a table write, so
+peers update **live** without polling. Export the two presence endpoints from
+`convex/sync.ts` (they come out of `createSyncFunctions` alongside `push`/`pull`):
+
+```ts
+export const { push, pull, presence, presenceList } = createSyncFunctions({ ... });
+```
+
+<Callout>
+A `data` change is broadcast on the **next** beat, so latency is bounded by
+`heartbeatMs`. For live text cursors, pair this with
+[document-mode awareness](/docs/document-mode#cursor--selection-awareness),
+which broadcasts a y-protocols `Awareness` over this same channel.
+</Callout>
+
+Next: [Test harness](/docs/testing).

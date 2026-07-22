@@ -56,6 +56,37 @@ const { doc, status } = useCollaborativeDoc({
 // bind to an editor: BlockNote → doc.getXmlFragment("blocknote"); TipTap → a y-prosemirror binding
 ```
 
+## Cursor & selection awareness
+
+Live cursors and selections are **presence**, not document content, so they ride
+the [presence](/docs/presence) transport rather than the sync log. They live at
+the `convex-localfirst/yjs/awareness` subpath — kept off the main `yjs` entry so
+that entry never pulls the optional `y-protocols` peer:
+
+```tsx
+import { useDocAwareness } from "convex-localfirst/yjs/awareness";
+
+const { doc } = useCollaborativeDoc({ docId, updates, append });
+const { awareness } = useDocAwareness(doc, {
+  docId,                        // presence is tagged with this and filtered to it
+  scope: { workspace },         // a workspace/project you're a member of (default: your user scope)
+  state: { user: { name, color } },
+  heartbeatMs: 250              // cursors want this LOW — it bounds cursor latency
+});
+// y-prosemirror: yCursorPlugin(awareness); the ySyncPlugin binds doc.getXmlFragment("prosemirror")
+```
+
+`useDocAwareness` returns `{ awareness }` — a standard y-protocols `Awareness`
+you hand to y-prosemirror's `yCursorPlugin`. Awareness state is ephemeral and
+never touches the sync log. Because it broadcasts on the presence heartbeat,
+cursor updates lag up to `heartbeatMs`.
+
+<Callout>
+The headless `createDocAwareness(doc, options)` (also on the awareness subpath)
+wires an `Awareness` to *any* transport — no React, no Convex — so it is fully
+unit-testable by exchanging payloads between two instances.
+</Callout>
+
 ## Compaction
 
 Each edit appends a row, so a long-lived doc accumulates updates. Pass `prune` and

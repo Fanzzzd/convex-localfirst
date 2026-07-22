@@ -1,0 +1,90 @@
+---
+title: Grouping, counts & ranking
+description: Incrementally-maintained group-by and live counts for the board view, plus fractional ranking for drag-and-drop ordering.
+---
+
+The board *is* the app in a Plane-class product. Instead of fetching every row
+and reducing per render, group and count in the view layer — the delta engine
+already knows which group a row enters or leaves.
+
+## `.groupBy(field)`
+
+Adding `.groupBy(field)` changes the terminal result of `useLiveQuery` from an
+array to a `ReadonlyMap`:
+
+```ts
+import { useLiveQuery } from "convex-localfirst";
+import { db } from "../lib/db";
+
+const board = useLiveQuery(
+  db.issues.scope({ workspace_id }).groupBy("state_id").order("sort_order")
+);
+// board: ReadonlyMap<string | null, Issue[]> | undefined
+```
+
+Each key is the group's field value (or `null` for a missing one); each value is
+that group's rows, kept in `.order()` order. Group arrays keep **stable
+identities** while unchanged, so a card moving between columns touches exactly two
+groups — no full re-render of the board.
+
+## `useLiveCounts(plan)`
+
+For badges you want the count, not the rows. `useLiveCounts` takes the same
+scope/filter/group plan and materializes **no rows**:
+
+```ts
+import { useLiveCounts } from "convex-localfirst";
+
+const badges = useLiveCounts(db.issues.scope({ workspace_id }).groupBy("state_id"));
+// badges: Record<string, number> | undefined  →  { "state_todo": 12, "state_done": 47 }
+
+const openCount = useLiveCounts(db.issues.scope({ workspace_id }).filter({ done: false }));
+// openCount: number | undefined  (ungrouped plans return one number)
+```
+
+A grouped plan returns `Record<string, number>`; an ungrouped plan returns a
+single `number`. Ordering and row limits do not affect counts.
+
+## Fractional ranking
+
+For manual / drag-and-drop order, store a **rank** string on each row instead of
+integer positions. A rank sits strictly between its two neighbours, so a reorder
+writes one row — no renumbering. All helpers are pure and import from
+`convex-localfirst`:
+
+| Helper | Signature |
+| --- | --- |
+| `rankBetween(a, b)` | A new rank strictly between ranks `a` and `b`. `a = null` means the start, `b = null` the end. Throws if `a >= b`. |
+| `rankCompare(a, b)` | Compare two ranks (`-1 / 0 / 1`) — for `.sort(...)`. |
+| `isValidRank(v)` | Whether `v` is a well-formed canonical rank. Never throws. |
+| `rebalance(ranks)` | Return `ranks.length` fresh, evenly-spread ranks (reclaims precision after many inserts in one spot). |
+
+Wire drag-and-drop with `groupBy` + `rankBetween`. On drop, compute the rank
+between the cards it landed between and patch that one field:
+
+```ts
+import { rankBetween } from "convex-localfirst";
+
+const update = useMutation(api.issues.update);
+
+function onDrop(issue: Issue, state_id: string, prev: Issue | null, next: Issue | null) {
+  update({
+    id: issue._id,
+    state_id,                                                  // the column it moved into
+    sort_order: rankBetween(prev?.sort_order ?? null, next?.sort_order ?? null),
+  });
+}
+```
+
+Read the board and its badges back off the same plan:
+
+```ts
+const board  = useLiveQuery(db.issues.scope({ workspace_id }).groupBy("state_id").order("sort_order"));
+const badges = useLiveCounts(db.issues.scope({ workspace_id }).groupBy("state_id"));
+```
+
+Store `sort_order` as a plain `v.string()` field on the table. Because ranks are
+canonical strings, `.order("sort_order")` sorts them correctly with no custom
+comparator.
+
+Next: [Full-text search](/docs/search).

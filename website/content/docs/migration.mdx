@@ -1,0 +1,215 @@
+---
+title: "Migrating 0.3.x → 0.4"
+description: Every 0.4 breaking change with before/after code — access={member,read,write}, serverStamp {fields,stamp}, useCollaborativeDoc {doc,status}, the tokenIdentifier default — plus the old→new mapping for the additive v4 surface.
+---
+
+0.4 is a pre-1.0 breaking release. It keeps the Convex-compatible `useQuery` /
+`useMutation` layer you already use, and adds the large v4 surface (typed `db`,
+declared relations, filters, grouping, batches, permissions UI, undo, search,
+attachments, recovery, testing, devtools) on top.
+
+Two parts: the [breaking changes](#breaking-changes) you must make to keep a
+0.3.x app working, then the [new v4 surface](#the-new-v4-surface) you can adopt
+incrementally (nothing there is required).
+
+```bash
+npm install convex-localfirst@^0.4          # convex >=1.16.1 is now required
+```
+
+## Breaking changes
+
+### 1. `access = { member, read, write }` replaces `isMember` / `visibility`
+
+Authorization is one `access` object. `member` returns a **role** (any value) or
+`null`/`undefined` to deny both pull and push; `read` filters rows within a scope;
+`write` authorizes **every** accepted op, including inserts (closing insert-time
+authz gaps `isMember` alone couldn't express). Omitted `read`/`write` default to
+allowing members. `byUser` tables stay owner-only.
+
+```ts
+// Before (0.3.x)
+createSyncFunctions({
+  component, mutation, query, tables,
+  isMember: async (ctx, { userId, scopeValue }) => await isWorkspaceMember(ctx, userId, scopeValue),
+  visibility: (_ctx, { userId, row }) => row.created_by === userId
+});
+
+// After (0.4)
+createSyncFunctions({
+  component, mutation, query, tables,
+  access: {
+    member: async (ctx, { userId, scopeValue }) => await roleForWorkspace(ctx, userId, scopeValue),
+    read:  (_ctx, { role, userId, row }) => role !== "guest" || row.created_by === userId,
+    write: (_ctx, { role, userId, action, before, proposed }) =>
+      role === "admin" ||
+      (action === "insert" ? proposed?.created_by === userId : before?.created_by === userId)
+  }
+});
+```
+
+A `byWorkspace`/`byProject` table configured without `access.member` now throws a
+clear error instead of silently allowing access. See [Syncing](/docs/syncing#row-level-access--server-minted-fields)
+and [Permissions](/docs/permissions).
+
+### 2. `serverStamp` is now `{ fields, stamp }`
+
+Server-minted insert fields must declare the complete set of field names they may
+return, so those fields are rejected from client writes before the hook runs.
+
+```ts
+// Before (0.3.x)
+serverStamp: {
+  issues: async (ctx, { value }) => ({ sequence_id: await nextCounter(ctx, value.project_id) })
+}
+
+// After (0.4)
+serverStamp: {
+  issues: {
+    fields: ["sequence_id"],
+    stamp: async (ctx, { userId, value }) => ({ sequence_id: await nextCounter(ctx, value.project_id) })
+  }
+}
+```
+
+Declare the stamped field in the table `shape` (as `v.optional(...)`), and mirror
+the names on the client with `lf.table({ serverFields: ["sequence_id"] })` so
+undo-of-delete strips them before re-inserting.
+
+### 3. `useCollaborativeDoc` returns `{ doc, status }` and takes the whole call
+
+It no longer returns a bare `Y.Doc`. It now owns docId scoping, dedup, durable
+retried appends, and server-confirmed compaction. `append`/`prune` must return the
+**whole `useMutation` call** (not `.local`) so the provider can drive durability
+from its `.local` / `.server` stages.
+
+```tsx
+// Before (0.3.x)
+const doc = useCollaborativeDoc({
+  docId, updates,
+  append: (update) => appendRow({ workspace, doc: docId, update }).local, // ← .local
+  prune: (id) => pruneRow({ id }).local
+});
+
+// After (0.4)
+const { doc, status } = useCollaborativeDoc({
+  docId, updates, idField: "id",
+  append: (update) => appendRow({ workspace, doc: docId, update }), // ← whole call
+  prune: (id) => pruneRow({ id })
+});
+// status: { synced, pendingUpdates, lastError, compacting }; the hook filters `updates` to docId internally
+```
+
+See [Document mode](/docs/document-mode).
+
+### 4. Default identity is `identity.tokenIdentifier` (was `identity.subject`)
+
+The server-authoritative user id now defaults to `identity.tokenIdentifier`,
+preventing a `subject` value colliding across auth providers from granting
+cross-user access.
+
+<Callout type="warn" title="This changes existing user ids — and scope keys derive from them">
+Every `byUser` row's owner field, every `byWorkspace`/`byProject` membership
+lookup, and the per-user local store namespace were keyed on the old `subject`.
+Under the new default they key on `tokenIdentifier`, so **a returning user's
+existing data will not match** unless you act. Decide before deploying 0.4 — a
+returning user who hits the new id with un-migrated data appears to have lost
+their rows (they are still on the server, under the old key).
+</Callout>
+
+**Option A — keep the old ids (no data migration).** Override `getUserId`:
+
+```ts
+createSyncFunctions({
+  component, mutation, query, tables, access,
+  getUserId: async (ctx) => (await ctx.auth.getUserIdentity())?.subject ?? null
+});
+```
+
+The safe, no-downtime choice for an app in production. (Caveat: raw `subject` can
+collide across providers — only relevant with multiple auth providers.)
+
+**Option B — migrate to `tokenIdentifier`.** Adopt the new default and re-key
+existing data with a one-time migration: for every local-first table, rewrite the
+owner/scope field and every membership row from each user's old `subject` to their
+`tokenIdentifier`, while the app is drained so no writes race the re-key, then
+remove any `getUserId` override.
+
+### 5. `convex` peer is now `>=1.16.1`
+
+The mounted component requires it (tested against `^1.41`). Update your `convex`
+dependency if you are on an older release.
+
+### 6. The component ships compiled exports
+
+`convex-localfirst/component` ships compiled JS + `.d.ts` under `dist/component`,
+with the raw TypeScript behind the `@convex-dev/component-source` export condition.
+No app change is needed — `app.use(localfirst)` and `components.convexLocalFirst.*`
+work as before — but if you pinned deep component paths, use the public entry
+`convex-localfirst/component/convex.config.js`.
+
+### Minor: hook arg arity
+
+`useQuery` / `useMutation` now mirror Convex's `OptionalRestArgs`: functions with
+required args require the args parameter; empty-args functions may omit it.
+
+## The new v4 surface
+
+None of this is required — the 0.3.x patterns still work. But for a complex app,
+the v4 surface removes a lot of hand-written glue. Adopt it table by table.
+
+| You were doing this (0.3.x) | Prefer this (0.4) |
+| --- | --- |
+| `collection<Doc<"issues">>("issues")` — stringly, self-typed | `createLocalDb({ issues, … })` → `db.issues`, typed from the schema — see [Typed client](/docs/typed-db) |
+| Per-query relation combinators on every call site | Declare `relations` once on `lf.table`, query by name: `.with("state", "labels")` |
+| `.where(row => …)` for everything | `.filter({ … })` — typed, index-plannable, serializable ([saved views](/docs/filters)); keep `.where(fn)` for the long tail |
+| Fetch all rows, `reduce` into columns/counts per render | `.groupBy("state_id")` + `useLiveCounts(...)` — [incrementally maintained](/docs/grouping) |
+| Hand-rolled optimistic multi-writes with manual rollback | [`useBatch()`](/docs/batches) — one atomic, offline-durable group |
+
+### `collection()` → typed `db`
+
+```ts
+// Before
+const rows = useLiveQuery(
+  collection<Doc<"issues">>("issues").scope({ workspaceId }).where((i) => i.state_id === stateId)
+);
+
+// After
+export const db = createLocalDb({ issues, states, labels }); // once, in src/lib/db.ts
+const rows = useLiveQuery(db.issues.scope({ workspace_id: workspaceId }).filter({ state_id: stateId }));
+```
+
+`collection()` remains as the untyped escape hatch.
+
+### Per-query relations → declared relations + `.with()`
+
+```ts
+// After — declared once on lf.table:
+//   relations: { state: lf.one("states","state_id"), labels: lf.many("labels", { via: "label_ids" }) }
+useLiveQuery(db.issues.scope({ workspace_id: workspaceId }).with("state", "labels"));
+// row.state: State | null, row.labels: Label[]
+```
+
+### `.where(fn)` → `.filter(AST)`
+
+```ts
+// After — serializable + index-plannable
+db.issues.filter({ state_id: { in: stateIds }, priority: "urgent" });
+// serializeFilter(spec) -> store as a view row; parseFilter<Shape>(json) -> validated replay
+```
+
+### Manual reduce → `groupBy` / `useLiveCounts`
+
+```ts
+const columns = useLiveQuery(db.issues.scope({ workspace_id: workspaceId }).groupBy("state_id")); // Map
+const counts  = useLiveCounts(db.issues.scope({ workspace_id: workspaceId }).groupBy("state_id")); // Record
+```
+
+### Hand-rolled multi-writes → `useBatch`
+
+```ts
+const batch = useBatch();
+await batch(() => {
+  const { id } = create({ workspace_id, title, /* … */ });
+  comment({ workspace_id, issue_id: id, body });
+}).local;
+```

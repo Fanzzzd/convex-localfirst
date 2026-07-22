@@ -322,9 +322,29 @@ function relationSpec(descriptor: DeclaredRelationDescriptor): RelationSpec {
   return relationMany(descriptor.table, descriptor.foreignKey);
 }
 
-/** Build a fully typed table root from the same module object passed to the
- * provider. Runtime plans are ordinary `LocalQueryPlan`s over the existing
- * collection/relation implementation. */
+/**
+ * Build a fully typed table root from the same imported `lf.table` modules passed
+ * to the provider — row types, scope keys, filter/order fields, and relation names
+ * all derive from the schema, so there are no client generics and nothing is
+ * restated. Runtime plans are ordinary `LocalQueryPlan`s over the existing
+ * collection/relation implementation, so the result drops straight into
+ * `useLiveQuery` / `useLiveCounts`. `db` is tree-shakeable per table;
+ * `collection()` remains the untyped escape hatch.
+ *
+ * @example
+ * ```ts
+ * // src/lib/db.ts — once
+ * import { createLocalDb } from "convex-localfirst";
+ * import * as issues from "../../convex/issues";
+ * import * as states from "../../convex/states";
+ * export const db = createLocalDb({ issues, states });
+ *
+ * // anywhere
+ * const board = useLiveQuery(
+ *   db.issues.scope({ workspace_id }).filter({ state_id }).with("state").groupBy("state_id")
+ * );
+ * ```
+ */
 export function createLocalDb<const Modules extends Record<string, unknown>>(modules: Modules): LocalDb<Modules> {
   const manifest = collectManifest(modules);
   const db: Record<string, LocalDbQuery<Record<string, unknown>>> = {};

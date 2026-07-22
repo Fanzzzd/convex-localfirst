@@ -1,0 +1,74 @@
+---
+title: Offline attachments
+description: Create attachments offline — the blob persists locally first, then the leader tab uploads to Convex file storage in the background with retries.
+---
+
+Attachments follow the local-first contract: creating one **succeeds offline**.
+The metadata row inserts optimistically, the blob is persisted locally, and the
+leader tab uploads to Convex file storage in the background with retries — the
+server stamps the storage id on the synced row when the upload finalizes.
+
+## Server: `createAttachmentFunctions`
+
+Compose the upload endpoints, authorized by the **same** access config as your
+sync functions:
+
+```ts
+import { createAttachmentFunctions } from "convex-localfirst/server";
+
+export const { getUploadUrl, finalize } = createAttachmentFunctions({
+  component: components.convexLocalFirst,
+  mutation, query,
+  tables, access,
+  table: "attachments",                 // the metadata table (one of your local-first tables)
+  generateUploadUrl: (ctx) => ctx.storage.generateUploadUrl()
+});
+```
+
+| Option | Meaning |
+| --- | --- |
+| `table` | The attachment metadata table (must be a local-first table). |
+| `access` | The same access rules as `createSyncFunctions` — the caller must be allowed to **write** the row. |
+| `storageIdField` | Field the server stamps with the storage id. Default `"storageId"`. |
+| `generateUploadUrl` | Mint a one-shot upload URL — normally `(ctx) => ctx.storage.generateUploadUrl()`. |
+
+<Callout type="warn">
+`storageIdField` is **server-controlled**: it must be part of the table's synced
+shape (so clients receive it) but must **not** be an arg of any client insert/patch
+mutation — `finalize` sets it through the trusted `serverWriter`. A misconfiguration
+throws at startup.
+</Callout>
+
+## Client
+
+The provider defaults its attachment endpoints to `attachments:getUploadUrl` /
+`attachments:finalize`; override via the `attachments` config if your module path
+differs.
+
+```tsx
+import { useCreateAttachment, useAttachmentUpload } from "convex-localfirst";
+
+// Pass the table's INSERT mutation reference.
+const create = useCreateAttachment(api.attachments.create);
+
+const { localId } = await create({
+  metadata: { issue_id, name, size, mime_type },   // args of the insert mutation
+  blob                                              // the File/Blob to upload
+});
+```
+
+`create` inserts the metadata row optimistically **and** persists the blob
+durably — so it succeeds fully offline — then resolves the row's `localId`. Watch
+the upload with it:
+
+```tsx
+const { state, progress } = useAttachmentUpload(localId);
+// state: "queued" | "uploading" | "done" | "failed"
+// progress: 0..1 while uploading, null otherwise
+```
+
+A failed upload (retries exhausted, or the server rejected `finalize`) surfaces in
+[`useSyncRecovery().failedAttachments`](/docs/recovery); the local blob is retained
+so the app can offer a retry.
+
+Next: [Recovery & scope status](/docs/recovery).

@@ -82,6 +82,7 @@ definition.)
 | --- | --- |
 | `component` | `components.convexLocalFirst` from your generated api. |
 | `mutation` / `query` | The constructors from your `_generated/server`. |
+| `internalMutation` | Optional — pass Convex's `internalMutation` to expose `gc` as an internal cron target. |
 | `tables` | Which app tables are local-first, and how each is scoped. |
 | `access` | **`access.member` is required if any table is `byWorkspace`/`byProject`.** The scope gate plus optional row-level `read`/`write` filters — see below. |
 | `schemaVersion` | Normally omitted — `collectTables` carries the version declared in `createLocalFirst`. |
@@ -125,16 +126,27 @@ delete of a row the user cannot read is always rejected ("can't see → can't to
 
 ```ts
 serverStamp: {
-  issues: async (ctx, { value }) => ({
-    sequence_id: await nextCounter(ctx, `issue_seq:${value.project_id}`)
-  })
+  issues: {
+    fields: ["sequence_id"],   // the complete set this hook may mint (rejected from client writes)
+    stamp: async (ctx, { value }) => ({
+      sequence_id: await nextCounter(ctx, `issue_seq:${value.project_id}`)
+    })
+  }
 }
 ```
 
-It runs inside the push transaction, so the counter read-modify-write is
-race-free under Convex OCC. Declare the stamped field in the table's `shape`
-(as `v.optional(...)` so clients don't supply it) and it syncs back to every
-client like any other field. A stamp may not touch the scope or id field.
+`fields` is the allowlist the hook may return; those fields are stripped from every
+client insert/patch before the stamp runs (only the server mints them). The stamp
+runs inside the push transaction, so the counter read-modify-write is race-free
+under Convex OCC. Declare the stamped field in the table's `shape` (as
+`v.optional(...)` so clients don't supply it) and it syncs back to every client
+like any other field. A stamp may not touch the scope or id field.
+
+<Callout>
+Pair `serverStamp` with `serverFields` on the [`lf.table`](/docs/defining-tables)
+so undo-of-delete strips the server-minted values before re-inserting a captured
+row — the server re-mints them fresh on resurrection.
+</Callout>
 
 ## Cold start, GC, and revocation
 
