@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IndexedDbStore, MemoryLocalStore, type LocalOperation, type ServerChange } from "../../src/core";
 import { INDEXED_DB_SCHEMA_VERSION, openLocalFirstDb } from "../../src/core/internal";
 
@@ -40,6 +40,22 @@ const insertChange = (id: string, version: number, value: Record<string, unknown
 });
 
 describe("IndexedDbStore", () => {
+  it("retries IndexedDB open after a rejected open promise", async () => {
+    const realOpen = indexedDB.open.bind(indexedDB);
+    let opens = 0;
+    const spy = vi.spyOn(indexedDB, "open").mockImplementation((name, version) => {
+      if (opens++ > 0) return realOpen(name, version);
+      const failed = { error: new Error("transient open failure") } as IDBOpenDBRequest;
+      queueMicrotask(() => failed.onerror?.(new Event("error")));
+      return failed;
+    });
+    const store = new IndexedDbStore({ databaseName: "retry-open", namespace: "user_a" });
+    await expect(store.getRows("todos")).rejects.toThrow(/transient open failure/);
+    await expect(store.getRows("todos")).resolves.toEqual([]);
+    expect(opens).toBe(2);
+    spy.mockRestore();
+  });
+
   it("derives the live view from canonical + pending (round-trips an insert)", async () => {
     const store = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
     await store.enqueueOperation(op({ opId: "o1", id: "t1" }));

@@ -25,11 +25,13 @@ export function DocEditor({ docId, workspaceId, user }: { docId: string; workspa
   const appendRow = useMutation(api.docUpdates.append);
   const pruneRow = useMutation(api.docUpdates.prune);
 
-  const doc = useCollaborativeDoc({
+  // Pass the whole mutation call (not `.local`): compaction awaits `.server`
+  // confirmation of the snapshot before pruning, so history is never lost.
+  const { doc } = useCollaborativeDoc({
     docId,
     updates,
-    append: (update) => appendRow({ workspaceId, docId, update }).local,
-    prune: (id) => pruneRow({ id }).local
+    append: (update) => appendRow({ workspaceId, docId, update }),
+    prune: (id) => pruneRow({ id })
   });
 
   const editor = useCreateBlockNote({

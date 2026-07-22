@@ -61,8 +61,23 @@ class MemoryServerStore implements ServerStore {
   async getLedger(userId: string, opId: string) {
     return this.ledger.get(`${userId}:${opId}`) ?? null;
   }
-  async putLedger(userId: string, _clientId: string, op: ServerOperation, entry: LedgerEntry) {
-    this.ledger.set(`${userId}:${op.opId}`, entry);
+  async commitOp(
+    userId: string,
+    op: ServerOperation,
+    entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
+    change?: Omit<StoredChange, "changeId">
+  ) {
+    let stored: StoredChange | null = null;
+    if (change) {
+      const changeId = await this.appendChange(change);
+      stored = { ...change, changeId };
+    }
+    this.ledger.set(`${userId}:${op.opId}`, {
+      ...entry,
+      schemaVersion: op.schemaVersion,
+      changes: stored ? [stored] : undefined
+    });
+    return stored;
   }
   async getServerId(table: string, localId: string) {
     return this.idmap.get(`${table}:${localId}`) ?? null;
@@ -88,9 +103,6 @@ class MemoryServerStore implements ServerStore {
     const rows = this.changes.filter((c) => c.table === table && c.localId === localId);
     return rows.length ? rows[rows.length - 1]!.scopeKey : null;
   }
-  async isMember() {
-    return true;
-  }
 }
 
 // Server only knows about `todos`. `drafts` exists on the client (to force a real
@@ -98,7 +110,16 @@ class MemoryServerStore implements ServerStore {
 const config: SyncConfig = {
   schemaVersion: 1,
   now: () => 1,
-  tables: { todos: { scope: byUser("ownerId"), idField: "localId" } }
+  tables: {
+    todos: {
+      scope: byUser("ownerId"),
+      idField: "localId",
+      mutations: {
+        "todos:create": { kind: "insert", fields: ["ownerId", "localId", "listId", "text", "done"] },
+        "todos:toggle": { kind: "patch", fields: ["done"] }
+      }
+    }
+  }
 };
 
 type Todo = { localId: string; listId: string; text: string; done: boolean };
@@ -248,7 +269,7 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
       text: "into a table the server does not know"
     });
     await bad.local;
-    await expect(bad.server).rejects.toThrow(/Unknown local-first table/);
+    await expect(bad.server).rejects.toThrow(/unknownFunction/);
     expect(bad.status().status).toBe("rejected");
     // The rest of the app is unaffected — todos still query cleanly.
     rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];

@@ -28,13 +28,13 @@ export type ServerTableConfig = {
    *  leak to clients. Absent (hand-written config): bootstrap strips only Convex
    *  system fields. collectTables always fills it. */
   readonly syncedFields?: readonly string[];
-  /** Row-level read filter WITHIN an authorized scope (e.g. Plane-style guests who
-   *  only see issues they created). Applied on every read path — bootstrap rows,
-   *  incremental changes, and (as "can't see → can't touch") patch/delete writes.
-   *  A patch to a row that ENTERS visibility is delivered as a full-row upsert (the
-   *  client may lack the base row); one that LEAVES visibility is delivered as a
-   *  delete (the client evicts it). Inserts are judged on the inserted data. */
-  readonly visibility?: (input: { userId: string; row: Record<string, unknown> }) => boolean | Promise<boolean>;
+  /** Client-callable mutations collected from lf.table(). Query-only tables have
+   *  no entries and therefore reject every client write. */
+  readonly mutations?: Readonly<
+    Record<string, { readonly kind: ServerOperation["kind"]; readonly fields: readonly string[] }>
+  >;
+  /** Fields minted by serverStamp. They are never accepted from a client. */
+  readonly serverOnlyFields?: readonly string[];
   /** Server-minted fields merged into every insert (push AND serverWriter, where
    *  userId is "server") — e.g. an atomic per-project sequence number. Runs inside
    *  the push transaction, so counter reads are race-free under Convex OCC. Stamped
@@ -72,20 +72,44 @@ export type StoredChange = {
 };
 
 export type LedgerEntry = {
+  readonly schemaVersion: number;
   readonly status: "accepted" | "rejected";
-  readonly resultJson?: string;
   readonly error?: string;
-  // The canonical change(s) this op produced, serialized. Returned again on a
-  // duplicate replay so a client that committed the op server-side but never
-  // received the ack (crash/network drop) still gets its confirming change and the
-  // row leaves _pending — instead of replaying forever against an absent canonical.
-  readonly changesJson?: string;
+  readonly changes?: readonly StoredChange[];
 };
+
+type BoundAccessConfig<Role = unknown, Row extends Record<string, unknown> = Record<string, unknown>> = {
+  readonly member: (input: {
+    userId: string;
+    scopeValue: string;
+    table: string;
+    membershipTable?: string;
+  }, store?: ServerStore) => Role | null | undefined | Promise<Role | null | undefined>;
+  readonly read?: (input: { userId: string; role: Role; table: string; row: Row }) => boolean | Promise<boolean>;
+  readonly write?: (input: {
+    userId: string;
+    role: Role;
+    table: string;
+    action: ServerOperation["kind"];
+    before: Row | null;
+    patch?: Record<string, unknown>;
+    proposed: Row | null;
+  }) => boolean | Promise<boolean>;
+};
+
+type BoundOnWrite<Row extends Record<string, unknown> = Record<string, unknown>> = (input: {
+  table: string;
+  action: ServerOperation["kind"];
+  before: Row | null;
+  after: Row | null;
+  userId: string;
+  functionName: string;
+}) => Promise<void>;
 
 /**
  * Storage contract the sync engine drives. TRANSACTIONAL REQUIREMENT (I2/I5): each push
  * does read-then-write sequences that need transactional isolation —
- *  - idempotency: getLedger → apply → putLedger must be atomic, else concurrent pushes of
+ *  - idempotency: getLedger → apply → commitOp must be atomic, else concurrent pushes of
  *    the same opId both miss the ledger and double-apply;
  *  - per-row version monotonicity: latestChangeVersion → appendChange(version+1).
  * The Convex adapter gets this free (every method shares the parent mutation's tx + OCC).
@@ -98,12 +122,17 @@ export type ServerStore = {
   patchRow(table: string, serverId: string, patch: Record<string, unknown>): Promise<void>;
   deleteRow(table: string, serverId: string): Promise<void>;
 
-  // Operation ledger (idempotency), keyed by (userId, opId). opId is globally unique
-  // (embeds the originating clientId), so this dedups a durable op even when it is
-  // replayed under a different envelope clientId after a reload/new tab. putLedger keeps
-  // clientId only as an audit column.
+  // Operation ledger (idempotency), keyed by (userId, opId).
   getLedger(userId: string, opId: string): Promise<LedgerEntry | null>;
-  putLedger(userId: string, clientId: string, op: ServerOperation, entry: LedgerEntry): Promise<void>;
+  /** Atomically append `change` and record the ledger entry. The app-row write,
+   *  this call, and its id-map update must share the caller's transaction. */
+  commitOp(
+    userId: string,
+    op: ServerOperation,
+    entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
+    change?: Omit<StoredChange, "changeId">,
+    serverId?: string
+  ): Promise<StoredChange | null>;
 
   // Local id -> server id, keyed by (table, localId) — NOT by user. A
   // workspace/project row is created by one member but patched/deleted by others,
@@ -147,8 +176,6 @@ export type ServerStore = {
     limit: number
   ): Promise<ReadonlyArray<{ table: string; localId: string; version: number; rowKey: string; serverId?: string | null }>>;
 
-  // Workspace/project membership check.
-  isMember(userId: string, scopeValue: string, membershipTable: string): Promise<boolean>;
 };
 
 export type PushOp = ServerOperation;
@@ -230,9 +257,39 @@ export type SyncConfig = {
   readonly now?: () => number;
   readonly pullLimit?: number;
   readonly valueCodec?: ValueCodec;
+  readonly access?: BoundAccessConfig;
+  readonly onWrite?: BoundOnWrite;
 };
 
 class RejectOp extends Error {}
+
+const onWriteDepth = new WeakMap<object, number>();
+const MAX_ON_WRITE_DEPTH = 8;
+
+async function runOnWrite(
+  config: SyncConfig,
+  table: string,
+  input: Parameters<BoundOnWrite>[0]
+): Promise<void> {
+  if (!config.onWrite) return;
+  // configFor creates a fresh config/server store when onWrite calls serverWriter,
+  // but the table's scope definition is shared across that chain and is therefore
+  // the smallest stable recursion key available inside this runtime-agnostic file.
+  const key = config.tables[table]?.scope ?? config;
+  const depth = onWriteDepth.get(key) ?? 0;
+  if (depth >= MAX_ON_WRITE_DEPTH) {
+    throw new Error(
+      `convex-localfirst: onWrite recursion exceeded ${MAX_ON_WRITE_DEPTH} nested writes for table "${table}". Do not write back to the same local-first table unconditionally from onWrite.`
+    );
+  }
+  onWriteDepth.set(key, depth + 1);
+  try {
+    await config.onWrite(input);
+  } finally {
+    if (depth === 0) onWriteDepth.delete(key);
+    else onWriteDepth.set(key, depth);
+  }
+}
 
 export function scopeKeyForUser(userId: string): string {
   return `u:${userId}`;
@@ -251,6 +308,32 @@ function partitionFieldOf(scope: ServerTableConfig["scope"]): string | null {
   return null;
 }
 
+type MemberCache = Map<string, Promise<unknown | null>>;
+
+async function memberRole(
+  store: ServerStore,
+  config: SyncConfig,
+  cache: MemberCache,
+  userId: string,
+  kind: "byWorkspace" | "byProject",
+  scopeValue: string,
+  table: string,
+  membershipTable: string
+): Promise<unknown | null> {
+  if (!config.access) {
+    throw new Error("serverSync: membership scopes require access.member");
+  }
+  const key = scopeKeyForValue(kind, scopeValue);
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = Promise.resolve(
+      config.access.member({ userId, scopeValue, table, membershipTable }, store)
+    ).then((role) => role ?? null);
+    cache.set(key, pending);
+  }
+  return await pending;
+}
+
 /**
  * Resolve the scope key for an op, enforcing ownership/membership against the
  * authenticated userId. CRUCIAL (I7): for a patch/delete the scope is derived
@@ -261,18 +344,25 @@ function partitionFieldOf(scope: ServerTableConfig["scope"]): string | null {
  */
 async function resolveScopeForWrite(
   store: ServerStore,
-  config: ServerTableConfig,
+  syncConfig: SyncConfig,
+  tableConfig: ServerTableConfig,
+  memberCache: MemberCache,
   userId: string,
   op: ServerOperation
-): Promise<{ scopeKey: string; value: Record<string, unknown> }> {
-  const scope = config.scope;
+): Promise<{
+  scopeKey: string;
+  value: Record<string, unknown>;
+  before: Record<string, unknown> | null;
+  role: unknown | null;
+}> {
+  const scope = tableConfig.scope;
   const value = { ...(op.value ?? {}) };
 
   if (scope.kind === "byUser") {
     if (op.kind === "insert") {
       // Ignore any client-supplied owner: ownership is the authenticated user.
       value[scope.field] = userId;
-      return { scopeKey: scopeKeyForUser(userId), value };
+      return { scopeKey: scopeKeyForUser(userId), value, before: null, role: null };
     }
     // patch/delete: the row must exist AND be owned by this user. The id map is
     // global (by table+localId), so without this check a user who guesses another
@@ -281,28 +371,29 @@ async function resolveScopeForWrite(
     if (existing[scope.field] !== userId) {
       throw new RejectOp("Not the owner of this row");
     }
-    return { scopeKey: scopeKeyForUser(userId), value };
+    return { scopeKey: scopeKeyForUser(userId), value, before: existing, role: null };
   }
 
   if (scope.kind === "byWorkspace" || scope.kind === "byProject") {
     const field = scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
     let scopeValue: string | null;
+    let before: Record<string, unknown> | null = null;
     if (op.kind === "insert") {
       // An insert declares the scope it targets; membership on it is checked below.
       scopeValue = typeof value[field] === "string" ? String(value[field]) : null;
     } else {
       // patch/delete: scope comes from the existing row, NEVER from op.value.
-      const existing = await loadRow(store, op);
-      scopeValue = typeof existing[field] === "string" ? String(existing[field]) : null;
+      before = await loadRow(store, op);
+      scopeValue = typeof before[field] === "string" ? String(before[field]) : null;
     }
     if (!scopeValue) {
       throw new RejectOp(`Missing ${field} for scoped write`);
     }
-    const member = await store.isMember(userId, scopeValue, scope.membershipTable);
-    if (!member) {
+    const role = await memberRole(store, syncConfig, memberCache, userId, scope.kind, scopeValue, op.table, scope.membershipTable);
+    if (role === null) {
       throw new RejectOp("Not a member of the target scope");
     }
-    return { scopeKey: scopeKeyForValue(scope.kind, scopeValue), value };
+    return { scopeKey: scopeKeyForValue(scope.kind, scopeValue), value, before, role };
   }
 
   throw new RejectOp("Custom scopes require a server resolver");
@@ -314,19 +405,23 @@ async function resolveScopeForWrite(
  *  and avoid leaking which case it was (an existence/ownership oracle, I7). */
 async function isAuthorizedForScope(
   store: ServerStore,
-  config: ServerTableConfig,
+  syncConfig: SyncConfig,
+  memberCache: MemberCache,
+  table: string,
+  tableConfig: ServerTableConfig,
   userId: string,
   scopeKey: string
-): Promise<boolean> {
-  const scope = config.scope;
+): Promise<{ authorized: boolean; role: unknown | null }> {
+  const scope = tableConfig.scope;
   if (scope.kind === "byUser") {
-    return scopeKey === scopeKeyForUser(userId);
+    return { authorized: scopeKey === scopeKeyForUser(userId), role: null };
   }
   if (scope.kind === "byWorkspace" || scope.kind === "byProject") {
     const value = scopeKey.slice(scopeKey.indexOf(":") + 1);
-    return await store.isMember(userId, value, scope.membershipTable);
+    const role = await memberRole(store, syncConfig, memberCache, userId, scope.kind, value, table, scope.membershipTable);
+    return { authorized: role !== null, role };
   }
-  return false; // defensive: fail closed on any unknown scope kind
+  return { authorized: false, role: null }; // defensive: fail closed
 }
 
 /** The scopeKey a stored row belongs to, from its partition field (the inverse of
@@ -345,6 +440,54 @@ function scopeKeyForRow(config: ServerTableConfig, row: Record<string, unknown>)
   return null;
 }
 
+/**
+ * True if `userId` may perform a server-assisted patch of an EXISTING row (the
+ * attachment getUploadUrl/finalize path). Reuses the SAME authorization as a client
+ * patch: ownership for byUser, membership + `access.write` for workspace/project —
+ * so attachments never open a second, weaker authz path. Returns false (never throws)
+ * when the row is missing, foreign, or the write hook denies it.
+ */
+export async function authorizeRowWrite(
+  store: ServerStore,
+  config: SyncConfig,
+  userId: string,
+  table: string,
+  localId: string,
+  patch: Record<string, unknown>
+): Promise<boolean> {
+  const tableConfig = config.tables[table];
+  if (!tableConfig) return false;
+  const op: ServerOperation = {
+    opId: "",
+    clientId: "",
+    schemaVersion: config.schemaVersion,
+    functionName: "",
+    table,
+    kind: "patch",
+    localId,
+    patch
+  };
+  let resolved: { before: Record<string, unknown> | null; role: unknown | null };
+  try {
+    // Enforces ownership (byUser) or membership (workspace/project) against the
+    // CURRENT server row — and rejects a missing row.
+    resolved = await resolveScopeForWrite(store, config, tableConfig, new Map(), userId, op);
+  } catch {
+    return false;
+  }
+  if (tableConfig.scope.kind === "byUser") return true; // ownership already enforced
+  if (!config.access?.write) return true; // member, no row-level write hook
+  return await config.access.write({
+    userId,
+    role: resolved.role,
+    table,
+    action: "patch",
+    before: resolved.before,
+    patch,
+    proposed: { ...(resolved.before ?? {}), ...patch }
+  });
+}
+
 /** Load the existing server row for a non-insert op, or reject if it's gone. */
 async function loadRow(store: ServerStore, op: ServerOperation): Promise<Record<string, unknown>> {
   const serverId = await store.getServerId(op.table, op.localId);
@@ -358,8 +501,8 @@ async function loadRow(store: ServerStore, op: ServerOperation): Promise<Record<
 export async function handlePush(store: ServerStore, config: SyncConfig, input: PushInput): Promise<PushResult> {
   const now = config.now ?? (() => Date.now());
   const serverTime = now();
-  const codec = config.valueCodec ?? JSON_VALUE_CODEC;
   const result: PushResult = { accepted: [], rejected: [], idMaps: [], changes: [], serverTime };
+  const memberCache: MemberCache = new Map();
 
   if (input.schemaVersion !== config.schemaVersion) {
     return { ...result, schemaMismatch: true };
@@ -370,14 +513,18 @@ export async function handlePush(store: ServerStore, config: SyncConfig, input: 
     // reload/new-tab replay under a different envelope clientId is still deduped).
     const prior = await store.getLedger(input.userId, op.opId);
     if (prior) {
+      if (prior.schemaVersion !== input.schemaVersion) {
+        result.rejected.push({ opId: op.opId, message: "schemaMismatch" });
+        continue;
+      }
       if (prior.status === "accepted") {
-        result.accepted.push({ opId: op.opId, serverResult: prior.resultJson ? JSON.parse(prior.resultJson) : undefined });
+        result.accepted.push({ opId: op.opId });
         // Re-deliver the confirming change so a replayed (already-committed) op can
         // leave _pending even if its original ack was lost. The client version-checks
         // it (nextCanonicalRow), so re-applying a now-stale change is ignored — never a
         // regression. The server log is NOT re-appended (this is read from the ledger).
-        if (prior.changesJson) {
-          result.changes.push(...(codec.decode(prior.changesJson) as StoredChange[]));
+        if (prior.changes) {
+          result.changes.push(...prior.changes);
         }
       } else {
         result.rejected.push({ opId: op.opId, message: prior.error ?? "rejected" });
@@ -393,58 +540,103 @@ export async function handlePush(store: ServerStore, config: SyncConfig, input: 
     if (op.schemaVersion !== input.schemaVersion) {
       const message = `Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`;
       result.rejected.push({ opId: op.opId, message });
-      await store.putLedger(input.userId, input.clientId, op, { status: "rejected", error: message });
+      await store.commitOp(input.userId, op, { status: "rejected", error: message });
       continue;
     }
 
     const tableConfig = config.tables[op.table];
     if (!tableConfig) {
-      const message = `Unknown local-first table: ${op.table}`;
+      const message = "unknownFunction";
       result.rejected.push({ opId: op.opId, message });
-      await store.putLedger(input.userId, input.clientId, op, { status: "rejected", error: message });
+      await store.commitOp(input.userId, op, { status: "rejected", error: message });
       continue;
     }
 
     try {
-      const change = await applyOp(store, tableConfig, input.userId, op, serverTime);
-      if (change) {
-        result.changes.push(change);
-      }
-      const serverId = await store.getServerId(op.table, op.localId);
-      if (op.kind === "insert" && serverId) {
-        result.idMaps.push({ table: op.table, localId: op.localId, serverId });
-      }
+      validateDeclaredMutation(tableConfig, op);
+      const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
+      await runOnWrite(config, op.table, {
+        table: op.table,
+        action: op.kind,
+        before: applied.before,
+        after: applied.after,
+        userId: input.userId,
+        functionName: op.functionName
+      });
       // change === null is an idempotent no-op delete (row already gone): still ack it
       // so the client stops retrying, and ledger it for opId idempotency. Do NOT echo
       // serverId on a no-op — the row is gone, so its internal id must not leak.
       const serverResult =
-        change === null
+        applied.change === null
           ? { ok: true, localId: op.localId, noop: true }
-          : { ok: true, localId: op.localId, serverId };
+          : { ok: true, localId: op.localId, serverId: applied.serverId };
+      const change = await store.commitOp(
+        input.userId,
+        op,
+        { status: "accepted" },
+        applied.change ?? undefined,
+        applied.serverId
+      );
+      if (change) result.changes.push(change);
+      if (op.kind === "insert" && applied.serverId) {
+        result.idMaps.push({ table: op.table, localId: op.localId, serverId: applied.serverId });
+      }
       result.accepted.push({ opId: op.opId, serverResult });
-      await store.putLedger(input.userId, input.clientId, op, {
-        status: "accepted",
-        resultJson: JSON.stringify(serverResult),
-        // Persist the confirming change so a later duplicate replay can recover it.
-        changesJson: change ? codec.encode([change]) : undefined
-      });
     } catch (error) {
+      // Only validation/authorization failures are downgraded to per-op
+      // rejections. Anything else may have followed a row write or onWrite side
+      // effect, so rethrowing aborts the whole transaction.
+      if (!(error instanceof RejectOp)) throw error;
       const message = error instanceof Error ? error.message : String(error);
+      await store.commitOp(input.userId, op, { status: "rejected", error: message });
       result.rejected.push({ opId: op.opId, message });
-      await store.putLedger(input.userId, input.clientId, op, { status: "rejected", error: message });
     }
   }
 
   return result;
 }
 
+function validateDeclaredMutation(table: ServerTableConfig, op: ServerOperation): void {
+  const mutation = table.mutations?.[op.functionName];
+  if (!mutation || mutation.kind !== op.kind) {
+    throw new RejectOp("unknownFunction");
+  }
+  if (op.kind === "delete") return;
+  const payload = op.kind === "insert" ? op.value : op.patch;
+  if (payload !== undefined && (typeof payload !== "object" || payload === null || Array.isArray(payload))) {
+    throw new RejectOp("invalidPayload");
+  }
+  if (op.kind === "patch") {
+    for (const field of [partitionFieldOf(table.scope), table.idField]) {
+      if (field && Object.prototype.hasOwnProperty.call(payload ?? {}, field)) {
+        throw new RejectOp(`Cannot patch the ${field === table.idField ? "id" : "scope"} field "${field}"`);
+      }
+    }
+  }
+  const allowed = new Set(mutation.fields);
+  const serverOnly = new Set(table.serverOnlyFields ?? []);
+  for (const field of Object.keys(payload ?? {})) {
+    if (serverOnly.has(field)) throw new RejectOp("serverOnlyField");
+    if (!allowed.has(field)) throw new RejectOp("unknownField");
+  }
+}
+
+type AppliedOp = {
+  readonly change: Omit<StoredChange, "changeId"> | null;
+  readonly serverId?: string;
+  readonly before: Record<string, unknown> | null;
+  readonly after: Record<string, unknown> | null;
+};
+
 async function applyOp(
   store: ServerStore,
+  syncConfig: SyncConfig,
   tableConfig: ServerTableConfig,
+  memberCache: MemberCache,
   userId: string,
   op: ServerOperation,
   serverTime: number
-): Promise<StoredChange | null> {
+): Promise<AppliedOp> {
   // Delete is fully handled here so EVERY denial — never-seen localId, foreign live
   // row, foreign already-deleted row — rejects with ONE generic message. Splitting
   // them ("No server row" vs "Not the owner") would be an existence/ownership oracle
@@ -456,40 +648,56 @@ async function applyOp(
     const scopeKey = existingRow
       ? scopeKeyForRow(tableConfig, existingRow)
       : await store.scopeForLocalId(op.table, op.localId);
-    if (scopeKey === null || !(await isAuthorizedForScope(store, tableConfig, userId, scopeKey))) {
+    if (scopeKey === null) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
     }
-    // Row-level rule: can't see → can't touch. Same generic message (no oracle).
-    if (existingRow && tableConfig.visibility && !(await tableConfig.visibility({ userId, row: existingRow }))) {
+    const access = await isAuthorizedForScope(store, syncConfig, memberCache, op.table, tableConfig, userId, scopeKey);
+    if (!access.authorized) {
+      throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
+    }
+    if (
+      tableConfig.scope.kind !== "byUser" &&
+      syncConfig.access?.write &&
+      !(await syncConfig.access.write({
+        userId,
+        role: access.role,
+        table: op.table,
+        action: "delete",
+        before: existingRow,
+        proposed: null
+      }))
+    ) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
     }
     // Deletes commute: an authorized delete of an already-gone row acks as a no-op
     // (the EXPECTED case for an insert-only log with compaction, where two clients
     // can concurrently prune the same subsumed rows, and for any replayed delete).
     if (!existingRow) {
-      return null;
+      return { change: null, before: null, after: null };
     }
     const version = (await store.latestChangeVersion(op.table, op.localId)) + 1;
     await store.deleteRow(op.table, existingId as string);
-    const changeId = await store.appendChange(
-      {
-        scopeKey,
-        table: op.table,
-        localId: op.localId,
-        kind: "delete",
-        version,
-        serverTime,
-        opId: op.opId
-      },
-      existingId as string
-    );
-    return changeAsStored(changeId, scopeKey, op, "delete", version, serverTime, undefined, undefined);
+    return {
+      change: { scopeKey, table: op.table, localId: op.localId, kind: "delete", version, serverTime, opId: op.opId },
+      serverId: existingId as string,
+      before: existingRow,
+      after: null
+    };
   }
 
   let scopeKey: string;
   let value: Record<string, unknown>;
+  let before: Record<string, unknown> | null;
+  let role: unknown | null;
   try {
-    ({ scopeKey, value } = await resolveScopeForWrite(store, tableConfig, userId, op));
+    ({ scopeKey, value, before, role } = await resolveScopeForWrite(
+      store,
+      syncConfig,
+      tableConfig,
+      memberCache,
+      userId,
+      op
+    ));
   } catch (error) {
     // A patch's denials (never-seen "No server row", foreign owner/member) would be
     // an existence/ownership oracle — collapse them ALL into one generic message
@@ -499,15 +707,6 @@ async function applyOp(
       throw new RejectOp(`Cannot patch ${op.table}:${op.localId}`);
     }
     throw error;
-  }
-
-  // Row-level rule for patch (delete is handled above): can't see → can't touch.
-  // Generic message, mirroring the scope-denial collapse (no existence oracle).
-  if (op.kind === "patch" && tableConfig.visibility) {
-    const row = await loadRow(store, op);
-    if (!(await tableConfig.visibility({ userId, row }))) {
-      throw new RejectOp(`Cannot patch ${op.table}:${op.localId}`);
-    }
   }
 
   if (op.kind === "insert") {
@@ -521,26 +720,41 @@ async function applyOp(
     if (await store.getServerId(op.table, op.localId)) {
       throw new RejectOp(`Duplicate localId for ${op.table}:${op.localId}`);
     }
+    if (
+      tableConfig.scope.kind !== "byUser" &&
+      syncConfig.access?.write &&
+      !(await syncConfig.access.write({
+        userId,
+        role,
+        table: op.table,
+        action: "insert",
+        before: null,
+        proposed: value
+      }))
+    ) {
+      throw new RejectOp(`Cannot insert ${op.table}:${op.localId}`);
+    }
     // After the dup check so a rejected insert never burns a minted sequence number.
     mergeServerStamp(value, await tableConfig.serverStamp?.({ userId, value }), tableConfig);
     const serverId = await store.insertRow(op.table, value);
     await store.putIdMap(userId, op.table, op.localId, serverId);
     // First change for a fresh row is version 1 (I5 monotonicity).
     const version = (await store.latestChangeVersion(op.table, op.localId)) + 1;
-    const changeId = await store.appendChange(
-      {
+    return {
+      change: {
         scopeKey,
         table: op.table,
         localId: op.localId,
         kind: "insert",
-        data: value,
+        data: projectSyncedFields(value, tableConfig),
         version,
         serverTime,
         opId: op.opId
       },
-      serverId
-    );
-    return changeAsStored(changeId, scopeKey, op, "insert", version, serverTime, value, undefined);
+      serverId,
+      before: null,
+      after: value
+    };
   }
 
   const serverId = await store.getServerId(op.table, op.localId);
@@ -575,7 +789,7 @@ async function applyOp(
       Object.keys(patch).filter((f) => isSetDelta(patch[f]) || isCounterDelta(patch[f]))
     );
     if (deltaFields.size > 0) {
-      const current = await loadRow(store, op);
+      const current = before ?? (await loadRow(store, op));
       const materialized: Record<string, unknown> = { ...patch };
       for (const [field, value] of Object.entries(patch)) {
         if (isSetDelta(value)) {
@@ -592,27 +806,44 @@ async function applyOp(
       }
       patch = materialized;
     }
+    const proposed = { ...(before ?? {}), ...patch };
+    if (
+      tableConfig.scope.kind !== "byUser" &&
+      syncConfig.access?.write &&
+      !(await syncConfig.access.write({
+        userId,
+        role,
+        table: op.table,
+        action: "patch",
+        before,
+        patch,
+        proposed
+      }))
+    ) {
+      throw new RejectOp(`Cannot patch ${op.table}:${op.localId}`);
+    }
     // An empty patch is an ACCEPTED no-op (like an already-gone delete): skip the write so
     // it never appends a spurious empty change, consumes a version, or gets re-delivered to
     // every puller. Do NOT leak the serverId (handlePush noop path).
     if (Object.keys(patch).length === 0) {
-      return null;
+      return { change: null, serverId, before, after: before };
     }
     await store.patchRow(op.table, serverId, patch);
-    const changeId = await store.appendChange(
-      {
+    return {
+      change: {
         scopeKey,
         table: op.table,
         localId: op.localId,
         kind: "patch",
-        patch,
+        patch: projectSyncedFields(patch, tableConfig),
         version,
         serverTime,
         opId: op.opId
       },
-      serverId
-    );
-    return changeAsStored(changeId, scopeKey, op, "patch", version, serverTime, undefined, patch);
+      serverId,
+      before,
+      after: proposed
+    };
   }
 
   // insert/patch return above; delete is fully handled at the top. This is
@@ -628,25 +859,18 @@ function mergeServerStamp(
   tableConfig: ServerTableConfig
 ): void {
   if (!stamped) return;
+  const declared = new Set(tableConfig.serverOnlyFields ?? []);
+  for (const field of Object.keys(stamped)) {
+    if (!declared.has(field)) {
+      throw new Error(`serverStamp produced undeclared server-only field "${field}"`);
+    }
+  }
   for (const field of [partitionFieldOf(tableConfig.scope), tableConfig.idField]) {
     if (field && Object.prototype.hasOwnProperty.call(stamped, field)) {
       throw new Error(`serverStamp must not set the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
     }
   }
   Object.assign(value, stamped);
-}
-
-function changeAsStored(
-  changeId: string,
-  scopeKey: string,
-  op: ServerOperation,
-  kind: StoredChange["kind"],
-  version: number,
-  serverTime: number,
-  data: Record<string, unknown> | undefined,
-  patch: Record<string, unknown> | undefined
-): StoredChange {
-  return { changeId, scopeKey, table: op.table, localId: op.localId, kind, data, patch, version, serverTime, opId: op.opId };
 }
 
 // ---- Server-authored writes ------------------------------------------------
@@ -669,7 +893,8 @@ export async function applyServerWrite(
   store: ServerStore,
   config: SyncConfig,
   write: ServerWrite,
-  newLocalId: () => string
+  newLocalId: () => string,
+  actingUserId = "server"
 ): Promise<ServerWriteResult> {
   const tableConfig = config.tables[write.table];
   if (!tableConfig) {
@@ -687,7 +912,7 @@ export async function applyServerWrite(
       value[ts.createdAt] ??= serverTime;
       value[ts.updatedAt] ??= serverTime;
     }
-    mergeServerStamp(value, await tableConfig.serverStamp?.({ userId: "server", value }), tableConfig);
+    mergeServerStamp(value, await tableConfig.serverStamp?.({ userId: actingUserId, value }), tableConfig);
     const scopeValue = partition ? value[partition] : null;
     if (typeof scopeValue !== "string") {
       throw new Error(`serverWriter: insert into "${write.table}" is missing its scope field "${partition}"`);
@@ -698,9 +923,20 @@ export async function applyServerWrite(
       throw new Error(`serverWriter: duplicate localId for ${write.table}:${localId}`);
     }
     const serverId = await store.insertRow(write.table, value);
-    await store.putIdMap("server", write.table, localId, serverId);
+    await store.putIdMap(actingUserId, write.table, localId, serverId);
     const version = (await store.latestChangeVersion(write.table, localId)) + 1;
-    await store.appendChange({ scopeKey, table: write.table, localId, kind: "insert", data: value, version, serverTime }, serverId);
+    await runOnWrite(config, write.table, {
+      table: write.table,
+      action: "insert",
+      before: null,
+      after: value,
+      userId: actingUserId,
+      functionName: "serverWriter"
+    });
+    await store.appendChange(
+      { scopeKey, table: write.table, localId, kind: "insert", data: projectSyncedFields(value, tableConfig), version, serverTime },
+      serverId
+    );
     return { localId, serverId };
   }
 
@@ -718,6 +954,14 @@ export async function applyServerWrite(
     }
     const version = (await store.latestChangeVersion(write.table, write.localId)) + 1;
     await store.deleteRow(write.table, serverId);
+    await runOnWrite(config, write.table, {
+      table: write.table,
+      action: "delete",
+      before: row,
+      after: null,
+      userId: actingUserId,
+      functionName: "serverWriter"
+    });
     await store.appendChange({ scopeKey, table: write.table, localId: write.localId, kind: "delete", version, serverTime }, serverId);
     return { localId: write.localId, serverId };
   }
@@ -743,8 +987,20 @@ export async function applyServerWrite(
     throw new Error(`serverWriter: row ${write.table}:${write.localId} has no usable scope field`);
   }
   const version = (await store.latestChangeVersion(write.table, write.localId)) + 1;
+  const after = { ...row, ...patch };
   await store.patchRow(write.table, serverId, patch);
-  await store.appendChange({ scopeKey, table: write.table, localId: write.localId, kind: "patch", patch, version, serverTime }, serverId);
+  await runOnWrite(config, write.table, {
+    table: write.table,
+    action: "patch",
+    before: row,
+    after,
+    userId: actingUserId,
+    functionName: "serverWriter"
+  });
+  await store.appendChange(
+    { scopeKey, table: write.table, localId: write.localId, kind: "patch", patch: projectSyncedFields(patch, tableConfig), version, serverTime },
+    serverId
+  );
   return { localId: write.localId, serverId };
 }
 
@@ -755,19 +1011,19 @@ export async function applyServerWrite(
  * the stricter table's changes (I7). Reject the ambiguity here (defense for direct
  * serverSync callers; createSyncFunctions also asserts this at config time).
  */
-function membershipTableForScope(config: SyncConfig, kind: "byWorkspace" | "byProject"): string | null {
-  const tables = new Set<string>();
-  for (const table of Object.values(config.tables)) {
-    if (table.scope.kind === kind) {
-      tables.add(table.scope.membershipTable);
-    }
-  }
-  if (tables.size > 1) {
+function tableForScope(
+  config: SyncConfig,
+  kind: "byWorkspace" | "byProject"
+): { table: string; membershipTable: string } | null {
+  const tables = Object.entries(config.tables).filter(([, value]) => value.scope.kind === kind);
+  const memberships = new Set(tables.map(([, value]) => (value.scope as { membershipTable: string }).membershipTable));
+  if (memberships.size > 1) {
     throw new Error(
-      `serverSync: all ${kind} tables must share one membershipTable (found: ${[...tables].join(", ")}). Mixed membership tables would cross-authorize reads.`
+      `serverSync: all ${kind} tables must share one membershipTable (found: ${[...memberships].join(", ")}). Mixed membership tables would cross-authorize reads.`
     );
   }
-  return tables.size === 1 ? [...tables][0] : null;
+  const first = tables[0];
+  return first ? { table: first[0], membershipTable: [...memberships][0]! } : null;
 }
 
 // A completed bootstrap of a scope whose change log is empty still needs a cursor
@@ -796,8 +1052,24 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     return { ...out, schemaMismatch: true };
   }
 
+  const scopes: PullScope[] = [];
+  const seenScopes = new Set<string>();
   for (const scope of input.scopes) {
+    const key = scope.kind === "byUser" ? "byUser" : `${scope.kind}:${scope.value ?? ""}`;
+    if (!seenScopes.has(key)) {
+      seenScopes.add(key);
+      scopes.push(scope);
+    }
+  }
+  if (scopes.length > 64) {
+    throw new Error("convex-localfirst: pull accepts at most 64 unique scopes");
+  }
+
+  let remaining = limit;
+  const memberCache: MemberCache = new Map();
+  for (const scope of scopes) {
     let scopeKey: string;
+    let role: unknown | null = null;
     if (scope.kind === "byUser") {
       // I7: derive from identity; ignore any client-supplied user value.
       scopeKey = scopeKeyForUser(input.userId);
@@ -808,12 +1080,21 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
       // Membership is required to read a workspace/project scope. The membership
       // table must be the SAME one push enforces against (the configured value),
       // not a synthesized name — otherwise read and write check different tables.
-      const membershipTable = membershipTableForScope(config, scope.kind);
-      if (!membershipTable) {
+      const scopeTable = tableForScope(config, scope.kind);
+      if (!scopeTable) {
         continue;
       }
-      const member = await store.isMember(input.userId, scope.value, membershipTable);
-      if (!member) {
+      role = await memberRole(
+        store,
+        config,
+        memberCache,
+        input.userId,
+        scope.kind,
+        scope.value,
+        scopeTable.table,
+        scopeTable.membershipTable
+      );
+      if (role === null) {
         // Revoked (or never granted): tell the client so it evicts the scope's
         // rows and forgets its cursor. The value came from the client's own
         // request, so echoing it reveals nothing new.
@@ -822,6 +1103,11 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
       }
       scopeKey = scopeKeyForValue(scope.kind, scope.value);
     } else {
+      continue;
+    }
+
+    if (remaining === 0) {
+      out.hasMore[scopeKey] = true;
       continue;
     }
 
@@ -857,15 +1143,30 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
         }
         out.snapshotScopes.push(scopeKey); // every page: this scope's changes are snapshot rows
         const page = await store.rowVersionsByScope(scopeKey, afterRowKey, limit);
+        let processed = 0;
+        let lastRowKey = afterRowKey;
         for (const rv of page) {
+          if (remaining === 0) break;
+          processed++;
+          lastRowKey = rv.rowKey;
+          const table = config.tables[rv.table];
+          if (!table) {
+            continue; // retired table: never expose its row or fallback projection
+          }
           // Prefer the denormalized serverId (one point read); fall back to the id map.
           const serverId = rv.serverId ?? (await store.getServerId(rv.table, rv.localId));
           const row = serverId ? await store.getRow(rv.table, serverId) : null;
           if (!row) {
             continue; // deleted row: a cold client simply never sees it
           }
-          const visibility = config.tables[rv.table]?.visibility;
-          if (visibility && !(await visibility({ userId: input.userId, row }))) {
+          if (scopeKeyForRow(table, row) !== scopeKey) {
+            continue;
+          }
+          if (
+            scope.kind !== "byUser" &&
+            config.access?.read &&
+            !(await config.access.read({ userId: input.userId, role, table: rv.table, row }))
+          ) {
             continue; // row-filtered within the scope (e.g. guest rules)
           }
           out.changes.push({
@@ -874,13 +1175,14 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
             table: rv.table,
             localId: rv.localId,
             kind: "insert",
-            data: projectSyncedFields(row as Record<string, unknown>, config.tables[rv.table]),
+            data: projectSyncedFields(row as Record<string, unknown>, table),
             version: rv.version,
             serverTime: out.serverTime
           });
+          remaining--;
         }
-        if (page.length >= limit) {
-          out.bootstrapCursors[scopeKey] = `${endCursor}${BOOT_SEP}${page[page.length - 1]!.rowKey}`;
+        if (processed < page.length || page.length >= limit) {
+          out.bootstrapCursors[scopeKey] = `${endCursor}${BOOT_SEP}${lastRowKey ?? ""}`;
           // NO cursor entry mid-bootstrap: the client's persisted cursor stays put,
           // so an interrupted bootstrap restarts as a bootstrap (never as a full
           // history replay from the "" sentinel).
@@ -896,52 +1198,49 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     }
 
     const changes = await store.changesAfter(scopeKey, cursor, limit);
+    let processed = 0;
     for (const change of changes) {
+      if (remaining === 0) break;
+      processed++;
       const table = config.tables[change.table];
-      if (!table?.visibility || change.kind === "delete") {
-        // No row filter, or a delete (carries no data; evicting an unknown row is a
-        // client no-op) — deliver as-is.
-        out.changes.push(change);
-        continue;
+      if (!table) {
+        continue; // retired/deconfigured tables never leave the shared log
       }
-      if (change.kind === "insert") {
-        // Judge inserts on the inserted data; a later patch that flips visibility
-        // is delivered below as an upsert/delete, so the end state converges.
-        if (await table.visibility({ userId: input.userId, row: change.data ?? {} })) {
-          out.changes.push(change);
-        }
-        continue;
-      }
-      // Patch: visibility is a property of the CURRENT row (the change carries only
-      // the patched fields). Row gone → skip; its delete change handles eviction.
       const serverId = await store.getServerId(change.table, change.localId);
       const row = serverId ? await store.getRow(change.table, serverId) : null;
-      if (!row) {
-        continue;
-      }
-      if (await table.visibility({ userId: input.userId, row })) {
-        // Deliver as a full-row upsert: the row may have just ENTERED visibility
-        // and this client may lack the base row the patch assumes.
-        out.changes.push({ ...change, kind: "insert", patch: undefined, data: projectSyncedFields(row, table) });
+      const readable =
+        row !== null &&
+        scopeKeyForRow(table, row) === scopeKey &&
+        (scope.kind === "byUser" ||
+          !config.access?.read ||
+          (await config.access.read({ userId: input.userId, role, table: change.table, row })));
+      if (readable) {
+        out.changes.push({
+          ...change,
+          kind: "insert",
+          patch: undefined,
+          data: projectSyncedFields(row, table)
+        });
       } else {
-        // The row LEFT (or never had) visibility for this user: evict it.
+        // Judge every historical change against CURRENT state. Missing/invisible
+        // rows become tombstones, so a formerly visible insert can never disclose
+        // its old payload.
         out.changes.push({ ...change, kind: "delete", patch: undefined, data: undefined });
       }
+      remaining--;
     }
-    // The cursor advances past everything READ (filtered rows included) — a filtered
-    // change is a per-user decision, not undelivered data.
-    const last = changes[changes.length - 1];
+    // The cursor advances past everything PROCESSED (retired rows included), not
+    // past rows deferred by the global response budget.
+    const last = processed > 0 ? changes[processed - 1] : undefined;
     out.cursors[scopeKey] = last ? last.changeId : cursor ?? "";
-    // A full page means the server capped this scope; more may remain past the cursor.
-    out.hasMore[scopeKey] = changes.length >= limit;
+    out.hasMore[scopeKey] = processed < changes.length || changes.length >= limit;
   }
 
   return out;
 }
 
 /** Project an app row to the table's declared local-first surface. Server-only
- *  `extra` columns must never ride a bootstrap page (they never ride the change
- *  log either). Without a declared field list, strip Convex system fields. */
+ *  `extra` columns never ride snapshots or the change log. */
 function projectSyncedFields(row: Record<string, unknown>, table: ServerTableConfig | undefined): Record<string, unknown> {
   if (table?.syncedFields) {
     const out: Record<string, unknown> = {};

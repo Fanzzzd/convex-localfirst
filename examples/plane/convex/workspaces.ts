@@ -41,7 +41,7 @@ export const createWorkspace = mutation({
 
 /** Add (or update the role of) a member in a workspace. Idempotent on
  *  (user_id, workspace_id). The membership table `ws_members` is exactly what the
- *  sync layer's `isMember` check (I7) reads, so this is the single source of
+ *  sync layer's `access.member` gate (I7) reads, so this is the single source of
  *  workspace access. Server-only mutation — clients never write membership. */
 export const addMember = mutation({
   args: { user_id: v.string(), workspace_id: v.string(), role: v.number() },

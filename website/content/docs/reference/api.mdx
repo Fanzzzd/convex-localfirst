@@ -197,13 +197,21 @@ function createSyncFunctions(options: {
   mutation: MutationBuilder;   // from _generated/server
   query: QueryBuilder;         // from _generated/server
   tables: SyncConfig["tables"];
-  isMember?: (ctx, info: { userId; scopeValue; membershipTable }) => Promise<boolean>;
+  internalMutation?: InternalMutationBuilder; // exposes `gc` as an internal cron target
+  // Required when a table is byWorkspace/byProject. `member` returns a role (any value)
+  // or null/undefined to deny; `read`/`write` are optional per-row filters.
+  access?: {
+    member: (ctx, info: { userId; scopeValue; table; membershipTable? }) => Role | null | Promise<Role | null>;
+    read?: (ctx, info: { userId; role; table; row }) => boolean | Promise<boolean>;
+    write?: (ctx, info: { userId; role; table; action; before; patch?; proposed }) => boolean | Promise<boolean>;
+  };
+  getUserId?: (ctx) => string | null | Promise<string | null>; // default: identity.tokenIdentifier
   schemaVersion?: number;
   now?: () => number;
   changeRetentionMs?: number;  // change-log GC horizon, default 30 days
-  visibility?: Record<table, (ctx, { userId, row }) => boolean | Promise<boolean>>;
-  serverStamp?: Record<table, (ctx, { userId, value }) => Record<string, unknown> | undefined>;
-}): { push; pull; presence; presenceList; serverWriter }
+  serverStamp?: Record<table, { fields: string[]; stamp: (ctx, { userId, value }) => Record<string, unknown> | undefined }>;
+  onWrite?: (ctx, { table, action, before, after, userId, functionName }) => Promise<void>;
+}): { push; pull; presence; presenceList; gc; serverWriter }
 ```
 
 See [Syncing](/docs/syncing#createsyncfunctions).
@@ -250,11 +258,17 @@ are peer deps. See [Document mode](/docs/document-mode).
 ```ts
 function useCollaborativeDoc(options: {
   docId: string;                                  // must uniquely identify the doc across scopes
-  updates: ReadonlyArray<{ _id: string; update: string }>; // live rows for THIS doc
-  append: (updateBase64: string) => unknown;      // persist a local edit as a row
-  prune?: (rowId: string) => unknown;             // enables compaction; omit to disable
-  compactThreshold?: number;                       // default 50
-}): Y.Doc
+  updates: ReadonlyArray<Record<string, unknown>>; // live rows in scope (filtered to docId internally)
+  append: (updateBase64: string) => MutationLike; // persist a local edit as a row
+  prune?: (rowId: string) => MutationLike;        // enables compaction; omit to disable
+  idField?: string;                                // per-row id field (default "_id")
+  docField?: string;                               // row field naming the doc (default "doc")
+  updateField?: string;                            // row field holding the update (default "update")
+  compaction?: CompactionOptions | false;          // cadence; default on when `prune` is provided
+}): { doc: Y.Doc; status: DocStatus }             // status: { synced, pendingUpdates, lastError, compacting }
+
+// Cursor/selection awareness lives at the `convex-localfirst/yjs/awareness` subpath:
+//   useDocAwareness(doc, { docId, scope, state }) → { awareness, peers }
 
 // codec helpers (framework-agnostic)
 function bytesToBase64(bytes: Uint8Array): string;

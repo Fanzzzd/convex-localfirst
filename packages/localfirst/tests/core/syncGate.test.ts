@@ -93,7 +93,7 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
     expect(transport.pushedOpIds[0]).toContain("op_1");
   });
 
-  it("flushPending() bypasses the gate (reconnect flush / wake from a follower)", async () => {
+  it("flushPending() never lets a follower push", async () => {
     const transport = recordingTransport();
     const store = new MemoryLocalStore();
     const { engine } = createHarness({ store, transport });
@@ -102,17 +102,33 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
     engine.setSyncEnabled(false);
     engine.flushPending();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(transport.pushCount).toBe(1); // explicit flush is never gated
+    expect(transport.pushCount).toBe(0);
   });
 
-  it("an explicit mutation still pushes from a follower tab (pushSingleOperation is not gated)", async () => {
+  it("an explicit coordinated mutation stays durable on a follower without pushing", async () => {
     const transport = recordingTransport();
     const store = new MemoryLocalStore();
     const { engine } = createHarness({ store, transport });
 
     engine.setSyncEnabled(false);
-    await engine.mutate("todos:create", { listId: "l1", text: "hi" }).server;
-    expect(transport.pushCount).toBe(1); // the acting tab always pushes the user's own action
+    engine.setMultiTabEnabled(true);
+    const call = engine.mutate("todos:create", { listId: "l1", text: "hi" });
+    await call.local;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(transport.pushCount).toBe(0);
+    expect((await store.getPendingOperations()).map((op) => op.opId)).toEqual([call.opId]);
+  });
+
+  it("a follower .server timeout rejects but leaves the operation owed and pending", async () => {
+    const transport = recordingTransport();
+    const store = new MemoryLocalStore();
+    const { engine } = createHarness({ store, transport, syncTimeoutMs: 10 });
+    engine.setSyncEnabled(false);
+    engine.setMultiTabEnabled(true);
+    const call = engine.mutate("todos:create", { listId: "l1", text: "hi" });
+    await expect(call.server).rejects.toThrow(/remains pending/);
+    expect((await store.getOperation(call.opId))?.status).toBe("pending");
+    expect(transport.pushCount).toBe(0);
   });
 
   it("pokeLocalChange() fires local data listeners (the cross-tab re-read)", () => {
@@ -128,9 +144,7 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
     expect(fired).toBe(1); // no longer subscribed
   });
 
-  it("resolves call.server from the durable outcome when OUR push fails but the op completed elsewhere", async () => {
-    // Multi-tab: the leader pushed this op from the shared outbox and pruned it while
-    // our own push fails. call.server must resolve (the mutation DID succeed), not reject.
+  it("never fabricates success when an op disappears while its push fails", async () => {
     const store = new MemoryLocalStore();
     const transport: SyncTransport = {
       async push(request): Promise<PushResponse> {
@@ -146,7 +160,8 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
     };
     const { engine } = createHarness({ store, transport });
     const call = engine.mutate("todos:create", { listId: "l1", text: "hi" });
-    await expect(call.server).resolves.toMatchObject({ ok: true });
+    await expect(call.server).rejects.toThrow(/cancelled/);
+    expect(call.status().status).toBe("rejected");
   });
 
   it("still rejects call.server when the op is genuinely unsynced (offline, not completed elsewhere)", async () => {

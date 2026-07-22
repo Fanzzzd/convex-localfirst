@@ -1,7 +1,9 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { attachments } from "./attachments";
 import { comments } from "./comments";
 import { cycles } from "./cycles";
+import { docUpdates } from "./doc_updates";
 import { activities } from "./issue_activities";
 import { issues } from "./issues";
 import { labels } from "./labels";
@@ -54,7 +56,7 @@ export default defineSchema({
   ws_members: defineTable({
     user_id: v.string(),
     workspace_id: v.string(),
-    role: v.number() // EUserWorkspaceRoles: 20 admin / 15 member / 5 guest
+    role: v.number() // EUserWorkspaceRoles: 20 admin / 15 member / 10 viewer / 5 guest
   })
     .index("by_user_ws", ["user_id", "workspace_id"])
     .index("by_ws", ["workspace_id"]),
@@ -85,5 +87,11 @@ export default defineSchema({
   // "project" + "issue". Emitted by the router on issue create / bounded field updates.
   issue_activities: activities.table(),
   // issue_comments: scope field = "workspace" (TIssueComment.workspace)
-  issue_comments: comments.table()
+  issue_comments: comments.table(),
+  // doc_updates: scope field = "workspace". Insert-only Yjs update log (collaborative
+  // rich text) — one base64 update per row, keyed to a document by "doc".
+  doc_updates: docUpdates.table(),
+  // attachments: scope field = "workspace_id". Offline-capable file metadata; the blob
+  // uploads in the background and finalize stamps storageId (see sync.ts + attachments.ts).
+  attachments: attachments.table()
 });

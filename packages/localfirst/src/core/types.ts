@@ -167,6 +167,41 @@ export type SyncStatus = {
   /** True while the local cache is still catching up to the server for some scope (a
    *  large cold start drained past the per-pull cap). False once fully hydrated. */
   readonly partial: boolean;
+  /** Durable writes that need user/app recovery instead of disappearing silently.
+   *  Rejected operations survive reload; older-schema operations live in the prior
+   *  IndexedDB namespace and cannot be pushed under the current schema. */
+  readonly recovery: RecoveryStatus;
+};
+
+export type RecoveryOperation = Pick<
+  LocalOperation,
+  "opId" | "table" | "id" | "kind" | "schemaVersion" | "createdAt" | "error"
+> & { readonly namespace?: string };
+
+export type RecoveryStatus = {
+  readonly rejectedOperations: readonly RecoveryOperation[];
+  readonly olderSchemaOperations: readonly RecoveryOperation[];
+  /** Attachment uploads that exhausted retry (network) or were rejected by the
+   *  server finalize. The metadata row stays synced and the local blob is RETAINED
+   *  (never evicted before a confirmed finalize), so the app can offer a retry. */
+  readonly failedAttachments: readonly AttachmentRecovery[];
+};
+
+/** A durable attachment upload that needs app/user recovery. The blob is still in
+ *  the local outbox (retained), keyed by `localId` — the metadata row's id. */
+export type AttachmentRecovery = {
+  readonly localId: LocalId;
+  readonly table: TableName;
+  readonly error: string;
+  readonly createdAt: number;
+};
+
+/** Live upload state for one attachment (keyed by the metadata row's localId).
+ *  `progress` is a 0..1 fraction while uploading (bytes sent / total), null otherwise. */
+export type AttachmentUploadState = {
+  readonly state: "queued" | "uploading" | "done" | "failed";
+  readonly progress: number | null;
+  readonly error?: string;
 };
 
 /**
@@ -203,3 +238,15 @@ export type MutationStatus = {
   readonly status: OperationStatus;
   readonly error?: string;
 };
+
+/**
+ * A single row-level change to the live (canonical + replayed-pending) view of a
+ * table, emitted by the engine's delta bus after every commit — local mutation,
+ * server-change apply, op-status transition, eviction, or resync. The in-memory
+ * table cache, secondary indexes, and every active query view are maintained from
+ * these deltas instead of re-reading whole tables. `upsert` carries the new row;
+ * `delete` means the row left the visible view (removed or tombstoned).
+ */
+export type RowDelta =
+  | { readonly table: TableName; readonly localId: LocalId; readonly kind: "upsert"; readonly row: RowValue }
+  | { readonly table: TableName; readonly localId: LocalId; readonly kind: "delete"; readonly row: null };

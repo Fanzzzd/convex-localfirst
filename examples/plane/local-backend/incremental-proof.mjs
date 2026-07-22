@@ -41,7 +41,7 @@ async function drain(cursors) {
 }
 function projectInsert(localId, name) {
   const ts = Date.now();
-  return { opId: randomUUID(), clientId, schemaVersion: SCHEMA_VERSION, functionName: "projects:insert",
+  return { opId: randomUUID(), clientId, schemaVersion: SCHEMA_VERSION, functionName: "projects:create",
     table: "projects", kind: "insert", localId, value: { workspace: WS, name, identifier: "INC", created_at: ts, updated_at: ts } };
 }
 

@@ -56,8 +56,23 @@ class MemoryServerStore implements ServerStore {
     // different envelope clientId (reload/new tab) still dedups.
     return this.ledger.get(`${userId}:${opId}`) ?? null;
   }
-  async putLedger(userId: string, _clientId: string, op: ServerOperation, entry: LedgerEntry) {
-    this.ledger.set(`${userId}:${op.opId}`, entry);
+  async commitOp(
+    userId: string,
+    op: ServerOperation,
+    entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
+    change?: Omit<StoredChange, "changeId">
+  ) {
+    let stored: StoredChange | null = null;
+    if (change) {
+      const changeId = await this.appendChange(change);
+      stored = { ...change, changeId };
+    }
+    this.ledger.set(`${userId}:${op.opId}`, {
+      ...entry,
+      schemaVersion: op.schemaVersion,
+      changes: stored ? [stored] : undefined
+    });
+    return stored;
   }
 
   async getServerId(table: string, localId: string) {
@@ -121,22 +136,35 @@ class MemoryServerStore implements ServerStore {
     return rows.length ? rows[rows.length - 1]!.scopeKey : null;
   }
 
-  async isMember(userId: string, scopeValue: string, membershipTable: string) {
-    // Key on the membership table too, so a read/write that checks the WRONG
-    // table (a real bug) is caught here instead of silently passing.
-    return this.members.has(`${userId}:${scopeValue}:${membershipTable}`);
-  }
 }
 
 const config: SyncConfig = {
   schemaVersion: 1,
   now: () => 1,
   tables: {
-    todos: { scope: byUser("ownerId"), idField: "localId" },
+    todos: {
+      scope: byUser("ownerId"),
+      idField: "localId",
+      mutations: {
+        "todos:create": { kind: "insert", fields: ["ownerId", "localId", "listId", "text", "done", "labels", "votes", "amount", "blob"] },
+        "todos:toggle": { kind: "patch", fields: ["done", "text", "labels", "votes"] },
+        "todos:update": { kind: "patch", fields: ["done", "text", "labels", "votes"] },
+        "todos:remove": { kind: "delete", fields: [] }
+      }
+    },
     docs: {
       scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
       idField: "localId",
+      mutations: {
+        "docs:create": { kind: "insert", fields: ["wsId", "localId", "title", "createdBy"] },
+        "docs:update": { kind: "patch", fields: ["title", "createdBy"] },
+        "docs:remove": { kind: "delete", fields: [] }
+      }
     },
+  },
+  access: {
+    member: ({ userId, scopeValue, membershipTable }, store) =>
+      (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`) ? "member" : null
   }
 };
 
@@ -454,6 +482,159 @@ describe("server sync — security", () => {
   });
 });
 
+describe("server sync — declared mutation and role access hardening", () => {
+  it("memoizes a role per scope per request and authorizes inserts with proposed", async () => {
+    const store = new MemoryServerStore();
+    let memberCalls = 0;
+    const cfg: SyncConfig = {
+      ...config,
+      access: {
+        member: () => {
+          memberCalls++;
+          return "guest";
+        },
+        write: ({ userId, role, action, proposed }) =>
+          role !== "guest" || action !== "insert" || proposed?.createdBy === userId
+      }
+    };
+    const op = (opId: string, localId: string, createdBy: string): ServerOperation => ({
+      opId,
+      clientId: "c1",
+      schemaVersion: 1,
+      functionName: "docs:create",
+      table: "docs",
+      kind: "insert",
+      localId,
+      value: { wsId: "ws1", title: localId, createdBy }
+    });
+    const pushed = await handlePush(store, cfg, {
+      userId: "guest",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [op("ok", "d1", "guest"), op("forged", "d2", "other")]
+    });
+    expect(pushed.accepted.map((entry) => entry.opId)).toEqual(["ok"]);
+    expect(pushed.rejected.map((entry) => entry.opId)).toEqual(["forged"]);
+    expect(memberCalls).toBe(1);
+
+    memberCalls = 0;
+    await handlePull(store, cfg, {
+      userId: "guest",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [
+        { kind: "byWorkspace", value: "ws1" },
+        { kind: "byWorkspace", value: "ws1" }
+      ],
+      cursors: {}
+    });
+    expect(memberCalls).toBe(1);
+  });
+
+  it("rejects forged function names, undeclared fields, and query-only writes", async () => {
+    const store = new MemoryServerStore();
+    const queryOnly: SyncConfig = {
+      ...config,
+      tables: {
+        ...config.tables,
+        readonly: { scope: byUser("ownerId"), idField: "localId" }
+      }
+    };
+    const res = await handlePush(store, queryOnly, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        { ...insert("a", { text: "x" }, "a"), functionName: "docs:create" },
+        { ...insert("b", { text: "x", internal: true }, "b") },
+        {
+          opId: "q",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "readonly:create",
+          table: "readonly",
+          kind: "insert",
+          localId: "q",
+          value: { ownerId: "user_a" }
+        }
+      ]
+    });
+    expect(res.rejected.map((entry) => entry.message)).toEqual([
+      "unknownFunction",
+      "unknownField",
+      "unknownFunction"
+    ]);
+  });
+
+  it("rejects every client write to a declared serverStamp field", async () => {
+    const store = new MemoryServerStore();
+    const cfg: SyncConfig = {
+      ...config,
+      tables: {
+        ...config.tables,
+        todos: {
+          ...config.tables.todos!,
+          serverOnlyFields: ["sequenceId"],
+          serverStamp: () => ({ sequenceId: 1 }),
+          mutations: {
+            ...config.tables.todos!.mutations,
+            "todos:update": { kind: "patch", fields: ["text", "sequenceId"] }
+          }
+        }
+      }
+    };
+    await handlePush(store, cfg, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("base", { text: "ok" }, "base")]
+    });
+    const res = await handlePush(store, cfg, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        insert("forged", { text: "x", sequenceId: 99 }, "forged-insert"),
+        {
+          opId: "forged-patch",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "todos:update",
+          table: "todos",
+          kind: "patch",
+          localId: "base",
+          patch: { sequenceId: 99 }
+        }
+      ]
+    });
+    expect(res.rejected.map((entry) => entry.message)).toEqual(["serverOnlyField", "serverOnlyField"]);
+  });
+
+  it("rethrows commit failures after a row write instead of recording rejection", async () => {
+    class FailingCommitStore extends MemoryServerStore {
+      override async commitOp(
+        userId: string,
+        op: ServerOperation,
+        entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
+        change?: Omit<StoredChange, "changeId">
+      ) {
+        if (entry.status === "accepted") throw new Error("commit failed");
+        return await super.commitOp(userId, op, entry, change);
+      }
+    }
+    const store = new FailingCommitStore();
+    await expect(
+      handlePush(store, config, {
+        userId: "user_a",
+        clientId: "c1",
+        schemaVersion: 1,
+        mutations: [insert("t1", { text: "x" })]
+      })
+    ).rejects.toThrow("commit failed");
+    expect(store.ledger.size).toBe(0);
+  });
+});
+
 describe("server sync — component (ledger/changes/idmap)", () => {
   it("ledger dedupes by (user, opId) — a re-pushed op applies once", async () => {
     const store = new MemoryServerStore();
@@ -467,6 +648,38 @@ describe("server sync — component (ledger/changes/idmap)", () => {
     expect(second.accepted).toHaveLength(1); // returns the prior result
     expect(store.changes).toHaveLength(1); // applied only once
     expect(store.table("todos").size).toBe(1); // one row inserted
+  });
+
+  it("rejects a ledger replay recorded under another schema version", async () => {
+    const store = new MemoryServerStore();
+    const op = insert("t1", { text: "x" });
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [op]
+    });
+    const replay = await handlePush(store, { ...config, schemaVersion: 2 }, {
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 2,
+      mutations: [{ ...op, clientId: "c2", schemaVersion: 2 }]
+    });
+    expect(replay.accepted).toEqual([]);
+    expect(replay.rejected).toEqual([{ opId: op.opId, message: "schemaMismatch" }]);
+    expect(store.changes).toHaveLength(1);
+  });
+
+  it("fires onWrite exactly once and never on ledger replay", async () => {
+    const store = new MemoryServerStore();
+    const calls: string[] = [];
+    const cfg: SyncConfig = {
+      ...config,
+      onWrite: async ({ functionName }) => {
+        calls.push(functionName);
+      }
+    };
+    const op = insert("t1", { text: "x" });
+    await handlePush(store, cfg, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [op] });
+    await handlePush(store, cfg, { userId: "user_a", clientId: "c2", schemaVersion: 1, mutations: [op] });
+    expect(calls).toEqual(["todos:create"]);
   });
 
   it("dedupes a durable op replayed under a DIFFERENT clientId (reload / new tab)", async () => {
@@ -1076,6 +1289,72 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
     expect(again.serverId).toBeUndefined();
     expect(store.changes).toHaveLength(2); // no extra change appended
   });
+
+  it("projects serverWriter inserts and patches before appending changes", async () => {
+    const store = new MemoryServerStore();
+    const cfg: SyncConfig = {
+      ...wsConfig,
+      tables: {
+        activities: {
+          ...wsConfig.tables.activities!,
+          syncedFields: ["wsId", "localId", "verb", "created_at", "updated_at"]
+        }
+      }
+    };
+    const { localId } = await applyServerWrite(
+      store,
+      cfg,
+      { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created", secret: "no" } },
+      nextId
+    );
+    expect(store.changes[0]!.data).not.toHaveProperty("secret");
+    await applyServerWrite(
+      store,
+      cfg,
+      { kind: "patch", table: "activities", localId, patch: { verb: "edited", secret: "still-no" } },
+      nextId
+    );
+    expect(store.changes[1]!.patch).toEqual({ verb: "edited", updated_at: 42 });
+  });
+
+  it("fires onWrite for serverWriter with the acting user", async () => {
+    const store = new MemoryServerStore();
+    const calls: Array<{ userId: string; functionName: string }> = [];
+    const cfg: SyncConfig = {
+      ...wsConfig,
+      onWrite: async ({ userId, functionName }) => {
+        calls.push({ userId, functionName });
+      }
+    };
+    await applyServerWrite(
+      store,
+      cfg,
+      { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
+      nextId,
+      "actor-1"
+    );
+    expect(calls).toEqual([{ userId: "actor-1", functionName: "serverWriter" }]);
+  });
+
+  it("stops onWrite -> serverWriter recursion at depth 8 with a crisp error", async () => {
+    const store = new MemoryServerStore();
+    let id = 0;
+    const next = () => `recursive_${++id}`;
+    const cfg: SyncConfig = {
+      ...wsConfig,
+      onWrite: async () => {
+        await applyServerWrite(
+          store,
+          cfg,
+          { kind: "insert", table: "activities", value: { wsId: "w1", verb: "recursive" } },
+          next
+        );
+      }
+    };
+    await expect(
+      applyServerWrite(store, cfg, { kind: "insert", table: "activities", value: { wsId: "w1", verb: "start" } }, next)
+    ).rejects.toThrow(/onWrite recursion exceeded 8 nested writes.*same local-first table/i);
+  });
 });
 
 describe("server sync — bootstrap hardening", () => {
@@ -1083,7 +1362,12 @@ describe("server sync — bootstrap hardening", () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = {
       ...config,
-      tables: { todos: { scope: byUser("ownerId"), idField: "localId", syncedFields: ["ownerId", "text", "localId"] } }
+      tables: {
+        todos: {
+          ...config.tables.todos!,
+          syncedFields: ["ownerId", "text", "localId"]
+        }
+      }
     };
     await handlePush(store, cfg, {
       userId: "user_a", clientId: "c1", schemaVersion: 1,
@@ -1155,6 +1439,60 @@ describe("server sync — bootstrap hardening", () => {
     expect(res.snapshotScopes).toHaveLength(0);
     expect(res.changes.length).toBeLessThanOrEqual(1); // one change per scope, max
   });
+
+  it("drops bootstrap and incremental changes for retired tables", async () => {
+    const store = new MemoryServerStore();
+    await handlePush(store, config, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      mutations: [insert("t1", { text: "retired" })]
+    });
+    const retired: SyncConfig = { ...config, tables: {} };
+    const cold = await handlePull(store, retired, {
+      userId: "user_a", clientId: "c2", schemaVersion: 1,
+      scopes: [{ kind: "byUser" }], cursors: {}
+    });
+    expect(cold.changes).toEqual([]);
+    const incremental = await handlePull(store, retired, {
+      userId: "user_a", clientId: "c2", schemaVersion: 1,
+      scopes: [{ kind: "byUser" }], cursors: { "u:user_a": "000000000000" }
+    });
+    expect(incremental.changes).toEqual([]);
+  });
+
+  it("caps unique scopes and shares one change budget across all scopes", async () => {
+    const store = new MemoryServerStore();
+    const cfg: SyncConfig = { ...config, pullLimit: 2 };
+    for (const workspace of ["w1", "w2", "w3"]) {
+      store.members.add(`user_a:${workspace}:ws_members`);
+      await applyServerWrite(
+        store,
+        cfg,
+        { kind: "insert", table: "docs", localId: `d-${workspace}`, value: { wsId: workspace, title: workspace } },
+        () => "unused"
+      );
+    }
+    const scopes = ["w1", "w2", "w3"].map((value) => ({ kind: "byWorkspace" as const, value }));
+    const first = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes, cursors: {}
+    });
+    expect(first.changes).toHaveLength(2);
+    expect(first.hasMore["byWorkspace:w3"]).toBe(true);
+    expect(first.cursors["byWorkspace:w3"]).toBeUndefined();
+    const second = await handlePull(store, cfg, {
+      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes, cursors: first.cursors
+    });
+    expect(second.changes.map((change) => change.localId)).toEqual(["d-w3"]);
+
+    await expect(
+      handlePull(store, cfg, {
+        userId: "user_a",
+        clientId: "c1",
+        schemaVersion: 1,
+        scopes: Array.from({ length: 65 }, (_, i) => ({ kind: "byWorkspace" as const, value: `w${i}` })),
+        cursors: {}
+      })
+    ).rejects.toThrow(/at most 64/);
+  });
 });
 
 describe("server sync — membership revocation", () => {
@@ -1178,15 +1516,15 @@ describe("server sync — membership revocation", () => {
 
 describe("server sync — row-level visibility", () => {
   // Plane-style guest rule: within an authorized workspace, "guest" only sees docs
-  // they created. The membership check still gates the SCOPE; visibility filters ROWS.
+  // they created. access.member gates the scope; read/write filter rows.
   const guestConfig = (): SyncConfig => ({
     ...config,
-    tables: {
-      ...config.tables,
-      docs: {
-        ...config.tables.docs!,
-        visibility: ({ userId, row }) => userId === "member" || row.createdBy === userId
-      }
+    access: {
+      member: ({ userId, scopeValue, membershipTable }, store) =>
+        (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`) ? userId : null,
+      read: ({ userId, role, row }) => role === "member" || row.createdBy === userId,
+      write: ({ userId, role, before, proposed }) =>
+        role === "member" || (before ?? proposed)?.createdBy === userId
     }
   });
   const doc = (opId: string, localId: string, createdBy: string, title = "t"): ServerOperation => ({
@@ -1233,7 +1571,7 @@ describe("server sync — row-level visibility", () => {
       userId: "guest", clientId: "cg", schemaVersion: 1,
       scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: cursor }
     });
-    expect(hidden.changes).toHaveLength(0); // withheld, but the cursor still advances
+    expect(hidden.changes.map((change) => change.kind)).toEqual(["delete"]);
     expect(Number(hidden.cursors[sk])).toBeGreaterThan(Number(cursor));
 
     // The member reassigns the doc to the guest — the guest lacks the base row, so
@@ -1249,6 +1587,32 @@ describe("server sync — row-level visibility", () => {
     expect(entered.changes).toHaveLength(1);
     expect(entered.changes[0]!.kind).toBe("insert");
     expect(entered.changes[0]!.data).toMatchObject({ title: "t", createdBy: "guest" });
+  });
+
+  it("never discloses a formerly-visible insert after the current row becomes invisible", async () => {
+    const store = seededStore();
+    const sk = "byWorkspace:ws1";
+    const cold = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+    });
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "cm", schemaVersion: 1,
+      mutations: [doc("visible", "d1", "guest", "historical secret")]
+    });
+    await handlePush(store, guestConfig(), {
+      userId: "member", clientId: "cm", schemaVersion: 1,
+      mutations: [{
+        opId: "hide", clientId: "cm", schemaVersion: 1, functionName: "docs:update",
+        table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "member" }
+      }]
+    });
+    const res = await handlePull(store, guestConfig(), {
+      userId: "guest", clientId: "cg", schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: cold.cursors[sk]! }
+    });
+    expect(res.changes.map((change) => change.kind)).toEqual(["delete", "delete"]);
+    expect(res.changes.every((change) => change.data === undefined)).toBe(true);
   });
 
   it("incremental: a row leaving visibility arrives as a delete", async () => {
@@ -1298,7 +1662,13 @@ describe("server sync — serverStamp", () => {
     let seq = 0;
     const cfg: SyncConfig = {
       ...config,
-      tables: { todos: { ...config.tables.todos!, serverStamp: () => ({ sequenceId: ++seq }) } }
+      tables: {
+        todos: {
+          ...config.tables.todos!,
+          serverOnlyFields: ["sequenceId"],
+          serverStamp: () => ({ sequenceId: ++seq })
+        }
+      }
     };
     const res = await handlePush(store, cfg, {
       userId: "user_a", clientId: "c1", schemaVersion: 1,
@@ -1313,12 +1683,18 @@ describe("server sync — serverStamp", () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = {
       ...config,
-      tables: { todos: { ...config.tables.todos!, serverStamp: () => ({ ownerId: "someone_else" }) } }
+      tables: {
+        todos: {
+          ...config.tables.todos!,
+          serverOnlyFields: ["ownerId"],
+          serverStamp: () => ({ ownerId: "someone_else" })
+        }
+      }
     };
-    const res = await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "a" })]
-    });
-    expect(res.rejected).toHaveLength(1);
-    expect(res.rejected[0]!.message).toMatch(/serverStamp must not set the scope field/);
+    await expect(
+      handlePush(store, cfg, {
+        userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "a" })]
+      })
+    ).rejects.toThrow(/serverStamp must not set the scope field/);
   });
 });

@@ -45,12 +45,14 @@ const updates =
 const appendRow = useMutation(api.docUpdates.append);
 const pruneRow = useMutation(api.docUpdates.prune);
 
-const doc = useCollaborativeDoc({
+const { doc, status } = useCollaborativeDoc({
   docId,                                   // must uniquely identify the doc across scopes
   updates,
-  append: (update) => appendRow({ workspaceId, docId, update }).local,
-  prune: (id) => pruneRow({ id }).local    // omit to disable compaction (log grows unbounded)
+  docField: "docId",                       // the row field naming the doc (default "doc")
+  append: (update) => appendRow({ workspaceId, docId, update }),
+  prune: (id) => pruneRow({ id })          // omit to disable compaction (log grows unbounded)
 });
+// `status` is { synced, pendingUpdates, lastError, compacting }.
 // bind to an editor: BlockNote → doc.getXmlFragment("blocknote"); TipTap → a y-prosemirror binding
 ```
 

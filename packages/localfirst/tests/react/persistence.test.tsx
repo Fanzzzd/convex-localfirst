@@ -26,12 +26,12 @@ vi.mock("convex/react", () => ({
   useMutation: () => async () => undefined
 }));
 
-const { ConvexProvider, ConvexReactClient, useMutation, useQuery } = await import("../../src/react/index");
+const { ConvexProvider, ConvexReactClient, useMutation, useQuery, useSyncRecovery } = await import("../../src/react/index");
 const client = new ConvexReactClient("http://localhost");
 
-function manifest() {
+function manifest(schemaVersion = 1) {
   return defineLocalFirstManifest({
-    schemaVersion: 1,
+    schemaVersion,
     tables: {
       todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), indexes: {} })
     },
@@ -117,5 +117,45 @@ describe("offline-first persistence (DoD steps 1-3)", () => {
     await waitFor(() => expect(screen.getByTestId("count").textContent).toBe("1"));
     expect(screen.getByTestId("first").textContent).toBe("offline todo");
     expect((await store2.getPendingOperations()).length).toBe(1); // still pending (offline)
+  });
+
+  it("surfaces pending operations from the older default namespace after a schema bump", async () => {
+    const databaseName = "schema-recovery-test";
+    const legacy = new IndexedDbStore({ databaseName, namespace: "user_a" });
+    await legacy.enqueueOperation({
+      opId: "legacy-op",
+      clientId: "old-client",
+      userId: "user_a",
+      schemaVersion: 1,
+      functionName: "todos:create",
+      table: "todos",
+      kind: "insert",
+      id: "legacy-todo",
+      args: {},
+      value: { ownerId: "user_a", listId: "inbox", text: "offline v1" },
+      createdAt: 1,
+      status: "pending"
+    });
+    (await legacy._database()).close();
+
+    function Recovery() {
+      const recovery = useSyncRecovery();
+      return (
+        <span data-testid="legacy-recovery">
+          {recovery.olderSchemaOperations.map((op) => `${op.namespace}:${op.opId}`).join(",")}
+        </span>
+      );
+    }
+
+    render(
+      <ConvexProvider
+        client={client}
+        localFirst={{ manifest: manifest(2), transport: offline, databaseName, userId: "user_a", nameOf: String }}
+      >
+        <Recovery />
+      </ConvexProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId("legacy-recovery").textContent).toBe("user_a:legacy-op"));
   });
 });

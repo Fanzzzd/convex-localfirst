@@ -8,6 +8,7 @@ import type { ServerTableConfig } from "./serverSync.js";
 
 export * from "./serverSync.js";
 export * from "./createSyncFunctions.js";
+export * from "./createAttachmentFunctions.js";
 
 // Identity is NOT configured here: this factory only declares local-first tables
 // and their spec closures. The server-authoritative user id is resolved at sync
@@ -67,6 +68,11 @@ export type TableOptions<
   // Numeric fields merged as CONVERGENT COUNTERS (concurrent increments accumulate) instead
   // of whole-number LWW — so concurrent edits to e.g. `vote_count` don't clobber. Opt-in.
   readonly counterFields?: readonly string[];
+  // Fields indexed for local full-text search, in priority order (earlier fields rank
+  // higher). Client-only: it feeds the incremental inverted index behind `useSearch`. HTML
+  // fields (e.g. `description_html`) are tag-stripped before tokenizing. Opt-in; omit for a
+  // non-searchable table.
+  readonly searchFields?: readonly string[];
 };
 
 /** The row type a table's queries return: your shape + the id field + Convex's
@@ -183,6 +189,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         indexes,
         setFields: tableOptions.setFields,
         counterFields: tableOptions.counterFields,
+        searchFields: tableOptions.searchFields,
         timestamps: tsFields,
         // The complete synced surface — what bootstrap may ship (never `extra` columns).
         syncedFields: [
@@ -326,7 +333,7 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
  * as the sync path: the index must lead with the owner field and the key must
  * pin it to the authenticated user, otherwise we refuse rather than leak.
  *
- * byWorkspace/byProject queries still refuse: membership (`isMember`) lives in
+ * byWorkspace/byProject queries still refuse: membership (`access.member`) lives in
  * the sync config, which this standalone handler cannot consult — executing them
  * here would hand rows to any caller who guesses a workspace id.
  */
@@ -342,7 +349,7 @@ async function runServerQuery(
     unsupportedLocalFirstCall("query", tableName);
   }
   const c = ctx as {
-    auth: { getUserIdentity(): Promise<{ subject?: string } | null> };
+    auth: { getUserIdentity(): Promise<{ tokenIdentifier?: string } | null> };
     db: {
       query(table: string): {
         withIndex(index: string, range: (q: never) => unknown): { order(o: "asc" | "desc"): { collect(): Promise<unknown[]> } };
@@ -350,7 +357,7 @@ async function runServerQuery(
     };
   };
   const identity = await c.auth.getUserIdentity();
-  const userId = identity?.subject;
+  const userId = identity?.tokenIdentifier;
   if (!userId) {
     throw new Error(
       `convex-localfirst: server-side "${tableName}" query requires an authenticated caller (ctx.auth). ` +
@@ -400,12 +407,15 @@ function attachMetadata<T>(value: T, metadata: Record<string, unknown>): T {
 }
 
 type AttachedTableMeta = {
+  readonly kind: "query" | "insert" | "patch" | "remove";
   readonly tableName: string;
   readonly idField: string;
   readonly scope: ScopeDefinition;
   readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
   readonly syncedFields?: readonly string[];
+  readonly searchFields?: readonly string[];
   readonly schemaVersion?: number;
+  readonly spec: { readonly args?: Record<string, unknown> };
 };
 
 /** Non-enumerable marker on collectTables' result carrying the modules' declared
@@ -424,7 +434,7 @@ export const COLLECTED_SCHEMA_VERSION = Symbol.for("convexLocalFirst.schemaVersi
  * export const { push, pull } = createSyncFunctions({
  *   component: components.convexLocalFirst, mutation, query,
  *   tables: collectTables({ issues, labels }),
- *   isMember
+ *   access
  * });
  * ```
  *
@@ -435,15 +445,15 @@ export const COLLECTED_SCHEMA_VERSION = Symbol.for("convexLocalFirst.schemaVersi
 export function collectTables(modules: Record<string, unknown>): Record<string, ServerTableConfig> {
   const out: Record<string, ServerTableConfig> = {};
   const declaredVersions = new Set<number>();
-  for (const mod of Object.values(modules)) {
+  for (const [moduleKey, mod] of Object.entries(modules)) {
     if (!mod || (typeof mod !== "object" && typeof mod !== "function")) continue;
-    for (const exported of Object.values(mod as Record<string, unknown>)) {
+    for (const [exportName, exported] of Object.entries(mod as Record<string, unknown>)) {
       const meta = (exported as Record<string, unknown> | null | undefined)?.[LF_METADATA_KEY] as
         | AttachedTableMeta
         | undefined;
       if (!meta || typeof meta.tableName !== "string") continue;
       if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
-      const config: ServerTableConfig = {
+      const base: ServerTableConfig = {
         scope: meta.scope,
         idField: meta.idField,
         ...(meta.timestamps ? { timestamps: meta.timestamps } : {}),
@@ -451,13 +461,38 @@ export function collectTables(modules: Record<string, unknown>): Record<string, 
       };
       const existing = out[meta.tableName];
       if (!existing) {
-        out[meta.tableName] = config;
-      } else if (JSON.stringify(existing) !== JSON.stringify(config)) {
+        out[meta.tableName] = base;
+      } else {
+        const { mutations: _mutations, ...existingBase } = existing;
+        if (JSON.stringify(existingBase) !== JSON.stringify(base)) {
         // Fail closed: a divergent config for the same table can only come from
         // hand-tampering the metadata — never from a single lf.table definition.
-        throw new Error(
-          `collectTables: conflicting config for table "${meta.tableName}" — every lf.table function for a table must share one definition.`
-        );
+          throw new Error(
+            `collectTables: conflicting config for table "${meta.tableName}" — every lf.table function for a table must share one definition.`
+          );
+        }
+      }
+      if (meta.kind !== "query") {
+        const table = out[meta.tableName]!;
+        const fields =
+          meta.kind === "insert"
+            ? [...(meta.syncedFields ?? Object.keys(meta.spec.args ?? {}))]
+            : meta.kind === "patch"
+              ? [
+                  ...Object.keys(meta.spec.args ?? {}).filter((field) => field !== "id" && field !== meta.idField),
+                  ...(meta.timestamps ? [meta.timestamps.updatedAt] : [])
+                ]
+              : [];
+        out[meta.tableName] = {
+          ...table,
+          mutations: {
+            ...table.mutations,
+            [`${moduleKey}:${exportName}`]: {
+              kind: meta.kind === "remove" ? "delete" : meta.kind,
+              fields: [...new Set(fields)]
+            }
+          }
+        };
       }
     }
   }

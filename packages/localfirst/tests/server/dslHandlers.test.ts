@@ -117,6 +117,20 @@ describe("derived specs + auto timestamps", () => {
     const removePlan = manifest.mutations["todos:del"]!.plan({ id: "t1" }, mutationCtx(333));
     expect(removePlan).toEqual({ kind: "delete", table: "todos", id: "t1" });
   });
+
+  it("plumbs searchFields from lf.table through to the client manifest (P4)", () => {
+    const search = lf.table("issues", {
+      shape: { workspaceId: v.string(), name: v.string(), description_html: v.string() },
+      scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
+      indexes: { by: ["workspaceId"] },
+      searchFields: ["name", "description_html"]
+    });
+    const list = search.query({ args: {}, index: "by", key: () => [] });
+    const manifest = collectManifest({ issues: { list } });
+    expect(manifest.tables.issues!.searchFields).toEqual(["name", "description_html"]);
+    // A table without searchFields carries none (undefined, not empty array).
+    expect(manifest.tables.todos).toBeUndefined();
+  });
 });
 
 describe("server-side query execution (SSR / scripts)", () => {
@@ -126,7 +140,7 @@ describe("server-side query execution (SSR / scripts)", () => {
     indexes: { byList: ["ownerId", "listId"] }
   });
 
-  /** A minimal ctx: auth returns `subject`, db records the index walk and returns rows. */
+  /** A minimal ctx: auth returns `tokenIdentifier`, db records the index walk. */
   function fakeCtx(subject: string | undefined, rows: unknown[] = []) {
     const calls: { table?: string; index?: string; eqs: Array<[string, unknown]>; order?: string } = { eqs: [] };
     const range = {
@@ -136,7 +150,7 @@ describe("server-side query execution (SSR / scripts)", () => {
       }
     };
     const ctx = {
-      auth: { getUserIdentity: async () => (subject ? { subject } : null) },
+      auth: { getUserIdentity: async () => (subject ? { tokenIdentifier: subject } : null) },
       db: {
         query(table: string) {
           calls.table = table;

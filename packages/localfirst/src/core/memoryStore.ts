@@ -1,6 +1,6 @@
 import { compareOperations } from "./ordering.js";
 import { deriveView, nextCanonicalRow } from "./view.js";
-import type { LocalStore, StoreListener, StoreUnsubscribe } from "./storage.js";
+import type { LocalStore, StoreListener, StoreUnsubscribe, StoredBlob } from "./storage.js";
 import type {
   Cursor,
   LocalId,
@@ -30,7 +30,12 @@ export class MemoryLocalStore implements LocalStore {
   private readonly canonical = new Map<TableName, Map<LocalId, RowValue>>();
   private readonly operations = new Map<string, LocalOperation>();
   private readonly cursors = new Map<ScopeKey, string>();
+  // Attachment blob outbox, keyed by localId. Blobs are immutable, so we share the
+  // reference (no structuredClone — a Blob round-trip through it is a needless copy).
+  private readonly blobs = new Map<LocalId, StoredBlob>();
   private readonly listeners = new Set<StoreListener>();
+  private epoch = 0;
+  private sessionEnded = false;
 
   async getRows(table: TableName): Promise<readonly RowValue[]> {
     return this.deriveTable(table).map(clone);
@@ -45,13 +50,14 @@ export class MemoryLocalStore implements LocalStore {
     return Array.from(this.tableMap(table).values()).map(clone);
   }
 
-  async applyServerChange(change: ServerChange): Promise<void> {
+  async applyServerChange(change: ServerChange, expectedEpoch = this.epoch): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
     this.applyOne(change);
     this.notify();
   }
 
-  async applyServerChanges(changes: readonly ServerChange[]): Promise<void> {
-    if (changes.length === 0) {
+  async applyServerChanges(changes: readonly ServerChange[], expectedEpoch = this.epoch): Promise<void> {
+    if (changes.length === 0 || this.sessionEnded || expectedEpoch !== this.epoch) {
       return;
     }
     for (const change of changes) {
@@ -114,7 +120,8 @@ export class MemoryLocalStore implements LocalStore {
     return this.cursors.get(scopeKey) ?? null;
   }
 
-  async setCursor(scopeKey: ScopeKey, cursor: string): Promise<void> {
+  async setCursor(scopeKey: ScopeKey, cursor: string, expectedEpoch = this.epoch): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
     // Monotonic (I5): cursors only advance. Concurrent same-scope pulls (multiple
     // mounted hooks + the reactive watch) can resolve out of order; a write that
     // would move the cursor backward is ignored, since it would cause redundant
@@ -126,7 +133,14 @@ export class MemoryLocalStore implements LocalStore {
     this.cursors.set(scopeKey, cursor);
   }
 
-  async removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void> {
+  async removeCanonicalRows(
+    table: TableName,
+    field: string,
+    value: unknown,
+    keepIds?: ReadonlySet<LocalId>,
+    expectedEpoch = this.epoch
+  ): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
     const rows = this.tableMap(table);
     let removed = false;
     for (const [id, row] of rows) {
@@ -140,14 +154,40 @@ export class MemoryLocalStore implements LocalStore {
     }
   }
 
-  async removeCursor(scopeKey: ScopeKey): Promise<void> {
+  async removeCursor(scopeKey: ScopeKey, expectedEpoch = this.epoch): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
     this.cursors.delete(scopeKey);
   }
 
+  async getEpoch(): Promise<number> {
+    return this.epoch;
+  }
+
+  async putBlob(record: StoredBlob): Promise<void> {
+    if (this.sessionEnded) return;
+    this.blobs.set(record.localId, { ...record });
+  }
+
+  async getBlob(localId: LocalId): Promise<StoredBlob | null> {
+    const record = this.blobs.get(localId);
+    return record ? { ...record } : null;
+  }
+
+  async getAllBlobs(): Promise<readonly StoredBlob[]> {
+    return Array.from(this.blobs.values()).map((record) => ({ ...record }));
+  }
+
+  async deleteBlob(localId: LocalId): Promise<void> {
+    this.blobs.delete(localId);
+  }
+
   async clear(): Promise<void> {
+    this.epoch++;
+    this.sessionEnded = true;
     this.canonical.clear();
     this.operations.clear();
     this.cursors.clear();
+    this.blobs.clear();
     this.notify();
   }
 

@@ -26,7 +26,8 @@ function client(subject) {
     push: (mutations) =>
       c.mutation(pushRef, { clientId, userId: subject, schemaVersion: SCHEMA_VERSION,
         mutations: mutations.map((m) => ({ opId: randomUUID(), clientId, schemaVersion: SCHEMA_VERSION,
-          functionName: `${m.table}:${m.kind}`, table: m.table, kind: m.kind, localId: m.localId, value: m.value })) }),
+          functionName: `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
+          table: m.table, kind: m.kind, localId: m.localId, value: m.value })) }),
     pull: async () => {
       let cursors = {}, all = [];
       for (let i = 0; i < 50; i++) {

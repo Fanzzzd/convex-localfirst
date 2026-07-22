@@ -46,6 +46,8 @@ export type LocalFirstFunctionMeta = {
   readonly indexes: Record<string, readonly string[]>;
   readonly setFields?: readonly string[];
   readonly counterFields?: readonly string[];
+  /** Fields fed to the local full-text search index (client-only). See search.ts. */
+  readonly searchFields?: readonly string[];
   /** Auto-timestamp field names (lf.table's `timestamps` option). Stamped by the
    *  mutation plans below: insert sets both, patch sets updatedAt. */
   readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
@@ -131,7 +133,8 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     scope: meta.scope,
     indexes: meta.indexes,
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
-    ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {})
+    ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {}),
+    ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {})
   };
   const existing = tables[meta.tableName];
   if (!existing) {

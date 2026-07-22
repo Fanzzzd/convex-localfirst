@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runCheck } from "./check.js";
 
 const command = process.argv[2] ?? "help";
 
 if (command === "init") {
   init();
 } else if (command === "check") {
-  check();
+  void check();
 } else {
   help();
 }
@@ -157,8 +156,26 @@ Next:
 const CHECK_SCOPE_NOTE =
   "note: catches ctx.db.insert + id-based patch/delete/replace whose id is traceable to a local-first table within one function; ids passed across functions or via ctx.db.get() are not traced — review those manually.";
 
-function check() {
+async function check() {
   const dir = existsSync("convex") ? "convex" : ".";
+  // `check` parses your source with the TypeScript compiler API, but `typescript` is an
+  // OPTIONAL peer — `init`/`help` must work without it. Load the check module (and its
+  // `typescript` import) only now, and turn a missing peer into a clear instruction.
+  let runCheck: (dir: string) => Array<{ file: string; line: number; table: string; method: string; snippet: string }>;
+  try {
+    ({ runCheck } = await import("./check.js"));
+  } catch (error) {
+    const err = error as { code?: string; message?: string };
+    if (err.code === "ERR_MODULE_NOT_FOUND" && /typescript/i.test(err.message ?? "")) {
+      console.error(
+        "convex-localfirst check: this command needs TypeScript, an optional peer dependency.\n" +
+          "  Install it in your project:  npm install --save-dev typescript"
+      );
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
   const violations = runCheck(dir);
   if (violations.length === 0) {
     console.log("convex-localfirst check: no direct writes to local-first tables found");

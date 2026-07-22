@@ -7,8 +7,8 @@
 // keys. `npx convex dev` pushes this config to the local backend on :3214.
 //
 // When a client calls setAuth(() => token) and the token validates here,
-// ctx.auth.getUserIdentity().subject becomes the JWT `sub` (e.g. "alice"), which
-// the package's resolveUserId() uses as the server-authoritative user id.
+// ctx.auth.getUserIdentity().tokenIdentifier combines issuer + JWT `sub`; the
+// package uses that globally unique value as its server-authoritative user id.
 //
 // NOTE: auth.config.ts is bundled for the Convex runtime (not Node), so it cannot
 // read files / use node:crypto here. The JWKS below is therefore a STATIC inline

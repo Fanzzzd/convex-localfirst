@@ -27,6 +27,21 @@ export type LocalQueryPlan<Row extends Record<string, unknown> = Record<string, 
   readonly scopeValues?: Record<string, unknown>;
   /** Relations to attach in memory (resolved by the engine across local tables). */
   readonly relations: readonly RelationEntry[];
+  /**
+   * Declared sort, exposed so the incremental query engine can pick a matching
+   * secondary index and maintain a sorted result by binary-search splice. `run`
+   * remains the authority for actual filtering/sorting; this is planning metadata.
+   * (Named `orderBy`/`rowLimit` to avoid colliding with the `.order()`/`.limit()`
+   * chainable builder methods.)
+   */
+  readonly orderBy?: { readonly field: string; readonly dir: "asc" | "desc" };
+  /** Declared row cap, exposed for incremental maintenance (the sorted result is
+   *  kept in full and sliced to this on output). */
+  readonly rowLimit?: number;
+  /** Number of chained `.where(...)` predicates — part of the structural signature the
+   *  React hook keys an incremental subscription on (predicate closures are opaque, so a
+   *  changed COUNT is what signals a re-plan). */
+  readonly predicateCount?: number;
   /** Apply where/order/limit to the base table's live rows. Pure. Relations are
    *  attached afterwards by the engine (they need other tables' rows). */
   run(rows: readonly RowValue[]): Row[];
@@ -137,6 +152,21 @@ export class LocalQuery<Row extends Record<string, unknown> = RowValue, Rel = un
 
   get relations(): readonly RelationEntry[] {
     return this.ops.relations;
+  }
+
+  /** Planning metadata (see LocalQueryPlan.orderBy). Populated from `.order(...)`. */
+  get orderBy(): { readonly field: string; readonly dir: "asc" | "desc" } | undefined {
+    return this.ops.orderKey !== undefined ? { field: String(this.ops.orderKey), dir: this.ops.orderDir } : undefined;
+  }
+
+  /** Planning metadata (see LocalQueryPlan.rowLimit). Populated from `.limit(...)`. */
+  get rowLimit(): number | undefined {
+    return this.ops.limitN;
+  }
+
+  /** Planning metadata (see LocalQueryPlan.predicateCount). */
+  get predicateCount(): number {
+    return this.ops.predicates.length;
   }
 
   run(rows: readonly RowValue[]): Row[] {

@@ -3,7 +3,7 @@
 // Two ConvexHttpClients, each setAuth'd with its OWN locally-minted JWT (alice,
 // bob), drive the package's sync:push / sync:pull endpoints directly (the exact
 // wire shape convex-localfirst/core's transport uses). Identity is resolved by
-// the SERVER from the JWT (ctx.auth.getUserIdentity().subject), so each client
+// the SERVER from the JWT (ctx.auth.getUserIdentity().tokenIdentifier), so each client
 // genuinely acts as a different authenticated user. Every claim is a hard assert.
 //
 //   3a  Shared collaboration: alice creates rows in 'demo'; bob (member) pulls
@@ -11,7 +11,7 @@
 //   3b  Scope isolation (I7): bob is DENIED reads + writes to 'alice-only';
 //       alice is allowed.
 //   3c  Server-authoritative identity: a client authed as bob that puts
-//       userId:"alice" in the envelope still acts as bob (auth subject wins).
+//       userId:"alice" in the envelope still acts as bob (auth token id wins).
 import { ConvexHttpClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 import { randomUUID } from "node:crypto";
@@ -51,7 +51,7 @@ function clientFor(subject, { envelopeUserId } = {}) {
           opId: m.opId ?? randomUUID(),
           clientId,
           schemaVersion: SCHEMA_VERSION,
-          functionName: m.functionName ?? `${m.table}:${m.kind}`,
+          functionName: m.functionName ?? `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
           table: m.table,
           kind: m.kind,
           localId: m.localId,
@@ -104,7 +104,6 @@ function issueInsert(localId, workspace_id, project_id, name) {
     value: {
       workspace_id,
       project_id,
-      sequence_id: Math.floor(Math.random() * 100000),
       name,
       sort_order: 1000,
       priority: "none",
@@ -188,7 +187,7 @@ assert(
 );
 
 // ----------------------------------------------------------------------------
-console.log("\n=== 3c. Server-authoritative identity (auth subject wins over client userId) ===");
+console.log("\n=== 3c. Server-authoritative identity (auth token id wins over client userId) ===");
 // A client authed as BOB but forging userId:"alice" in the envelope. The row it
 // creates in 'demo' must be attributed to BOB, not alice. We prove it two ways:
 //  (1) the SAME forging client can write to 'demo' (bob IS a member) — if the
@@ -204,10 +203,10 @@ assert(forgeDemo.rejected.length === 0, "forging client (auth=bob, envelope user
 const forgeAO = await bobForging.push([projectInsert(`proj-forge-ao-${uid}`, "alice-only", `ForgeAO ${uid}`)]);
 assert(
   forgeAO.accepted.length === 0 && /member/i.test(forgeAO.rejected[0]?.message ?? ""),
-  "forging client DENIED 'alice-only' despite envelope userId='alice' -> auth subject (bob) wins, client cannot forge identity (I7)"
+  "forging client DENIED 'alice-only' despite envelope userId='alice' -> auth token id (bob) wins, client cannot forge identity (I7)"
 );
 const forgeAOPull = await bobForging.pull(wsScope("alice-only"));
-assert(forgeAOPull.changes.length === 0, "forging client pulls ZERO from 'alice-only' (read uses auth subject bob, not forged userId)");
+assert(forgeAOPull.changes.length === 0, "forging client pulls ZERO from 'alice-only' (read uses auth token id for bob, not forged userId)");
 
 // ----------------------------------------------------------------------------
 console.log(`\n${failures === 0 ? "ALL MULTI-USER ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}`);

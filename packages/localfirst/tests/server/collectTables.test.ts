@@ -38,12 +38,18 @@ describe("collectTables", () => {
       scope: { kind: "byWorkspace", workspaceIdField: "workspace_id", membershipTable: "ws_members" },
       idField: "id",
       syncedFields: ["id"], // empty shape → just the id field
+      mutations: {
+        "issues:create": { kind: "insert", fields: ["id"] },
+        "issues:update": { kind: "patch", fields: [] },
+        "issues:remove": { kind: "delete", fields: [] }
+      }
     });
     // byUser scope + a per-table idField override both flow through unchanged.
     expect(tables.todos).toEqual({
       scope: { kind: "byUser", field: "ownerId" },
       idField: "localId",
       syncedFields: ["localId"],
+      mutations: { "todos:create": { kind: "insert", fields: ["localId"] } }
     });
     // No setFields leaks into the server config — the server materializes set-deltas
     // by shape, not per-table config.

@@ -8,5 +8,6 @@ export const initialSyncStatus: SyncStatus = {
   lastPullAt: null,
   lastError: null,
   blockedBySchemaMismatch: false,
-  partial: false
+  partial: false,
+  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [] }
 };

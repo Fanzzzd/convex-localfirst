@@ -58,8 +58,15 @@ export function deriveView(
  * must be ignored because its version does not advance the row (Invariant I5).
  */
 export function nextCanonicalRow(current: RowValue | null, change: ServerChange): RowValue | "stale" {
-  if (current && typeof current._version === "number" && change.version <= current._version) {
-    return "stale";
+  if (current && typeof current._version === "number") {
+    // Pull upserts are CURRENT full-row replacements. Equal-version replacement is
+    // intentional: a v3 push ack may have advanced canonical past a missed v2 field,
+    // and the later full v3 row is what restores that field. Patches/deletes remain
+    // strictly ordered because they are partial/destructive changes.
+    const fullRow = change.kind === "insert" || change.kind === "replace";
+    if (change.version < current._version || (!fullRow && change.version === current._version)) {
+      return "stale";
+    }
   }
   if (change.kind === "delete") {
     const base = current ?? { _id: change.id, _table: change.table };

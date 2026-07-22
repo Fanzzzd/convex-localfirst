@@ -35,7 +35,7 @@ function clientFor(subject) {
           opId: m.opId ?? randomUUID(),
           clientId,
           schemaVersion: SCHEMA_VERSION,
-          functionName: m.functionName ?? `${m.table}:${m.kind}`,
+          functionName: m.functionName ?? `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
           table: m.table,
           kind: m.kind,
           localId: m.localId,
@@ -96,7 +96,6 @@ const seed = await alice.push([
     value: {
       workspace_id: "mu-demo",
       project_id: projLocalId,
-      sequence_id: Math.floor(Math.random() * 100000),
       name: `SM issue ${uid}`,
       sort_order: 1000,
       priority: "none",

@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import * as ConvexReact from "convex/react";
 import { getFunctionName, makeFunctionReference } from "convex/server";
-import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
+import type { FunctionArgs, FunctionReference, FunctionReturnType, OptionalRestArgs } from "convex/server";
 import {
   IndexedDbStore,
   MemoryLocalStore,
@@ -13,13 +13,21 @@ import {
   many,
   manyToMany,
   one,
+  rankBetween,
+  rankCompare,
+  isValidRank,
+  rebalance,
   viaIds,
+  type AttachmentBackend,
+  type AttachmentUploadState,
   type FunctionNameResolver,
   type LocalFirstManifest,
   type LocalFirstMutationCall,
   type LocalQueryPlan,
   type LocalStore,
   type RelationSpec,
+  type RecoveryOperation,
+  type RecoveryStatus,
   type RowValue,
   type SyncStatus,
   type SyncTransport
@@ -34,7 +42,7 @@ import {
   defaultFunctionName
 } from "../core/internal.js";
 
-export { collection, many, manyToMany, one, viaIds };
+export { collection, many, manyToMany, one, viaIds, rankBetween, rankCompare, isValidRank, rebalance };
 export type { LocalQueryPlan, RelationSpec };
 
 export const ConvexReactClient = ConvexReact.ConvexReactClient;
@@ -52,7 +60,8 @@ const EMPTY_STATUS: SyncStatus = {
   lastPullAt: null,
   lastError: null,
   blockedBySchemaMismatch: false,
-  partial: false
+  partial: false,
+  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [] }
 };
 
 export type LocalFirstProviderConfig = {
@@ -94,6 +103,17 @@ export type LocalFirstProviderConfig = {
   /** Escape hatch: bring your own transport (replaces the default Convex wiring). */
   readonly transport?: SyncTransport;
   readonly nameOf?: FunctionNameResolver;
+  /** Offline-capable attachments (P5). Point at your `createAttachmentFunctions`
+   *  mutations; default to the conventional `attachments:getUploadUrl` /
+   *  `attachments:finalize`. Without them, useCreateAttachment throws a config error. */
+  readonly attachments?: {
+    readonly getUploadUrl?: FunctionReference<"mutation">;
+    readonly finalize?: FunctionReference<"mutation">;
+    /** Metadata-row field the server stamps with the storage id. Default "storageId". */
+    readonly storageIdField?: string;
+    /** Escape hatch: bring your own upload backend (replaces the default Convex wiring). */
+    readonly backend?: AttachmentBackend;
+  };
 };
 
 type LocalFirstReactContextValue = {
@@ -168,6 +188,12 @@ export type CreateConvexLocalFirstOptions = {
     readonly push?: FunctionReference<"mutation">;
     readonly pull?: FunctionReference<"query">;
   };
+  /** Attachment mutation refs (default `attachments:getUploadUrl` / `attachments:finalize`). */
+  readonly attachments?: {
+    readonly getUploadUrl?: FunctionReference<"mutation">;
+    readonly finalize?: FunctionReference<"mutation">;
+    readonly storageIdField?: string;
+  };
 };
 
 /**
@@ -209,13 +235,20 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     // "" — the server resolves the real identity from auth and ignores this anyway.
     userId: userId ?? ""
   });
+  const attachmentBackend = createConvexAttachmentBackend(
+    client,
+    options.attachments?.getUploadUrl ? convexFunctionName(options.attachments.getUploadUrl) : "attachments:getUploadUrl",
+    options.attachments?.finalize ? convexFunctionName(options.attachments.finalize) : "attachments:finalize",
+    userId
+  );
   const engine = createLocalFirstEngine({
     manifest,
     store,
     transport,
     clientId,
     userId,
-    nameOf: convexFunctionName
+    nameOf: convexFunctionName,
+    attachments: { backend: attachmentBackend, storageIdField: options.attachments?.storageIdField }
   });
   // Runtime is core's engine; the cast only adds the convex-typed mutate/query overloads
   // (same methods, inferred arg/return types). Sound: the runtime signatures are wider.
@@ -232,6 +265,27 @@ function raise(message: string): never {
 function defaultNamespace(userId: string | null, schemaVersion: number): string {
   const base = userId ?? "default";
   return schemaVersion > 1 ? `${base}::v${schemaVersion}` : base;
+}
+
+/** The attachment backend the provider/headless factory wires by default: the
+ *  conventional getUploadUrl/finalize mutations over the shared Convex client. The
+ *  default XHR upload lives in core (AttachmentManager). */
+function createConvexAttachmentBackend(
+  client: InstanceType<typeof ConvexReact.ConvexReactClient>,
+  getUploadUrlName: string,
+  finalizeName: string,
+  userId: string | null
+): AttachmentBackend {
+  const getUploadUrlRef = makeFunctionReference<"mutation">(getUploadUrlName);
+  const finalizeRef = makeFunctionReference<"mutation">(finalizeName);
+  return {
+    getUploadUrl: ({ table, localId }) =>
+      client.mutation(getUploadUrlRef as never, { table, localId, userId: userId ?? "" } as never) as Promise<string>,
+    finalize: ({ table, localId, storageId }) =>
+      (client.mutation(finalizeRef as never, { table, localId, storageId, userId: userId ?? "" } as never) as Promise<unknown>).then(
+        () => undefined
+      )
+  };
 }
 
 export function ConvexProvider(props: {
@@ -313,6 +367,20 @@ function LocalFirstProvider(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [manifest, userId, transport, props.nameOf]
   );
+  // Attachment upload backend (P5): the conventional endpoints over the SAME Convex
+  // client. Deps use resolved NAMES (the `api.*` proxy is a fresh object per access).
+  const getUploadUrlName = props.attachments?.getUploadUrl
+    ? reactDefaultFunctionName(props.attachments.getUploadUrl)
+    : "attachments:getUploadUrl";
+  const finalizeName = props.attachments?.finalize
+    ? reactDefaultFunctionName(props.attachments.finalize)
+    : "attachments:finalize";
+  const storageIdField = props.attachments?.storageIdField;
+  const injectedBackend = props.attachments?.backend;
+  const attachmentBackend = useMemo(
+    () => injectedBackend ?? createConvexAttachmentBackend(props.client, getUploadUrlName, finalizeName, userId),
+    [injectedBackend, props.client, getUploadUrlName, finalizeName, userId]
+  );
   const engine = useMemo(() => {
     return new LocalFirstEngine({
       manifest,
@@ -320,11 +388,12 @@ function LocalFirstProvider(
       clientId,
       userId,
       transport,
-      nameOf: props.nameOf ?? reactDefaultFunctionName
+      nameOf: props.nameOf ?? reactDefaultFunctionName,
+      attachments: { backend: attachmentBackend, storageIdField }
     });
     // clientId is intentionally captured once; store moves in lockstep (same deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest, userId, transport, props.nameOf, store]);
+  }, [manifest, userId, transport, props.nameOf, store, attachmentBackend, storageIdField]);
 
   // The engine self-wires browser connectivity in its constructor — reflecting
   // navigator.onLine into the sync status and flushing the offline outbox on reconnect
@@ -336,6 +405,48 @@ function LocalFirstProvider(
     engine.resume();
     return () => engine.dispose();
   }, [engine]);
+
+  // A schema bump uses a fresh default namespace. Surface (never auto-apply) pending
+  // operations left in older namespaces so the app can export/migrate/discard them via
+  // useSyncRecovery instead of silently orphaning offline work.
+  useEffect(() => {
+    if (
+      props.store ||
+      props.namespace ||
+      !(store instanceof IndexedDbStore) ||
+      manifest.schemaVersion <= 1 ||
+      typeof indexedDB === "undefined"
+    ) {
+      engine.setOlderSchemaOperations([]);
+      return;
+    }
+    let alive = true;
+    const databaseName = props.databaseName ?? "convex-localfirst";
+    const reads = Array.from({ length: manifest.schemaVersion - 1 }, (_, index) => index + 1).map(async (version) => {
+      const namespace = defaultNamespace(userId, version);
+      const legacy = new IndexedDbStore({ databaseName, namespace });
+      try {
+        return (await legacy.getPendingOperations()).map(
+          ({ opId, table, id, kind, schemaVersion, createdAt, error }) =>
+            ({ opId, table, id, kind, schemaVersion, createdAt, error, namespace }) satisfies RecoveryOperation
+        );
+      } finally {
+        (await legacy._database()).close();
+      }
+    });
+    void Promise.all(reads)
+      .then((operations) => {
+        if (alive) engine.setOlderSchemaOperations(operations.flat());
+      })
+      .catch((error) => {
+        if (alive) {
+          console.warn("[convex-localfirst] could not inspect older schema namespaces for pending operations", error);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [engine, manifest.schemaVersion, props.databaseName, props.namespace, props.store, store, userId]);
 
   // Multi-tab coordination: elect one leader (only it runs the background batch push)
   // and poke other tabs to re-read the shared IndexedDB after a pull. Engaged only with
@@ -374,11 +485,28 @@ export type UseLocalFirstQueryOptions<TResult> = {
   readonly sync?: "auto" | "off";
 };
 
+// Convex's own "empty args object" marker (see convex/server's EmptyObject): a
+// mutation/query declared with `args: {}` has `_args` of exactly `Record<string, never>`.
+// Re-declared locally because convex/server doesn't re-export it.
+type EmptyObject = Record<string, never>;
+
+/**
+ * Rest-args tuple mirroring convex/react's `OptionalRestArgsOrSkip`, but carrying our
+ * extra `options` object: a query with required args REQUIRES the args parameter (omitting
+ * it is a compile error), while an empty-args query lets you omit it. `"skip"` is always
+ * allowed in place of the args (Convex-identical).
+ */
+export type QueryArgsAndOptions<Query extends FunctionReference<"query">, Options> =
+  Query["_args"] extends EmptyObject
+    ? [args?: EmptyObject | "skip", options?: Options]
+    : [args: Query["_args"] | "skip", options?: Options];
+
 /**
  * Convex-compatible useQuery. Args and result type are inferred from the Convex
  * function reference (drop-in, no explicit generics — exactly like `convex/react`).
- * Local-first functions read from the engine and subscribe to local changes;
- * everything else falls through to Convex.
+ * Queries with required args require the args parameter; empty-args queries allow
+ * omitting it. Local-first functions read from the engine and subscribe to local
+ * changes; everything else falls through to Convex.
  *
  * All hooks below run unconditionally on every render (no rules-of-hooks
  * violation): the Convex hook is fed "skip" for local-first functions, and the
@@ -386,9 +514,12 @@ export type UseLocalFirstQueryOptions<TResult> = {
  */
 export function useQuery<Query extends FunctionReference<"query">>(
   reference: Query,
-  args?: FunctionArgs<Query> | "skip",
-  options?: UseLocalFirstQueryOptions<FunctionReturnType<Query>>
+  ...argsAndOptions: QueryArgsAndOptions<Query, UseLocalFirstQueryOptions<FunctionReturnType<Query>>>
 ): FunctionReturnType<Query> | undefined {
+  const [args, options] = argsAndOptions as [
+    FunctionArgs<Query> | "skip" | undefined,
+    UseLocalFirstQueryOptions<FunctionReturnType<Query>>?
+  ];
   const engine = useLocalFirstEngine();
   const isLocal = engine !== null && engine.hasLocalQuery(reference);
   const resolvedArgs = (args ?? {}) as FunctionArgs<Query> | "skip";
@@ -437,7 +568,10 @@ function useLocalQuery<TArgs, TResult>(
       });
     };
     run();
-    const unsubscribe = engine.subscribe(run);
+    // Only re-run when THIS query's table changes (P3 incremental view), not on every
+    // unrelated store change. Falls back to the global data bus for a non-local ref.
+    const table = engine.queryTable(reference);
+    const unsubscribe = table ? engine.subscribeTableChange(table, run) : engine.subscribe(run);
     let unwatch: (() => void) | null = null;
     if (options?.sync !== "off") {
       void engine.refreshQuery(reference, args as TArgs);
@@ -484,96 +618,147 @@ export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel
   options?: UseLiveQueryOptions
 ): Array<Row & Rel> | undefined {
   const engine = useLocalFirstEngine();
-  const [rowsByTable, setRowsByTable] = useState<Record<string, readonly RowValue[]> | undefined>(undefined);
-  const lastResult = useRef<Array<Row & Rel> | undefined>(undefined);
+  const [, setTick] = useState(0);
+  const rerender = () => setTick((t) => t + 1);
+  const subRef = useRef<{ current(): Array<Row & Rel> | undefined; dispose(): void } | null>(null);
 
-  // The tables this query reads: its base table + any relation targets/join
-  // tables. A stable sorted key so an inline-rebuilt query object (or added
-  // relations) re-subscribes only when the table SET actually changes.
-  const tables = query === "skip" || !engine ? [] : engine.tablesForPlan(query);
-  const tablesKey = tables.length ? [...tables].sort().join(",") : null;
+  // Structural signature of the query's SHAPE (read set, scope, order, limit, predicate
+  // count). The incremental view is re-subscribed only when this changes; ordinary data
+  // changes are handled by the view's O(log n) delta splicing, never by re-scanning. An
+  // inline-rebuilt query object with the same shape keeps the same view (stable identity).
+  const structuralKey =
+    query === "skip" || !engine
+      ? null
+      : JSON.stringify({
+          t: [...engine.tablesForPlan(query)].sort(),
+          s: query.scopeValues ?? null,
+          o: query.orderBy ?? null,
+          l: query.rowLimit ?? null,
+          p: query.predicateCount ?? 0
+        });
 
-  // Subscribe to every read table's live rows; re-pull all on any local change.
   useEffect(() => {
     if (!engine || query === "skip") {
-      setRowsByTable(undefined);
+      subRef.current = null;
       return;
     }
-    const wanted = engine.tablesForPlan(query);
-    let alive = true;
-    const pull = () => {
-      void Promise.all(wanted.map((t) => engine.tableRows(t).then((rows) => [t, rows] as const))).then((entries) => {
-        if (alive) {
-          setRowsByTable(Object.fromEntries(entries));
-        }
-      });
-    };
-    pull();
-    const unsubscribe = engine.subscribe(pull);
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-    // query is read at effect time; tablesKey is the stable identity of its read set.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, tablesKey]);
-
-  // Background sync for this query's scope (push pending + pull). Keyed on the
-  // scope values + read set, not the per-render query object.
-  const scopeKey = query === "skip" ? null : JSON.stringify(query.scopeValues ?? null);
-  const pollMs = options?.pollMs;
-  useEffect(() => {
-    if (!engine || query === "skip") {
-      return;
-    }
+    // Register the plan with the incremental query engine (P3): the result is maintained
+    // by row deltas, and `rerender` fires only when the visible result actually changes.
+    const sub = engine.subscribeLiveQuery(query, rerender);
+    subRef.current = sub;
+    // Background sync for this query's scope (push pending + pull), and prefer true
+    // server-push when the transport is reactive.
     void engine.refreshPlan(query);
-    // Prefer true server-push: a reactive transport drains this scope the instant
-    // the server has a change — no idle polling, instant cross-client updates.
     const unwatch = engine.watchPlan(query);
-    if (unwatch) {
-      return unwatch;
-    }
-    // Fallback for a non-reactive transport (e.g. the HTTP client, or tests): poll
-    // the scope when the caller opted in. refreshPlan never throws and pulls only
-    // changes after the cursor, so an idle poll is cheap.
-    if (!pollMs) {
-      return;
-    }
-    const timer = setInterval(() => {
-      void engine.refreshPlan(query);
-    }, pollMs);
-    return () => clearInterval(timer);
+    const pollMs = options?.pollMs;
+    const timer = !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
+    return () => {
+      sub.dispose();
+      subRef.current = null;
+      unwatch?.();
+      if (timer) clearInterval(timer);
+    };
+    // query is read at effect time; structuralKey is the stable identity of its shape.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, tablesKey, scopeKey, pollMs]);
+  }, [engine, structuralKey]);
 
-  if (query === "skip" || rowsByTable === undefined || !engine) {
-    lastResult.current = undefined;
-    return undefined;
-  }
-  // Route through the engine (not query.run directly) so the scoped fail-closed
-  // guard + relation attach are enforced. Return a stable array reference when the
-  // result is unchanged (no-relation case), so it's safe in downstream deps.
-  const next = engine.applyLocalQuery(query, rowsByTable);
-  const prev = lastResult.current;
-  if (prev && prev.length === next.length && prev.every((row, i) => row === next[i])) {
-    return prev;
-  }
-  lastResult.current = next;
-  return next;
+  if (query === "skip" || !engine) return undefined;
+  // The view returns a stable array reference while unchanged, so downstream deps hold.
+  return subRef.current?.current();
 }
 
-/** Mutators always return the hybrid call shape (await it like Convex, or use .local/.server). */
-export type LocalFirstMutator<TArgs, TResult> = (args: TArgs) => LocalFirstMutationCall<TResult>;
+export type UseSearchOptions = {
+  /** Restrict results to rows matching these field equalities (e.g. `{ workspaceId }`).
+   *  Applied before ranking, so `total` reflects the scoped match count. */
+  readonly scope?: Record<string, unknown>;
+  /** Cap the returned `results` (ranked). `total` is always the full match count. */
+  readonly limit?: number;
+};
+
+export type UseSearchResult<Row extends Record<string, unknown> = RowValue> = {
+  /** The ranked matching rows (capped by `limit`). Stable array identity while unchanged. */
+  readonly results: Row[];
+  /** Total matches before `limit` (post-scope) — for a "showing N of M" affordance. */
+  readonly total: number;
+};
+
+const EMPTY_SEARCH: UseSearchResult = { results: [], total: 0 };
+
+/**
+ * Local full-text search over a table's declared `searchFields` (P4). Search-as-you-type:
+ * pass the raw input `query` on every keystroke — the lookup is a memory-resident index
+ * probe (no debounce needed), the final token prefix-matches, and results update
+ * incrementally as local data changes (a delta touching the table refreshes only the live
+ * searches on it). An empty/whitespace query returns empty results at zero cost (no
+ * subscription). The result array keeps a stable reference while unchanged.
+ *
+ * ```tsx
+ * const { results, total } = useSearch("issues", query, { scope: { workspaceId }, limit: 20 });
+ * ```
+ */
+export function useSearch<Row extends Record<string, unknown> = RowValue>(
+  table: string,
+  query: string,
+  options?: UseSearchOptions
+): UseSearchResult<Row> {
+  const engine = useLocalFirstEngine();
+  const [, setTick] = useState(0);
+  const rerender = () => setTick((t) => t + 1);
+  const subRef = useRef<{ current(): UseSearchResult<Row>; dispose(): void } | null>(null);
+
+  const trimmed = query.trim();
+  const scope = options?.scope;
+  const limit = options?.limit;
+  // Stable identity of the search's shape. A changed table/query/scope/limit re-subscribes;
+  // ordinary data changes are handled by the view's incremental refresh, never a resubscribe.
+  // Empty query → no key → no subscription (zero cost).
+  const structuralKey =
+    !engine || trimmed === ""
+      ? null
+      : JSON.stringify({ t: table, q: query, s: scope ?? null, l: limit ?? null });
+
+  useEffect(() => {
+    if (!engine || trimmed === "") {
+      subRef.current = null;
+      return;
+    }
+    const sub = engine.subscribeSearch(table, query, { scope, limit }, rerender) as {
+      current(): UseSearchResult<Row>;
+      dispose(): void;
+    };
+    subRef.current = sub;
+    return () => {
+      sub.dispose();
+      subRef.current = null;
+    };
+    // query/scope/limit are read at effect time; structuralKey is their stable identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, structuralKey]);
+
+  if (!engine || trimmed === "") return EMPTY_SEARCH as UseSearchResult<Row>;
+  // The view returns a stable result reference while unchanged, so downstream deps hold.
+  return subRef.current?.current() ?? (EMPTY_SEARCH as UseSearchResult<Row>);
+}
+
+/**
+ * Mutators always return the hybrid call shape (await it like Convex, or use .local/.server).
+ * The call arity mirrors convex/react's `OptionalRestArgs`: a mutation with required args
+ * requires them, an empty-args mutation can be called with `()`.
+ */
+export type LocalFirstMutator<Mutation extends FunctionReference<"mutation">> = (
+  ...args: OptionalRestArgs<Mutation>
+) => LocalFirstMutationCall<FunctionReturnType<Mutation>>;
 
 /**
  * Convex-compatible useMutation. Args and result type are inferred from the
- * function reference (no explicit generics). The returned mutator yields the
+ * function reference (no explicit generics). Mutations with required args require
+ * them; empty-args mutations can be called with `()`. The returned mutator yields the
  * hybrid call: `await it` resolves to the server result (Convex-identical), and
  * `.local` / `.server` are separately awaitable.
  */
 export function useMutation<Mutation extends FunctionReference<"mutation">>(
   reference: Mutation
-): LocalFirstMutator<FunctionArgs<Mutation>, FunctionReturnType<Mutation>> {
+): LocalFirstMutator<Mutation> {
   type TArgs = FunctionArgs<Mutation>;
   type TResult = FunctionReturnType<Mutation>;
   const engine = useLocalFirstEngine();
@@ -583,12 +768,15 @@ export function useMutation<Mutation extends FunctionReference<"mutation">>(
   // returned mutator changes every render and re-runs any effect that depends on it.
   const refKey = useMemo(() => (engine ? engine.functionName(reference) : null), [engine, reference]);
 
-  return useMemo<LocalFirstMutator<TArgs, TResult>>(() => {
+  return useMemo<LocalFirstMutator<Mutation>>(() => {
+    // Empty-args mutations may be called with (); default the omitted args to {}.
     if (isLocal && engine) {
-      return (args: TArgs) => engine.mutate<TArgs, TResult>(reference, args);
+      return ((...args: OptionalRestArgs<Mutation>) =>
+        engine.mutate<TArgs, TResult>(reference, (args[0] ?? {}) as TArgs)) as LocalFirstMutator<Mutation>;
     }
     // Fallback to Convex, but keep the uniform return type so .local/.server work.
-    return (args: TArgs) => createFallbackMutationCall<TResult>(convexMutation(args));
+    return ((...args: OptionalRestArgs<Mutation>) =>
+      createFallbackMutationCall<TResult>(convexMutation((args[0] ?? {}) as TArgs))) as LocalFirstMutator<Mutation>;
     // reference is read at call time; refKey is its stable identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, convexMutation, isLocal, refKey]);
@@ -607,6 +795,77 @@ export function useSyncStatus(): SyncStatus {
   }, [engine]);
 
   return status;
+}
+
+/** Durable writes requiring recovery. Rejected writes remain here across reloads;
+ * olderSchemaOperations are read-only records from prior default namespaces for an
+ * app-provided export/migration/discard flow. */
+export function useSyncRecovery(): RecoveryStatus {
+  return useSyncStatus().recovery;
+}
+
+export type CreateAttachmentInput = {
+  /** Metadata for the row — the args of your attachment table's `insert` mutation
+   *  (workspace/issue ids, name, size, mimeType, …). `storageId` is server-controlled. */
+  readonly metadata: Record<string, unknown>;
+  /** The file/blob to upload. Persisted durably first, so creating offline succeeds. */
+  readonly blob: Blob;
+};
+
+/**
+ * Create attachments against a local-first table (P5). Pass the table's INSERT
+ * mutation reference (e.g. `api.attachments.create`). The returned trigger inserts the
+ * metadata row optimistically AND persists the blob durably — succeeding fully offline
+ * — then the leader tab uploads in the background. Resolves the metadata row's
+ * `localId` (pass it to `useAttachmentUpload` to watch progress).
+ *
+ * ```tsx
+ * const create = useCreateAttachment(api.attachments.create);
+ * const { localId } = await create({ metadata: { issue_id, name, size, mime_type }, blob });
+ * ```
+ */
+export function useCreateAttachment(
+  insert: FunctionReference<"mutation">
+): (input: CreateAttachmentInput) => Promise<{ localId: string }> {
+  const engine = useLocalFirstEngine();
+  const refKey = useMemo(() => (engine ? engine.functionName(insert) : null), [engine, insert]);
+  return useCallback(
+    (input: CreateAttachmentInput) => {
+      if (!engine) {
+        return Promise.reject(new Error("useCreateAttachment: no local-first engine (mount inside ConvexProvider with localFirst)."));
+      }
+      return engine.createAttachment({ insert, metadata: input.metadata, blob: input.blob });
+    },
+    // insert is read at call time; refKey is its stable identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [engine, refKey]
+  );
+}
+
+const DEFAULT_ATTACHMENT_STATE: AttachmentUploadState = { state: "queued", progress: null };
+
+/**
+ * Live upload state for one attachment, by the metadata-row `localId` returned from
+ * `useCreateAttachment`. `state` is `queued | uploading | done | failed`; `progress`
+ * is a 0..1 fraction while uploading (from XHR upload events), null otherwise. A
+ * failed upload also surfaces through `useSyncRecovery().failedAttachments`.
+ */
+export function useAttachmentUpload(localId: string | null | undefined): AttachmentUploadState {
+  const engine = useLocalFirstEngine();
+  const [state, setState] = useState<AttachmentUploadState>(
+    () => (engine && localId ? engine.getAttachmentState(localId) : null) ?? DEFAULT_ATTACHMENT_STATE
+  );
+  useEffect(() => {
+    if (!engine || !localId) {
+      setState(DEFAULT_ATTACHMENT_STATE);
+      return;
+    }
+    setState(engine.getAttachmentState(localId) ?? DEFAULT_ATTACHMENT_STATE);
+    return engine.subscribeAttachment(localId, () =>
+      setState(engine.getAttachmentState(localId) ?? DEFAULT_ATTACHMENT_STATE)
+    );
+  }, [engine, localId]);
+  return state;
 }
 
 export type PresencePeer = {
@@ -695,4 +954,3 @@ export function usePresence(
     [peers, presence]
   );
 }
-

@@ -24,6 +24,13 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     changes: {
+      gc: FunctionReference<
+        "mutation",
+        "internal",
+        { now: number; retentionMs?: number },
+        any,
+        Name
+      >;
       append: FunctionReference<
         "mutation",
         "internal",
@@ -39,6 +46,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           serverTime: number;
           table: string;
           version: number;
+        },
+        any,
+        Name
+      >;
+      commitOp: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          committedAt: number;
+          error?: string;
+          change?: {
+            dataJson?: string;
+            kind: "insert" | "patch" | "delete";
+            localId: string;
+            opId?: string;
+            patchJson?: string;
+            scopeKey: string;
+            serverId?: string;
+            serverTime: number;
+            table: string;
+            version: number;
+          };
+          opId: string;
+          retentionMs?: number;
+          schemaVersion: number;
+          status: "accepted" | "rejected";
+          userId: string;
         },
         any,
         Name
@@ -95,28 +129,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { opId: string; userId: string },
-        any,
-        Name
-      >;
-      record: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          argsJson: string;
-          changesJson?: string;
-          clientId: string;
-          committedAt: number;
-          error?: string;
-          functionName: string;
-          localId: string;
-          opId: string;
-          operationJson: string;
-          resultJson?: string;
-          schemaVersion: number;
-          status: "accepted" | "rejected";
-          table: string;
-          userId: string;
-        },
         any,
         Name
       >;

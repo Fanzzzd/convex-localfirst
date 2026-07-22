@@ -23,17 +23,53 @@ const valueCodec: ValueCodec = {
 type AnyCtx = any;
 type ComponentApi = any;
 
-/** App-supplied membership check (the server decides, never the client — I7). */
-export type IsMember = (
-  ctx: AnyCtx,
-  info: { userId: string; scopeValue: string; membershipTable: string }
-) => Promise<boolean>;
+export type AccessConfig<
+  Role = unknown,
+  Row extends Record<string, unknown> = Record<string, unknown>
+> = {
+  readonly member: (
+    ctx: AnyCtx,
+    args: { userId: string; scopeValue: string; table: string; membershipTable?: string }
+  ) => Role | null | undefined | Promise<Role | null | undefined>;
+  readonly read?: (
+    ctx: AnyCtx,
+    args: { userId: string; role: Role; table: string; row: Row }
+  ) => boolean | Promise<boolean>;
+  readonly write?: (
+    ctx: AnyCtx,
+    args: {
+      userId: string;
+      role: Role;
+      table: string;
+      action: "insert" | "patch" | "delete";
+      before: Row | null;
+      patch?: Record<string, unknown>;
+      proposed: Row | null;
+    }
+  ) => boolean | Promise<boolean>;
+};
 
-export type CreateSyncFunctionsOptions = {
+export type ServerStampConfig = {
+  /** The complete set of fields this hook may return. These fields are rejected
+   *  from every client insert/patch before the hook runs. */
+  readonly fields: readonly string[];
+  readonly stamp: (
+    ctx: AnyCtx,
+    input: { userId: string; value: Record<string, unknown> }
+  ) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
+};
+
+export type CreateSyncFunctionsOptions<
+  Role = unknown,
+  Row extends Record<string, unknown> = Record<string, unknown>
+> = {
   /** `components.convexLocalFirst` from your app's generated api. */
   readonly component: ComponentApi;
   /** `mutation` / `query` from your app's `_generated/server`. */
   readonly mutation: (definition: { args: any; handler: (ctx: AnyCtx, args: any) => any }) => any;
+  /** Pass Convex's `internalMutation` to expose `gc` as an internal cron target.
+   *  Falls back to `mutation` for adapters/tests that do not distinguish them. */
+  readonly internalMutation?: (definition: { args: any; handler: (ctx: AnyCtx, args: any) => any }) => any;
   readonly query: (definition: { args: any; handler: (ctx: AnyCtx, args: any) => any }) => any;
   /** Which app tables are local-first, and how they are scoped. */
   readonly tables: SyncConfig["tables"];
@@ -42,7 +78,9 @@ export type CreateSyncFunctionsOptions = {
   readonly schemaVersion?: number;
   readonly now?: () => number;
   /** Required if any table is scoped `byWorkspace` / `byProject`. */
-  readonly isMember?: IsMember;
+  readonly access?: AccessConfig<Role, Row>;
+  /** Override the default authenticated id (`identity.tokenIdentifier`). */
+  readonly getUserId?: (ctx: AnyCtx) => string | null | Promise<string | null>;
   /**
    * UNSAFE. When Convex auth returns no identity, trust the client-supplied
    * `userId` instead of failing closed. Only for a local demo backend with no
@@ -57,29 +95,25 @@ export type CreateSyncFunctionsOptions = {
    */
   readonly changeRetentionMs?: number;
   /**
-   * Per-table row-level read filter WITHIN an authorized scope (e.g. guests only
-   * see issues they created). Runs with your ctx, so it can read roles from
-   * ctx.db. Applied to bootstrap rows, incremental changes (a row entering
-   * visibility arrives as a full-row upsert; one leaving arrives as a delete),
-   * and patch/delete writes (can't see → can't touch).
-   */
-  readonly visibility?: Record<
-    string,
-    (ctx: AnyCtx, input: { userId: string; row: Record<string, unknown> }) => boolean | Promise<boolean>
-  >;
-  /**
    * Per-table server-minted insert fields (push AND `serverWriter`, where userId
    * is "server") — e.g. an atomic per-project sequence number read from ctx.db.
    * Runs inside the push transaction (race-free under Convex OCC). Stamped fields
    * must be part of the table's declared shape to sync back to clients.
    */
-  readonly serverStamp?: Record<
-    string,
-    (
-      ctx: AnyCtx,
-      input: { userId: string; value: Record<string, unknown> }
-    ) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>
-  >;
+  readonly serverStamp?: Record<string, ServerStampConfig>;
+  /** Runs transactionally once for each first-accepted client write and each
+   *  serverWriter write. Ledger replay never re-fires it. */
+  readonly onWrite?: (
+    ctx: AnyCtx,
+    args: {
+      table: string;
+      action: "insert" | "patch" | "delete";
+      before: Row | null;
+      after: Row | null;
+      userId: string;
+      functionName: string;
+    }
+  ) => Promise<void>;
 };
 
 /** Trusted server-side writer for local-first tables — the third writer besides
@@ -101,7 +135,10 @@ export type SyncFunctions = {
   readonly pull: RegisteredQuery<"public", Record<string, unknown>, unknown>;
   readonly presence: RegisteredMutation<"public", Record<string, unknown>, unknown>;
   readonly presenceList: RegisteredQuery<"public", Record<string, unknown>, unknown>;
-  readonly serverWriter: (ctx: unknown) => ServerWriter;
+  readonly gc:
+    | RegisteredMutation<"internal", Record<string, unknown>, unknown>
+    | RegisteredMutation<"public", Record<string, unknown>, unknown>;
+  readonly serverWriter: (ctx: unknown, userId?: string) => ServerWriter;
 };
 
 function storedFromComponent(r: any): StoredChange {
@@ -120,63 +157,84 @@ function storedFromComponent(r: any): StoredChange {
 }
 
 /**
- * Compose the `push` mutation + `pull` query that local-first clients sync
- * against. App rows go to `ctx.db`; every sync bookkeeping operation is
- * delegated to the mounted component. This replaces ~150 lines of hand-written
- * `ServerStore` wiring with a single call.
- *
- * ```ts
- * export const { push, pull } = createSyncFunctions({
- *   component: components.convexLocalFirst,
- *   mutation, query,
- *   tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
- * });
- * ```
+ * The shared server-sync primitives — config, request-bound config, the writable
+ * push-side store, identity resolution, and the trusted serverWriter — built once
+ * from the sync options. Both `createSyncFunctions` and `createAttachmentFunctions`
+ * consume this, so attachments reuse the SAME authz + serverWriter plumbing instead
+ * of duplicating scope/membership checks.
  */
-export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFunctions {
+export type SyncCore<Role = unknown, Row extends Record<string, unknown> = Record<string, unknown>> = {
+  readonly config: SyncConfig;
+  readonly configFor: (ctx: AnyCtx) => SyncConfig;
+  readonly pushStore: (ctx: AnyCtx) => ServerStore;
+  readonly resolveUserId: (ctx: AnyCtx, fallback: string) => Promise<string>;
+  readonly serverWriter: (ctx: AnyCtx, actingUserId?: string) => ServerWriter;
+  readonly newLocalId: (table: string) => string;
+  readonly changeRetentionMs: number;
+};
+
+export function buildSyncCore<
+  Role = unknown,
+  Row extends Record<string, unknown> = Record<string, unknown>
+>(options: CreateSyncFunctionsOptions<Role, Row>): SyncCore<Role, Row> {
   const lf = options.component;
   const changeRetentionMs = options.changeRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
-  // The version rides on collectTables' result (declared once, in createLocalFirst).
   const collectedVersion = (options.tables as Record<PropertyKey, unknown>)[
     Symbol.for("convexLocalFirst.schemaVersion")
   ] as number | undefined;
+  const tables = { ...options.tables };
   const config: SyncConfig = {
     schemaVersion: options.schemaVersion ?? collectedVersion ?? 1,
     now: options.now ?? (() => Date.now()),
-    tables: options.tables,
+    tables,
     valueCodec
   };
 
-  // visibility / serverStamp hooks take the request's ctx (to read roles/counters
-  // from ctx.db) — bind it per request by cloning the affected table configs.
-  for (const [optionName, hooks] of [
-    ["visibility", options.visibility],
-    ["serverStamp", options.serverStamp]
-  ] as const) {
-    for (const table of Object.keys(hooks ?? {})) {
-      if (!(table in config.tables)) {
-        throw new Error(`createSyncFunctions: ${optionName} names unknown local-first table "${table}"`);
+  for (const [table, stamp] of Object.entries(options.serverStamp ?? {})) {
+    const tableConfig = tables[table];
+    if (!tableConfig) {
+      throw new Error(`createSyncFunctions: serverStamp names unknown local-first table "${table}"`);
+    }
+    const partition =
+      tableConfig.scope.kind === "byUser"
+        ? tableConfig.scope.field
+        : tableConfig.scope.kind === "byWorkspace"
+          ? tableConfig.scope.workspaceIdField
+          : tableConfig.scope.projectIdField;
+    for (const field of stamp.fields) {
+      if (field === tableConfig.idField || field === partition) {
+        throw new Error(`createSyncFunctions: serverStamp field "${field}" cannot be an id/scope field`);
+      }
+      if (tableConfig.syncedFields && !tableConfig.syncedFields.includes(field)) {
+        throw new Error(`createSyncFunctions: serverStamp field "${field}" is not a synced field of "${table}"`);
       }
     }
+    tables[table] = { ...tableConfig, serverOnlyFields: [...new Set(stamp.fields)] };
   }
+
   const configFor = (ctx: AnyCtx): SyncConfig => {
-    if (!options.visibility && !options.serverStamp) {
+    if (!options.access && !options.serverStamp && !options.onWrite) {
       return config;
     }
-    const tables = { ...config.tables };
-    for (const [table, hook] of Object.entries(options.visibility ?? {})) {
-      tables[table] = { ...tables[table]!, visibility: (input) => hook(ctx, input) };
-    }
+    const boundTables = { ...config.tables };
     for (const [table, hook] of Object.entries(options.serverStamp ?? {})) {
-      tables[table] = { ...tables[table]!, serverStamp: (input) => hook(ctx, input) };
+      boundTables[table] = { ...boundTables[table]!, serverStamp: (input) => hook.stamp(ctx, input) };
     }
-    return { ...config, tables };
+    return {
+      ...config,
+      tables: boundTables,
+      access: options.access
+        ? {
+            member: (input) => options.access!.member(ctx, input),
+            read: options.access.read ? (input) => options.access!.read!(ctx, input as never) : undefined,
+            write: options.access.write ? (input) => options.access!.write!(ctx, input as never) : undefined
+          }
+        : undefined,
+      onWrite: options.onWrite ? (input) => options.onWrite!(ctx, input as never) : undefined
+    };
   };
 
-  // I7: the pull side resolves ONE membership table per scope kind (scope keys
-  // are per-value, shared across every table of that kind). Mixed membership
-  // tables within a kind would let a member of one pull another's rows — forbid
-  // that ambiguity at config time rather than fail silently insecure.
+  // I7: one membership table per scope kind (scope keys are shared per value).
   for (const kind of ["byWorkspace", "byProject"] as const) {
     const membershipTables = new Set(
       Object.values(options.tables)
@@ -193,18 +251,12 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
   const needsMembership = Object.values(options.tables).some(
     (t) => t.scope.kind === "byWorkspace" || t.scope.kind === "byProject"
   );
-  const isMember: IsMember =
-    options.isMember ??
-    (async () => {
-      if (needsMembership) {
-        throw new Error(
-          "createSyncFunctions: a byWorkspace/byProject table requires an `isMember` callback (the server must decide membership — I7)."
-        );
-      }
-      return true;
-    });
+  if (needsMembership && !options.access) {
+    throw new Error(
+      "createSyncFunctions: access.member is required when any table uses a byWorkspace/byProject membership scope."
+    );
+  }
 
-  // Push-side store: app rows hit ctx.db; all bookkeeping goes to the component.
   function pushStore(ctx: AnyCtx): ServerStore {
     return {
       async getRow(_table, serverId) {
@@ -220,25 +272,41 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
         await ctx.db.delete(serverId);
       },
       async getLedger(userId, opId) {
-        return await ctx.runQuery(lf.ops.getByOpId, { userId, opId });
+        const row = await ctx.runQuery(lf.ops.getByOpId, { userId, opId });
+        return row
+          ? {
+              schemaVersion: row.schemaVersion,
+              status: row.status,
+              error: row.error,
+              changes: row.changesJson ? (valueCodec.decode(row.changesJson) as StoredChange[]) : undefined
+            }
+          : null;
       },
-      async putLedger(userId, clientId, op: ServerOperation, entry) {
-        await ctx.runMutation(lf.ops.record, {
+      async commitOp(userId, op: ServerOperation, entry, change, serverId) {
+        const committed = await ctx.runMutation(lf.changes.commitOp, {
           userId,
-          clientId,
           opId: op.opId,
           schemaVersion: op.schemaVersion,
-          functionName: op.functionName,
-          table: op.table,
-          localId: op.localId,
           status: entry.status,
-          argsJson: valueCodec.encode(op.value ?? op.patch ?? {}),
-          operationJson: valueCodec.encode(op),
-          resultJson: entry.resultJson,
-          changesJson: entry.changesJson,
           error: entry.error,
-          committedAt: config.now ? config.now() : Date.now()
+          committedAt: config.now ? config.now() : Date.now(),
+          change: change
+            ? {
+                scopeKey: change.scopeKey,
+                table: change.table,
+                localId: change.localId,
+                kind: change.kind,
+                dataJson: change.data ? valueCodec.encode(change.data) : undefined,
+                patchJson: change.patch ? valueCodec.encode(change.patch) : undefined,
+                version: change.version,
+                serverTime: change.serverTime,
+                opId: change.opId,
+                serverId
+              }
+            : undefined,
+          retentionMs: Number.isFinite(changeRetentionMs) ? changeRetentionMs : undefined
         });
+        return committed.change ? storedFromComponent(committed.change) : null;
       },
       async getServerId(table, localId) {
         return await ctx.runQuery(lf.idMaps.get, { table, localId });
@@ -270,12 +338,64 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       },
       async scopeForLocalId(table, localId) {
         return await ctx.runQuery(lf.changes.scopeForLocal, { table, localId });
-      },
-      async isMember(userId, scopeValue, membershipTable) {
-        return await isMember(ctx, { userId, scopeValue, membershipTable });
       }
     };
   }
+
+  async function resolveUserId(ctx: AnyCtx, fallback: string) {
+    const resolved = options.getUserId
+      ? await options.getUserId(ctx)
+      : (await ctx.auth.getUserIdentity())?.tokenIdentifier;
+    if (resolved) {
+      return resolved;
+    }
+    if (options.devUnsafeAllowClientUserId) {
+      return fallback;
+    }
+    throw new Error(
+      "convex-localfirst: no authenticated identity. Configure Convex auth, or set devUnsafeAllowClientUserId: true for a local demo backend (unsafe)."
+    );
+  }
+
+  const newLocalId = createDefaultIdFactory("sv");
+  const serverWriter = (ctx: AnyCtx, actingUserId = "server"): ServerWriter => {
+    const store = pushStore(ctx);
+    const cfg = configFor(ctx);
+    return {
+      insert: (table, value, opts) =>
+        applyServerWrite(store, cfg, { kind: "insert", table, value, localId: opts?.localId }, () => newLocalId(table), actingUserId),
+      patch: (table, localId, patch) =>
+        applyServerWrite(store, cfg, { kind: "patch", table, localId, patch }, () => newLocalId(table), actingUserId),
+      remove: (table, localId) =>
+        applyServerWrite(store, cfg, { kind: "delete", table, localId }, () => newLocalId(table), actingUserId)
+    };
+  };
+
+  return { config, configFor, pushStore, resolveUserId, serverWriter, newLocalId, changeRetentionMs };
+}
+
+/**
+ * Compose the `push` mutation + `pull` query that local-first clients sync
+ * against. App rows go to `ctx.db`; every sync bookkeeping operation is
+ * delegated to the mounted component. This replaces ~150 lines of hand-written
+ * `ServerStore` wiring with a single call.
+ *
+ * ```ts
+ * export const { push, pull } = createSyncFunctions({
+ *   component: components.convexLocalFirst,
+ *   mutation, query,
+ *   tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
+ * });
+ * ```
+ */
+export function createSyncFunctions<
+  Role = unknown,
+  Row extends Record<string, unknown> = Record<string, unknown>
+>(options: CreateSyncFunctionsOptions<Role, Row>): SyncFunctions {
+  const lf = options.component;
+  // Shared plumbing (config, request-bound config, push store, identity, serverWriter).
+  const core = buildSyncCore(options);
+  const { config, configFor, pushStore, resolveUserId, serverWriter, changeRetentionMs } = core;
 
   // Pull-side store: read-only — the change log, bootstrap reads (rowVersions +
   // app rows via the id map), and membership.
@@ -291,7 +411,7 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       patchRow: unsupported as never,
       deleteRow: unsupported as never,
       getLedger: unsupported as never,
-      putLedger: unsupported as never,
+      commitOp: unsupported as never,
       async getServerId(table, localId) {
         return await ctx.runQuery(lf.idMaps.get, { table, localId });
       },
@@ -312,9 +432,6 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       async rowVersionsByScope(scopeKey, afterRowKey, limit) {
         return await ctx.runQuery(lf.changes.listVersions, { scopeKey, afterRowKey: afterRowKey ?? undefined, limit });
       },
-      async isMember(userId, scopeValue, membershipTable) {
-        return await isMember(ctx, { userId, scopeValue, membershipTable });
-      }
     };
   }
 
@@ -332,22 +449,6 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     // clock). Accepted and ignored so their queued offline ops keep pushing.
     timestamp: v.optional(v.number())
   };
-
-  async function resolveUserId(ctx: AnyCtx, fallback: string) {
-    // I7: identity comes from auth, never the client. Fail closed when there is
-    // no authenticated identity, unless the app explicitly opts into the unsafe
-    // demo fallback (a local backend with no auth provider).
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity?.subject) {
-      return identity.subject;
-    }
-    if (options.devUnsafeAllowClientUserId) {
-      return fallback;
-    }
-    throw new Error(
-      "convex-localfirst: no authenticated identity. Configure Convex auth, or set devUnsafeAllowClientUserId: true for a local demo backend (unsafe)."
-    );
-  }
 
   const push = options.mutation({
     args: {
@@ -393,7 +494,7 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
 
   // ---- Presence (ephemeral, never part of the sync log) ---------------------
   // Authorization mirrors pull's scope rules exactly: your own `u:` scope, or a
-  // workspace/project you are a member of (isMember decides — I7). scopeKey uses
+  // workspace/project you are a member of (access.member decides — I7). scopeKey uses
   // the same format the sync engine uses, so presence rooms line up with scopes.
   async function hasPresenceAccess(ctx: AnyCtx, userId: string, scopeKey: string): Promise<boolean> {
     const sep = scopeKey.indexOf(":");
@@ -403,12 +504,20 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
       return value === userId;
     }
     if (kind === "byWorkspace" || kind === "byProject") {
-      const table = Object.values(options.tables).find((t) => t.scope.kind === kind);
-      const membershipTable = (table?.scope as { membershipTable?: string } | undefined)?.membershipTable;
+      const found = Object.entries(options.tables).find(([, table]) => table.scope.kind === kind);
+      const membershipTable = (found?.[1].scope as { membershipTable?: string } | undefined)?.membershipTable;
       // NOTE: reading membership INSIDE the query is what makes presenceList
       // reactive to joining — the subscription re-runs when the membership row
       // lands, so a client that heartbeats-then-joins converges on its own.
-      return membershipTable !== undefined && (await isMember(ctx, { userId, scopeValue: value, membershipTable }));
+      if (!found || !membershipTable || !options.access) return false;
+      return (
+        (await options.access.member(ctx, {
+          userId,
+          scopeValue: value,
+          table: found[0],
+          membershipTable
+        })) ?? null
+      ) !== null;
     }
     return false;
   }
@@ -460,18 +569,15 @@ export function createSyncFunctions(options: CreateSyncFunctionsOptions): SyncFu
     }
   });
 
-  const newLocalId = createDefaultIdFactory("sv");
-  const serverWriter = (ctx: AnyCtx): ServerWriter => {
-    const store = pushStore(ctx);
-    const cfg = configFor(ctx); // serverStamp applies to server-authored inserts too
-    return {
-      insert: (table, value, opts) =>
-        applyServerWrite(store, cfg, { kind: "insert", table, value, localId: opts?.localId }, () => newLocalId(table)),
-      patch: (table, localId, patch) => applyServerWrite(store, cfg, { kind: "patch", table, localId, patch }, () => newLocalId(table)),
-      remove: (table, localId) => applyServerWrite(store, cfg, { kind: "delete", table, localId }, () => newLocalId(table))
-    };
-  };
+  const gc = (options.internalMutation ?? options.mutation)({
+    args: {},
+    handler: async (ctx: AnyCtx) =>
+      await ctx.runMutation(lf.changes.gc, {
+        now: config.now ? config.now() : Date.now(),
+        retentionMs: Number.isFinite(changeRetentionMs) ? changeRetentionMs : undefined
+      })
+  });
 
-  return { push, pull, presence, presenceList, serverWriter } as SyncFunctions;
+  return { push, pull, presence, presenceList, gc, serverWriter } as SyncFunctions;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

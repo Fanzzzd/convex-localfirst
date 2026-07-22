@@ -14,6 +14,21 @@ import { LocalFirstEngine } from "../../src/core/internal";
 import { acceptAllTransport, createHarness } from "./helpers";
 
 describe("collection() client query builder", () => {
+  it("orders null/undefined as the smallest values in both directions", () => {
+    const rows = [
+      { _id: "two", rank: 2 },
+      { _id: "null", rank: null },
+      { _id: "one", rank: 1 },
+      { _id: "missing", rank: undefined }
+    ];
+    expect(collection<(typeof rows)[number]>("rows").order("rank", "asc").run(rows).map((row) => row._id)).toEqual([
+      "null", "missing", "one", "two"
+    ]);
+    expect(collection<(typeof rows)[number]>("rows").order("rank", "desc").run(rows).map((row) => row._id)).toEqual([
+      "two", "one", "null", "missing"
+    ]);
+  });
+
   it("filters, orders, and limits the live derived view", async () => {
     const { engine } = createHarness({ transport: acceptAllTransport() });
     await engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "a" }).local;

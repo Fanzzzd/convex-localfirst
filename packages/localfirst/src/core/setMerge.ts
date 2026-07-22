@@ -41,10 +41,9 @@ export function applyCounterDelta(current: unknown, delta: number): number {
   return (typeof current === "number" ? current : 0) + delta;
 }
 
-/** Stable identity key for a set element. Strings (the common case: ids) key as-is;
- *  anything else by JSON so distinct shapes never collide and types don't alias. */
+/** Stable, type-tagged identity key for a set element. */
 function keyOf(element: unknown): string {
-  return typeof element === "string" ? element : JSON.stringify(element);
+  return `${typeof element}:${typeof element === "bigint" ? element : JSON.stringify(element)}`;
 }
 
 export function isSetDelta(value: unknown): value is SetDelta {

@@ -18,6 +18,11 @@ describe("set-field merge primitives", () => {
     expect(computeSetDelta(["a"], ["a"])).toEqual({ add: [], remove: [] }); // no-op
   });
 
+  it("keeps string and non-string elements distinct ([\"1\"] vs [1])", () => {
+    expect(computeSetDelta(["1"], [1])).toEqual({ add: [1], remove: ["1"] });
+    expect(applySetDelta(["1"], { add: [1], remove: [] })).toEqual(["1", 1]);
+  });
+
   it("applySetDelta keeps order, drops removes, appends new adds, idempotent", () => {
     expect(applySetDelta(["a", "b"], { add: ["c"], remove: [] })).toEqual(["a", "b", "c"]);
     expect(applySetDelta(["a", "b"], { add: [], remove: ["a"] })).toEqual(["b"]);

@@ -9,6 +9,8 @@
 // A type-surface guard test (publicApi.test.ts) asserts none of these leak into the
 // public index.
 export * from "./engine.js";
+export * from "./cache.js";
+export * from "./search.js";
 export * from "./rebase.js";
 export * from "./view.js";
 export { LF_METADATA_KEY, type LocalFirstFunctionMeta } from "./collect.js";

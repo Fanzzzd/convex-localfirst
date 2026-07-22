@@ -92,6 +92,8 @@ export function createHarness(
     clock?: () => number;
     manifest?: LocalFirstManifest;
     userId?: string;
+    clientId?: string;
+    syncTimeoutMs?: number;
   } = {}
 ): Harness {
   const store = options.store ?? new MemoryLocalStore();
@@ -100,13 +102,14 @@ export function createHarness(
   const engine = new LocalFirstEngine({
     manifest: options.manifest ?? createTodoManifest(),
     store,
-    clientId: "client_test",
+    clientId: options.clientId ?? "client_test",
     userId: options.userId ?? "user_a",
     transport: options.transport,
     nameOf: (reference) => String(reference),
     idFactory: () => `todos_local_${++ids}`,
     clock: options.clock ?? (() => now++),
     retry: options.retry,
+    syncTimeoutMs: options.syncTimeoutMs,
     sleep: options.sleep ?? (() => Promise.resolve())
   });
   return { store, engine, tick: () => now++ };

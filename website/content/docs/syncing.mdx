@@ -59,12 +59,16 @@ export const { push, pull } = createSyncFunctions({
   query,
   tables: collectTables({ todos, issues }),
   // Required only when a table is byWorkspace / byProject — see below.
-  async isMember(ctx, { userId, scopeValue, membershipTable }) {
-    const row = await ctx.db
-      .query(membershipTable)
-      .withIndex("by_user_ws", (q) => q.eq("userId", userId).eq("workspaceId", scopeValue))
-      .unique();
-    return row !== null;
+  access: {
+    // Called once per requested scope. Return a role (any value) to grant access,
+    // or null/undefined to deny both pull and push.
+    member: async (ctx, { userId, scopeValue, membershipTable }) => {
+      const row = await ctx.db
+        .query(membershipTable)
+        .withIndex("by_user_ws", (q) => q.eq("userId", userId).eq("workspaceId", scopeValue))
+        .unique();
+      return row?.role ?? null;
+    }
   }
 });
 ```
@@ -79,34 +83,42 @@ definition.)
 | `component` | `components.convexLocalFirst` from your generated api. |
 | `mutation` / `query` | The constructors from your `_generated/server`. |
 | `tables` | Which app tables are local-first, and how each is scoped. |
-| `isMember` | **Required if any table is `byWorkspace`/`byProject`.** The server-side membership check. |
+| `access` | **`access.member` is required if any table is `byWorkspace`/`byProject`.** The scope gate plus optional row-level `read`/`write` filters — see below. |
 | `schemaVersion` | Normally omitted — `collectTables` carries the version declared in `createLocalFirst`. |
 | `changeRetentionMs` | How long change-log entries live before opportunistic GC (default 30 days; `Infinity` disables). |
-| `visibility` | Per-table row-level read filter within an authorized scope — see below. |
 | `serverStamp` | Per-table server-minted insert fields (sequence numbers) — see below. |
+| `onWrite` | Runs transactionally once per first-accepted write (client push and `serverWriter`) — the hook for activities, notifications, counters. |
+| `getUserId` | Override the default authenticated id (`identity.tokenIdentifier`). |
 | `now` | Optional clock override (tests). |
 
-## Row-level visibility & server-minted fields
+## Row-level access & server-minted fields
 
-Two per-table hooks cover the patterns scope membership alone can't:
+`access` bundles three hooks. `member` is the scope gate (above); `read` and
+`write` are optional per-row filters within a scope the user already belongs to.
+`member` returns a **role** (any value you like — a string, an object) that
+`read`/`write` receive, so "viewer reads all, writes nothing" is representable.
 
-**`visibility`** filters *rows* within a scope the user already has access to —
-e.g. guests only see issues they created or are assigned:
+**`access.read`** filters *rows* — e.g. guests only see issues they created or
+are assigned:
 
 ```ts
-visibility: {
-  issues: async (ctx, { userId, row }) => {
-    const m = await memberRow(ctx, userId, row.workspace_id);
-    return m.role > GUEST || row.created_by === userId;
-  }
+access: {
+  member: async (ctx, { userId, scopeValue }) => await roleForWorkspace(ctx, userId, scopeValue),
+  read: (_ctx, { role, userId, row }) => role !== "guest" || row.created_by === userId,
+  // Called for every accepted op, including inserts.
+  write: (_ctx, { role, userId, action, before, proposed }) =>
+    role === "admin" ||
+    (role === "guest" &&
+      (action === "insert" ? proposed?.created_by === userId : before?.created_by === userId))
 }
 ```
 
-It applies everywhere: bootstrap rows are filtered; an incremental change to a
-row that *enters* visibility (say, the user gets assigned) arrives as a full-row
+`read` applies everywhere: bootstrap rows are filtered; an incremental change to
+a row that *enters* visibility (say, the user gets assigned) arrives as a full-row
 upsert (the client may lack the base row); one that *leaves* arrives as a delete
-(the client evicts it); and writes obey "can't see → can't touch" — a patch or
-delete of an invisible row is rejected.
+(the client evicts it). `write` runs on every accepted op (insert/patch/delete);
+when omitted, both `read` and `write` default to allowing members. A patch or
+delete of a row the user cannot read is always rejected ("can't see → can't touch").
 
 **`serverStamp`** merges server-minted fields into every insert (client push
 *and* `serverWriter`) — the pattern for atomic sequence numbers like `PROJ-123`:
@@ -166,9 +178,9 @@ changes that make old rows or old ops unreadable do.
 ## Membership (I7)
 
 For `byWorkspace` / `byProject` tables, **the server** decides access — never the
-client. Your `isMember` callback runs before any workspace write is accepted or
-any change is returned. If a `byWorkspace`/`byProject` table is declared without
-an `isMember`, `createSyncFunctions` throws a clear error rather than silently
+client. Your `access.member` callback runs before any workspace write is accepted
+or any change is returned. If a `byWorkspace`/`byProject` table is declared without
+an `access.member`, `createSyncFunctions` throws a clear error rather than silently
 allowing access.
 
 ## Trust model & current limitations

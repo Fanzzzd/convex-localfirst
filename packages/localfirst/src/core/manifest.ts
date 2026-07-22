@@ -40,6 +40,11 @@ export type LocalTableDefinition = {
   // instead of last-writer-wins whole-number replace — so concurrent edits to e.g. a
   // `vote_count` don't clobber. Opt-in: absent/empty = plain LWW. See setMerge.ts.
   readonly counterFields?: readonly string[];
+  // Fields fed to the local full-text search index, in priority order (earlier fields
+  // weigh more in ranking). Purely a CLIENT concern — the incremental inverted index
+  // (search.ts) is built from these and maintained from row deltas. Absent/empty = the
+  // table is not searchable (useSearch yields nothing). See search.ts.
+  readonly searchFields?: readonly string[];
 };
 
 export type LocalQueryContext = {

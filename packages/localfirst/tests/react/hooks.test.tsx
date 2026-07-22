@@ -38,7 +38,7 @@ vi.mock("convex/react", () => ({
 }));
 
 // Imported AFTER the mock so the wrapper picks up the stubbed convex/react.
-const { ConvexProvider, ConvexReactClient, collection, many, useLiveQuery, useMutation, useQuery, useSyncStatus } =
+const { ConvexProvider, ConvexReactClient, collection, many, useLiveQuery, useMutation, useQuery, useSearch, useSyncStatus } =
   await import("../../src/react/index");
 
 function manifest() {
@@ -49,7 +49,8 @@ function manifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        indexes: {}
+        indexes: {},
+        searchFields: ["text"]
       }),
       issues: localTable({
         table: "issues",
@@ -159,7 +160,43 @@ function LiveTodos() {
   );
 }
 
+function SearchTodos({ query }: { query: string }) {
+  const { results, total } = useSearch<RowValue>("todos", query);
+  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>("todos:create");
+  return (
+    <div>
+      <span data-testid="search-total">{total}</span>
+      <span data-testid="search-ids">{results.map((r) => r._id).join(",")}</span>
+      <button
+        type="button"
+        onClick={() => {
+          captured = create({ localId: "t1", listId: "inbox", text: "Fix the login bug" }) as LocalFirstMutationCall<unknown>;
+        }}
+      >
+        addsearch
+      </button>
+    </div>
+  );
+}
+
 describe("react hooks", () => {
+  it("useSearch returns empty for an empty query and finds a row after it is created (delta-driven)", async () => {
+    render(wrap(<SearchTodos query="" />));
+    // Empty query → empty result, zero cost (no subscription).
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("0"));
+    cleanup();
+
+    render(wrap(<SearchTodos query="login" />));
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("0"));
+    await act(async () => {
+      screen.getByText("addsearch").click();
+      await captured?.local;
+    });
+    // The optimistic insert flows through the delta bus into the index and the live search.
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("1"));
+    expect(screen.getByTestId("search-ids").textContent).toBe("t1");
+  });
+
   it("useLiveQuery fails closed for a workspace table queried without .scope() (no cross-workspace leak)", async () => {
     const store = new MemoryLocalStore();
     await store.applyServerChange({

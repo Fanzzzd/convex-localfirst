@@ -15,16 +15,18 @@ function makeCtx() {
   const rows = new Map<string, any>();
 
   const lf = {
-    ops: { getByOpId: "ops.getByOpId", record: "ops.record" },
+    ops: { getByOpId: "ops.getByOpId" },
     idMaps: { get: "idMaps.get", put: "idMaps.put" },
     changes: {
       append: "changes.append",
+      commitOp: "changes.commitOp",
       listAfter: "changes.listAfter",
       latestVersion: "changes.latestVersion",
       scopeForLocal: "changes.scopeForLocal",
       firstId: "changes.firstId",
       lastId: "changes.lastId",
-      listVersions: "changes.listVersions"
+      listVersions: "changes.listVersions",
+      gc: "changes.gc"
     }
   };
 
@@ -66,9 +68,43 @@ function makeCtx() {
 
   const runMutation = async (fn: string, a: any) => {
     switch (fn) {
-      case "ops.record":
-        ops.set(`${a.userId}:${a.opId}`, { status: a.status, resultJson: a.resultJson, changesJson: a.changesJson, error: a.error });
-        return;
+      case "changes.commitOp": {
+        let change = null;
+        let changesJson: string | undefined;
+        if (a.change) {
+          const changeId = String(++changeSeq).padStart(12, "0");
+          change = { changeId, ...a.change };
+          changes.push(change);
+          rowVersions.set(`${a.change.table}:${a.change.localId}`, {
+            table: a.change.table,
+            localId: a.change.localId,
+            rowKey: `${a.change.table}:${a.change.localId}`,
+            scopeKey: a.change.scopeKey,
+            version: a.change.version
+          });
+          changesJson = JSON.stringify([
+            {
+              changeId,
+              scopeKey: a.change.scopeKey,
+              table: a.change.table,
+              localId: a.change.localId,
+              kind: a.change.kind,
+              ...(a.change.dataJson ? { data: JSON.parse(a.change.dataJson) } : {}),
+              ...(a.change.patchJson ? { patch: JSON.parse(a.change.patchJson) } : {}),
+              version: a.change.version,
+              serverTime: a.change.serverTime,
+              opId: a.change.opId
+            }
+          ]);
+        }
+        ops.set(`${a.userId}:${a.opId}`, {
+          schemaVersion: a.schemaVersion,
+          status: a.status,
+          changesJson,
+          error: a.error
+        });
+        return { change };
+      }
       case "idMaps.put":
         idMaps.set(`${a.table}:${a.localId}`, a.serverId);
         return;
@@ -84,6 +120,8 @@ function makeCtx() {
         });
         return changeId;
       }
+      case "changes.gc":
+        return { ops: 0, changes: 0, done: true };
       default:
         throw new Error(`unexpected runMutation ${fn}`);
     }
@@ -117,7 +155,13 @@ describe("createSyncFunctions", () => {
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } },
+      tables: {
+        todos: {
+          scope: { kind: "byUser", field: "ownerId" },
+          idField: "localId",
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
+        }
+      },
       devUnsafeAllowClientUserId: true // local demo ctx has no auth identity
     }) as unknown as { push: any; pull: any };
 
@@ -168,9 +212,10 @@ describe("createSyncFunctions", () => {
         issues: {
           scope: { kind: "byWorkspace", workspaceIdField: "workspaceId", membershipTable: "ws_members" },
           idField: "localId",
+          mutations: { "issues:create": { kind: "insert", fields: ["workspaceId", "localId", "title"] } }
         }
       },
-      isMember: async () => false,
+      access: { member: async () => null },
       devUnsafeAllowClientUserId: true
     }) as unknown as { push: any };
 
@@ -202,7 +247,13 @@ describe("createSyncFunctions", () => {
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
+      tables: {
+        todos: {
+          scope: { kind: "byUser", field: "ownerId" },
+          idField: "localId",
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
+        }
+      }
     }) as unknown as { push: any };
 
     await expect(
@@ -210,14 +261,20 @@ describe("createSyncFunctions", () => {
     ).rejects.toThrow(/authenticated identity/);
   });
 
-  it("derives userId from auth, ignoring the client-supplied userId (I7)", async () => {
+  it("derives userId from identity.tokenIdentifier, ignoring subject and the client value", async () => {
     const { ctx, lf, rows } = makeCtx();
-    (ctx.auth as any).getUserIdentity = async () => ({ subject: "real-user" });
+    (ctx.auth as any).getUserIdentity = async () => ({ subject: "issuer-local", tokenIdentifier: "issuer|real-user" });
     const { push } = createSyncFunctions({
       component: lf,
       mutation: (d) => d,
       query: (d) => d,
-      tables: { todos: { scope: { kind: "byUser", field: "ownerId" }, idField: "localId" } }
+      tables: {
+        todos: {
+          scope: { kind: "byUser", field: "ownerId" },
+          idField: "localId",
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
+        }
+      }
     }) as unknown as { push: any };
 
     await push.handler(ctx, {
@@ -228,6 +285,33 @@ describe("createSyncFunctions", () => {
         { opId: "op1", clientId: "c1", schemaVersion: 1, functionName: "todos:create", table: "todos", kind: "insert" as const, localId: "l1", value: { ownerId: "attacker", text: "x" } }
       ]
     });
-    expect([...rows.values()][0]).toMatchObject({ ownerId: "real-user" });
+    expect([...rows.values()][0]).toMatchObject({ ownerId: "issuer|real-user" });
+  });
+
+  it("lets getUserId override the default identity mapping", async () => {
+    const { ctx, lf, rows } = makeCtx();
+    const { push } = createSyncFunctions({
+      component: lf,
+      mutation: (d) => d,
+      query: (d) => d,
+      getUserId: async () => "mapped-user",
+      tables: {
+        todos: {
+          scope: { kind: "byUser", field: "ownerId" },
+          idField: "localId",
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
+        }
+      }
+    }) as unknown as { push: any };
+    await push.handler(ctx, {
+      clientId: "c1",
+      userId: "attacker",
+      schemaVersion: 1,
+      mutations: [{
+        opId: "op1", clientId: "c1", schemaVersion: 1, functionName: "todos:create",
+        table: "todos", kind: "insert", localId: "l1", value: { text: "x" }
+      }]
+    });
+    expect([...rows.values()][0]).toMatchObject({ ownerId: "mapped-user" });
   });
 });
