@@ -30,6 +30,7 @@ import {
   type FilterParseError,
   type FilterParseResult,
   type FilterSpec,
+  type LocalFirstBatchCall,
   type LocalFirstMutationCall,
   type LocalQueryCountResult,
   type LocalQueryPlan,
@@ -81,6 +82,7 @@ export type {
   FilterParseResult,
   FilterSpec,
   LocalDb,
+  LocalFirstBatchCall,
   LocalQueryPlan,
   ManyRelationDescriptor,
   OneRelationDescriptor,
@@ -104,7 +106,7 @@ const EMPTY_STATUS: SyncStatus = {
   lastError: null,
   blockedBySchemaMismatch: false,
   partial: false,
-  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [] }
+  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [], failedGroups: [] }
 };
 
 export type LocalFirstProviderConfig = {
@@ -899,6 +901,38 @@ export function useMutation<Mutation extends FunctionReference<"mutation">>(
     // reference is read at call time; refKey is its stable identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, convexMutation, isLocal, refKey]);
+}
+
+/**
+ * Run several local-first mutations as ONE atomic write group (DX v4 §5): they apply
+ * optimistically in order, push together in a single request, and the server commits or
+ * rejects them as a unit (a rejected group reverts every op and surfaces once in
+ * `useSyncRecovery().failedGroups`). The returned function takes a callback that issues
+ * the mutations — sync or async, but it must NOT await a batched call's `.server` inside
+ * the callback (the group hasn't been dispatched yet). Read a fresh insert's id
+ * synchronously from the call's `.id` for insert-then-patch-same-row.
+ *
+ * ```tsx
+ * const batch = useBatch();
+ * const create = useMutation(api.issues.create);
+ * const comment = useMutation(api.comments.create);
+ * await batch(() => {
+ *   const { id } = create({ ... });
+ *   comment({ issue_id: id, ... });
+ * }).local;
+ * ```
+ */
+export function useBatch(): <T = unknown>(fn: () => void | Promise<void>) => LocalFirstBatchCall<T> {
+  const engine = useLocalFirstEngine();
+  return useCallback(
+    <T = unknown>(fn: () => void | Promise<void>): LocalFirstBatchCall<T> => {
+      if (!engine) {
+        throw new Error("useBatch: no local-first engine (mount inside ConvexProvider with localFirst).");
+      }
+      return engine.batch<T>(fn);
+    },
+    [engine]
+  );
 }
 
 export function useSyncStatus(): SyncStatus {

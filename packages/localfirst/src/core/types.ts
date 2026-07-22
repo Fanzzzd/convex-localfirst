@@ -65,6 +65,18 @@ export type LocalOperation = {
   readonly createdAt: number;
   readonly status: OperationStatus;
   readonly error?: string;
+  /**
+   * Atomic write group (DX v4 §5, engine.batch/useBatch). When present, this op is
+   * one member of a group that lands or rejects on the server TOGETHER: the group is
+   * pushed contiguously in one request, applied transactionally, and reverts as one
+   * unit if rejected. ABSENT means ungrouped — exactly the single-op behavior of every
+   * prior release (a 0.3.x client emits no group fields; the server treats their
+   * absence as ungrouped). `groupId` is shared by all members; `groupSize` is the total
+   * member count; `groupIndex` is this op's 0-based position (the intra-group order).
+   */
+  readonly groupId?: string;
+  readonly groupSize?: number;
+  readonly groupIndex?: number;
 };
 
 export type ServerChangeKind = "insert" | "patch" | "delete" | "replace";
@@ -185,6 +197,27 @@ export type RecoveryStatus = {
    *  server finalize. The metadata row stays synced and the local blob is RETAINED
    *  (never evicted before a confirmed finalize), so the app can offer a retry. */
   readonly failedAttachments: readonly AttachmentRecovery[];
+  /**
+   * Atomic write groups (engine.batch) the server rejected as a unit. ONE entry per
+   * rejected group — not one per member op — so recovery UI surfaces "the create-issue
+   * batch failed" once instead of N times. Its member ops are excluded from
+   * `rejectedOperations` (which stays exactly the ungrouped-rejection list every prior
+   * release produced). Empty unless the app uses batches.
+   */
+  readonly failedGroups: readonly RecoveryGroup[];
+};
+
+/** A rejected atomic write group, surfaced once in recovery. `opIds` are its member
+ *  operation ids (in group order); `error` is the group rejection reason
+ *  (`groupRejected: <first failing reason>`). */
+export type RecoveryGroup = {
+  readonly groupId: string;
+  readonly opIds: readonly string[];
+  /** The member ops' tables (deduped) — usually one, but a group can span tables. */
+  readonly tables: readonly TableName[];
+  readonly schemaVersion: number;
+  readonly createdAt: number;
+  readonly error?: string;
 };
 
 /** A durable attachment upload that needs app/user recovery. The blob is still in

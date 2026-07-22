@@ -445,6 +445,12 @@ export function createSyncFunctions<
     localId: v.string(),
     value: v.optional(v.any()),
     patch: v.optional(v.any()),
+    // Atomic write group (DX v4 §5). OPTIONAL: absent means ungrouped — an older client
+    // bundle sends none and its ops process one at a time, exactly as before. When
+    // present, handlePush applies the whole group transactionally.
+    groupId: v.optional(v.string()),
+    groupSize: v.optional(v.number()),
+    groupIndex: v.optional(v.number()),
     // Legacy field older client bundles still send (was the timestampLww logical
     // clock). Accepted and ignored so their queued offline ops keep pushing.
     timestamp: v.optional(v.number())

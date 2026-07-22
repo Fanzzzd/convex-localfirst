@@ -56,6 +56,15 @@ export type ServerOperation = {
   readonly localId: string;
   readonly value?: Record<string, unknown>;
   readonly patch?: Record<string, unknown>;
+  /**
+   * Atomic write group (DX v4 §5). ABSENT ⇒ ungrouped ⇒ the exact single-op behavior of
+   * every prior release (a 0.3.x client sends none). When present, all ops sharing a
+   * `groupId` in one push are validated together (against an in-memory overlay of the
+   * group's own effects) and either all applied or all rejected.
+   */
+  readonly groupId?: string;
+  readonly groupSize?: number;
+  readonly groupIndex?: number;
 };
 
 export type StoredChange = {
@@ -508,92 +517,302 @@ export async function handlePush(store: ServerStore, config: SyncConfig, input: 
     return { ...result, schemaMismatch: true };
   }
 
+  // Partition into ordered segments: each ungrouped op is its own segment; ops sharing a
+  // groupId form one group segment (gathered in first-appearance order — the client sends
+  // them contiguously anyway). Ungrouped ops process exactly as every prior release did.
+  const segments: Array<{ kind: "single"; op: ServerOperation } | { kind: "group"; ops: ServerOperation[] }> = [];
+  const groupIndex = new Map<string, number>();
   for (const op of input.mutations) {
-    // I2: idempotency — a known opId is never re-applied (keyed by (userId, opId) so a
-    // reload/new-tab replay under a different envelope clientId is still deduped).
-    const prior = await store.getLedger(input.userId, op.opId);
-    if (prior) {
-      if (prior.schemaVersion !== input.schemaVersion) {
-        result.rejected.push({ opId: op.opId, message: "schemaMismatch" });
-        continue;
-      }
-      if (prior.status === "accepted") {
-        result.accepted.push({ opId: op.opId });
-        // Re-deliver the confirming change so a replayed (already-committed) op can
-        // leave _pending even if its original ack was lost. The client version-checks
-        // it (nextCanonicalRow), so re-applying a now-stale change is ignored — never a
-        // regression. The server log is NOT re-appended (this is read from the ledger).
-        if (prior.changes) {
-          result.changes.push(...prior.changes);
-        }
-      } else {
-        result.rejected.push({ opId: op.opId, message: prior.error ?? "rejected" });
-      }
+    if (op.groupId === undefined) {
+      segments.push({ kind: "single", op });
       continue;
     }
-
-    // I8: an op carries the schema it was BUILT under. The envelope already matches the
-    // server (checked above), so a per-op mismatch means a stale offline op queued before
-    // a client schema upgrade. Applying it under the new schema can silently corrupt
-    // (changed field meaning, new required field). Reject it loudly — the client must
-    // migrate queued ops before pushing — rather than commit semantically stale data.
-    if (op.schemaVersion !== input.schemaVersion) {
-      const message = `Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`;
-      result.rejected.push({ opId: op.opId, message });
-      await store.commitOp(input.userId, op, { status: "rejected", error: message });
-      continue;
+    const at = groupIndex.get(op.groupId);
+    if (at === undefined) {
+      groupIndex.set(op.groupId, segments.length);
+      segments.push({ kind: "group", ops: [op] });
+    } else {
+      (segments[at] as { kind: "group"; ops: ServerOperation[] }).ops.push(op);
     }
+  }
 
-    const tableConfig = config.tables[op.table];
-    if (!tableConfig) {
-      const message = "unknownFunction";
-      result.rejected.push({ opId: op.opId, message });
-      await store.commitOp(input.userId, op, { status: "rejected", error: message });
-      continue;
-    }
-
-    try {
-      validateDeclaredMutation(tableConfig, op);
-      const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
-      await runOnWrite(config, op.table, {
-        table: op.table,
-        action: op.kind,
-        before: applied.before,
-        after: applied.after,
-        userId: input.userId,
-        functionName: op.functionName
-      });
-      // change === null is an idempotent no-op delete (row already gone): still ack it
-      // so the client stops retrying, and ledger it for opId idempotency. Do NOT echo
-      // serverId on a no-op — the row is gone, so its internal id must not leak.
-      const serverResult =
-        applied.change === null
-          ? { ok: true, localId: op.localId, noop: true }
-          : { ok: true, localId: op.localId, serverId: applied.serverId };
-      const change = await store.commitOp(
-        input.userId,
-        op,
-        { status: "accepted" },
-        applied.change ?? undefined,
-        applied.serverId
-      );
-      if (change) result.changes.push(change);
-      if (op.kind === "insert" && applied.serverId) {
-        result.idMaps.push({ table: op.table, localId: op.localId, serverId: applied.serverId });
-      }
-      result.accepted.push({ opId: op.opId, serverResult });
-    } catch (error) {
-      // Only validation/authorization failures are downgraded to per-op
-      // rejections. Anything else may have followed a row write or onWrite side
-      // effect, so rethrowing aborts the whole transaction.
-      if (!(error instanceof RejectOp)) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      await store.commitOp(input.userId, op, { status: "rejected", error: message });
-      result.rejected.push({ opId: op.opId, message });
+  for (const segment of segments) {
+    if (segment.kind === "single") {
+      await processPushOp(store, config, memberCache, input, segment.op, serverTime, result);
+    } else {
+      await processPushGroup(store, config, memberCache, input, segment.ops, serverTime, result);
     }
   }
 
   return result;
+}
+
+/** Ledger replay for a known opId (shared by the single-op and group paths). Returns true
+ *  when the op was decided previously and this call re-emitted its stored outcome. */
+async function replayFromLedger(
+  store: ServerStore,
+  input: PushInput,
+  op: ServerOperation,
+  prior: LedgerEntry,
+  result: PushResult
+): Promise<void> {
+  if (prior.schemaVersion !== input.schemaVersion) {
+    result.rejected.push({ opId: op.opId, message: "schemaMismatch" });
+    return;
+  }
+  if (prior.status === "accepted") {
+    result.accepted.push({ opId: op.opId });
+    // Re-deliver the confirming change so a replayed (already-committed) op can leave
+    // _pending even if its original ack was lost. The client version-checks it, so
+    // re-applying a now-stale change is ignored — never a regression.
+    if (prior.changes) result.changes.push(...prior.changes);
+  } else {
+    result.rejected.push({ opId: op.opId, message: prior.error ?? "rejected" });
+  }
+}
+
+/** Process one ungrouped op: idempotency replay, per-op schema/table gates, then
+ *  validate + apply + commit. This is the historical per-op body, unchanged. */
+async function processPushOp(
+  store: ServerStore,
+  config: SyncConfig,
+  memberCache: MemberCache,
+  input: PushInput,
+  op: ServerOperation,
+  serverTime: number,
+  result: PushResult
+): Promise<void> {
+  // I2: idempotency — a known opId is never re-applied (keyed by (userId, opId) so a
+  // reload/new-tab replay under a different envelope clientId is still deduped).
+  const prior = await store.getLedger(input.userId, op.opId);
+  if (prior) {
+    await replayFromLedger(store, input, op, prior, result);
+    return;
+  }
+
+  // I8: an op carries the schema it was BUILT under. The envelope already matches the
+  // server (checked above), so a per-op mismatch means a stale offline op queued before
+  // a client schema upgrade. Applying it under the new schema can silently corrupt
+  // (changed field meaning, new required field). Reject it loudly — the client must
+  // migrate queued ops before pushing — rather than commit semantically stale data.
+  if (op.schemaVersion !== input.schemaVersion) {
+    const message = `Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`;
+    result.rejected.push({ opId: op.opId, message });
+    await store.commitOp(input.userId, op, { status: "rejected", error: message });
+    return;
+  }
+
+  const tableConfig = config.tables[op.table];
+  if (!tableConfig) {
+    const message = "unknownFunction";
+    result.rejected.push({ opId: op.opId, message });
+    await store.commitOp(input.userId, op, { status: "rejected", error: message });
+    return;
+  }
+
+  try {
+    validateDeclaredMutation(tableConfig, op);
+    const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
+    await runOnWrite(config, op.table, {
+      table: op.table,
+      action: op.kind,
+      before: applied.before,
+      after: applied.after,
+      userId: input.userId,
+      functionName: op.functionName
+    });
+    // change === null is an idempotent no-op delete (row already gone): still ack it
+    // so the client stops retrying, and ledger it for opId idempotency. Do NOT echo
+    // serverId on a no-op — the row is gone, so its internal id must not leak.
+    const serverResult =
+      applied.change === null
+        ? { ok: true, localId: op.localId, noop: true }
+        : { ok: true, localId: op.localId, serverId: applied.serverId };
+    const change = await store.commitOp(
+      input.userId,
+      op,
+      { status: "accepted" },
+      applied.change ?? undefined,
+      applied.serverId
+    );
+    if (change) result.changes.push(change);
+    if (op.kind === "insert" && applied.serverId) {
+      result.idMaps.push({ table: op.table, localId: op.localId, serverId: applied.serverId });
+    }
+    result.accepted.push({ opId: op.opId, serverResult });
+  } catch (error) {
+    // Only validation/authorization failures are downgraded to per-op
+    // rejections. Anything else may have followed a row write or onWrite side
+    // effect, so rethrowing aborts the whole transaction.
+    if (!(error instanceof RejectOp)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    await store.commitOp(input.userId, op, { status: "rejected", error: message });
+    result.rejected.push({ opId: op.opId, message });
+  }
+}
+
+/**
+ * Apply an atomic write group (DX v4 §5). Either every member op commits or none does,
+ * with one rejection entry per op on failure. The group is validated FIRST against an
+ * in-memory overlay of its own in-group effects (a later patch sees an earlier insert)
+ * WITHOUT touching the db; only when all pass are the ops applied for real, in order.
+ * commitOp per op shares the caller's transaction, so the group commits all-or-nothing.
+ */
+async function processPushGroup(
+  store: ServerStore,
+  config: SyncConfig,
+  memberCache: MemberCache,
+  input: PushInput,
+  ops: readonly ServerOperation[],
+  serverTime: number,
+  result: PushResult
+): Promise<void> {
+  // Idempotency: a decided group has a ledger entry for EVERY member (commitOp per op
+  // shares one transaction, so it is all-committed or none). Replaying any subset re-emits
+  // each member's stored outcome — accepted re-acks with its change, rejected re-rejects.
+  const priors = await Promise.all(ops.map((op) => store.getLedger(input.userId, op.opId)));
+  if (priors.some((prior) => prior !== null)) {
+    for (let i = 0; i < ops.length; i++) {
+      const prior = priors[i];
+      if (prior) {
+        await replayFromLedger(store, input, ops[i]!, prior, result);
+      } else {
+        // Defensive: a decided group missing a member (should be unreachable given
+        // transactional commit). Reject it so the client surfaces it rather than
+        // silently landing a partial group.
+        const message = "groupReplayIncomplete";
+        result.rejected.push({ opId: ops[i]!.opId, message });
+        await store.commitOp(input.userId, ops[i]!, { status: "rejected", error: message });
+      }
+    }
+    return;
+  }
+
+  const rejectWholeGroup = async (reason: string): Promise<void> => {
+    // Zero side effects: ledger each member rejected (so a replay re-rejects) and emit one
+    // rejection entry per op. No row/onWrite/change writes happened.
+    for (const op of ops) {
+      result.rejected.push({ opId: op.opId, message: reason });
+      await store.commitOp(input.userId, op, { status: "rejected", error: reason });
+    }
+  };
+
+  // Pre-checks that don't need the overlay: a per-op schema/table failure fails the WHOLE
+  // group (all-or-nothing), mirroring how the validation pass treats any single failure.
+  for (const op of ops) {
+    if (op.schemaVersion !== input.schemaVersion) {
+      await rejectWholeGroup(
+        `groupRejected: Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`
+      );
+      return;
+    }
+    if (!config.tables[op.table]) {
+      await rejectWholeGroup("groupRejected: unknownFunction");
+      return;
+    }
+  }
+
+  // Validation pass: run each op through applyOp against an OVERLAY store, in order, so a
+  // later patch/delete sees an earlier insert's simulated row. Writes hit only the overlay
+  // — the real db is untouched — so a failing group leaves zero side effects. serverStamp
+  // is skipped here (server-only fields don't affect authz; the real mint runs in the
+  // apply pass), avoiding a double mint of sequence numbers.
+  const overlay = createOverlayStore(store);
+  let failReason: string | null = null;
+  for (const op of ops) {
+    const tableConfig = config.tables[op.table]!;
+    try {
+      validateDeclaredMutation(tableConfig, op);
+      await applyOp(overlay, config, { ...tableConfig, serverStamp: undefined }, memberCache, input.userId, op, serverTime);
+    } catch (error) {
+      if (!(error instanceof RejectOp)) throw error; // a real error aborts the whole push
+      failReason = error instanceof Error ? error.message : String(error);
+      break;
+    }
+  }
+  if (failReason !== null) {
+    await rejectWholeGroup(`groupRejected: ${failReason}`);
+    return;
+  }
+
+  // Apply pass: all validated — commit each op for real, in order. Each op sees prior
+  // members' real writes (they are committed before it runs), so no overlay is needed.
+  for (const op of ops) {
+    const tableConfig = config.tables[op.table]!;
+    const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
+    await runOnWrite(config, op.table, {
+      table: op.table,
+      action: op.kind,
+      before: applied.before,
+      after: applied.after,
+      userId: input.userId,
+      functionName: op.functionName
+    });
+    const serverResult =
+      applied.change === null
+        ? { ok: true, localId: op.localId, noop: true }
+        : { ok: true, localId: op.localId, serverId: applied.serverId };
+    const change = await store.commitOp(input.userId, op, { status: "accepted" }, applied.change ?? undefined, applied.serverId);
+    if (change) result.changes.push(change);
+    if (op.kind === "insert" && applied.serverId) {
+      result.idMaps.push({ table: op.table, localId: op.localId, serverId: applied.serverId });
+    }
+    result.accepted.push({ opId: op.opId, serverResult });
+  }
+}
+
+/**
+ * An in-memory overlay over a real ServerStore for the group validation pass. Reads layer
+ * the overlay on top of the real store; writes (insert/patch/delete/id-map) mutate ONLY
+ * the overlay, so validating a group never touches the db. Every OTHER member (versions,
+ * scope, and any extra field an access.member hook reads off a custom store) falls through
+ * to the REAL store via a Proxy; commitOp/appendChange are never reached during validation.
+ */
+function createOverlayStore(real: ServerStore): ServerStore {
+  const rows = new Map<string, Record<string, unknown> | null>(); // null = simulated delete
+  const ids = new Map<string, string>();
+  let serverIdSeq = 0;
+  const rowKey = (table: string, serverId: string) => `${table} ${serverId}`;
+  const idKey = (table: string, localId: string) => `${table} ${localId}`;
+  const overrides: Partial<ServerStore> = {
+    async getRow(table, serverId) {
+      const key = rowKey(table, serverId);
+      if (rows.has(key)) return rows.get(key) ?? null;
+      return await real.getRow(table, serverId);
+    },
+    async insertRow(table, data) {
+      const serverId = `ovl_${++serverIdSeq}`;
+      rows.set(rowKey(table, serverId), { ...data });
+      return serverId;
+    },
+    async patchRow(table, serverId, patch) {
+      const key = rowKey(table, serverId);
+      const current = rows.has(key) ? rows.get(key) : await real.getRow(table, serverId);
+      rows.set(key, { ...(current ?? {}), ...patch });
+    },
+    async deleteRow(table, serverId) {
+      rows.set(rowKey(table, serverId), null);
+    },
+    async getServerId(table, localId) {
+      const key = idKey(table, localId);
+      if (ids.has(key)) return ids.get(key) ?? null;
+      return await real.getServerId(table, localId);
+    },
+    async putIdMap(_userId, table, localId, serverId) {
+      ids.set(idKey(table, localId), serverId);
+    }
+  };
+  // Every other member (versions/scope, and any extra field an access.member hook reads
+  // off a custom store) falls through to the REAL store, so authorization sees real data.
+  return new Proxy(real as object, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && Object.prototype.hasOwnProperty.call(overrides, prop)) {
+        return (overrides as Record<string, unknown>)[prop];
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as ServerStore;
 }
 
 function validateDeclaredMutation(table: ServerTableConfig, op: ServerOperation): void {

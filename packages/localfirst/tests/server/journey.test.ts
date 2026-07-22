@@ -285,4 +285,75 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
     expect(rows).toHaveLength(0);
     expect(await engineA.store.getPendingOperations()).toHaveLength(0);
   });
+
+  it("offline batch → reload → the group lands ATOMICALLY on the server and a 2nd client converges", async () => {
+    const server = new MemoryServerStore();
+    const net = { online: true };
+    const client = {
+      mutation: async (_ref: unknown, args: Record<string, unknown>) => handlePush(server, config, args as never),
+      query: async (_ref: unknown, args: Record<string, unknown>) =>
+        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} })
+    };
+    const gate = (clientId: string): SyncTransport => {
+      const real = createConvexTransport({ client, push: "PUSH", pull: "PULL", clientId, userId: USER });
+      return {
+        push: (r) => (net.online ? real.push(r) : Promise.reject(new Error("offline"))),
+        pull: (r) => (net.online ? real.pull(r) : Promise.reject(new Error("offline")))
+      };
+    };
+    const storeA = new MemoryLocalStore();
+    const newEngineA = () =>
+      new LocalFirstEngine({
+        manifest: manifest(),
+        store: storeA,
+        clientId: "client_a",
+        userId: USER,
+        transport: gate("client_a"),
+        nameOf: (r) => String(r),
+        sleep: noSleep
+      });
+    let engineA = newEngineA();
+
+    // Offline batch: create t1, create t2, then toggle t1 — an insert-then-patch-same-row
+    // group that must land or reject together.
+    net.online = false;
+    const batch = engineA.batch(() => {
+      engineA.mutate<Todo, unknown>("todos:create", { localId: "t1", listId: "inbox", text: "one", done: false });
+      engineA.mutate<Todo, unknown>("todos:create", { localId: "t2", listId: "inbox", text: "two", done: false });
+      engineA.mutate<{ localId: string; done: boolean }, unknown>("todos:toggle", { localId: "t1", done: true });
+    });
+    await batch.local;
+    let rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.localId === "t1")?.done).toBe(true);
+
+    // Reload while still offline: drop the engine, keep the durable store (crash safety).
+    engineA.dispose();
+    engineA = newEngineA();
+
+    // Back online → drain. The whole group is pushed together and applied atomically.
+    net.online = true;
+    await engineA.syncOnce([SCOPE]);
+    expect(server.rows.get("todos")?.size).toBe(2);
+    const t1srv = [...(server.rows.get("todos")?.values() ?? [])].find((r) => r.localId === "t1");
+    expect(t1srv?.done).toBe(true);
+    // Ledgered accepted for every member op.
+    expect(server.ledger.size).toBe(3);
+
+    // A second client pulls the whole group and converges.
+    const storeB = new MemoryLocalStore();
+    const engineB = new LocalFirstEngine({
+      manifest: manifest(),
+      store: storeB,
+      clientId: "client_b",
+      userId: USER,
+      transport: gate("client_b"),
+      nameOf: (r) => String(r),
+      sleep: noSleep
+    });
+    await engineB.syncOnce([SCOPE]);
+    const bRows = (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    expect(bRows).toHaveLength(2);
+    expect(bRows.find((r) => r.localId === "t1")?.done).toBe(true);
+  });
 });

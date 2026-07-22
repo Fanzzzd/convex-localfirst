@@ -94,6 +94,7 @@ export function createHarness(
     userId?: string;
     clientId?: string;
     syncTimeoutMs?: number;
+    maxPushBatch?: number;
   } = {}
 ): Harness {
   const store = options.store ?? new MemoryLocalStore();
@@ -110,6 +111,7 @@ export function createHarness(
     clock: options.clock ?? (() => now++),
     retry: options.retry,
     syncTimeoutMs: options.syncTimeoutMs,
+    maxPushBatch: options.maxPushBatch,
     sleep: options.sleep ?? (() => Promise.resolve())
   });
   return { store, engine, tick: () => now++ };

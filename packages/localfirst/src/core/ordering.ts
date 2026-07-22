@@ -9,6 +9,19 @@ export function compareOperations(left: LocalOperation, right: LocalOperation): 
   if (left.createdAt !== right.createdAt) {
     return left.createdAt - right.createdAt;
   }
+  // Atomic write groups: members carry a contiguous createdAt block assigned in one
+  // synchronous pass, so this rarely engages — but if two members ever share a
+  // createdAt, groupIndex is the authoritative intra-group order (so an insert never
+  // sorts after the patch that depends on it). Only applies within one group.
+  if (
+    left.groupId !== undefined &&
+    left.groupId === right.groupId &&
+    left.groupIndex !== undefined &&
+    right.groupIndex !== undefined &&
+    left.groupIndex !== right.groupIndex
+  ) {
+    return left.groupIndex - right.groupIndex;
+  }
   if (left.opId < right.opId) {
     return -1;
   }

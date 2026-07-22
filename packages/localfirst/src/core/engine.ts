@@ -12,7 +12,12 @@ import { createDefaultIdFactory, createOpId, type IdFactory } from "./id.js";
 import type { FunctionNameResolver } from "./functionName.js";
 import { defaultFunctionName } from "./functionName.js";
 import type { LocalFirstManifest, LocalMutationDefinition, LocalQueryDefinition } from "./manifest.js";
-import { createLocalFirstMutationCall, type LocalFirstMutationCall } from "./mutationCall.js";
+import {
+  createLocalFirstBatchCall,
+  createLocalFirstMutationCall,
+  type LocalFirstBatchCall,
+  type LocalFirstMutationCall
+} from "./mutationCall.js";
 import {
   computeCounterDelta,
   computeSetDelta,
@@ -29,8 +34,10 @@ import type {
   AttachmentUploadState,
   FunctionName,
   LocalCommit,
+  LocalId,
   LocalOperation,
   MutationStatus,
+  RecoveryGroup,
   RecoveryOperation,
   RecoveryStatus,
   RowDelta,
@@ -61,6 +68,14 @@ export type LocalFirstEngineOptions = {
    * guard, which handles a hard OS-offline.
    */
   readonly syncTimeoutMs?: number;
+  /**
+   * Soft cap on how many operations one push request carries (default Infinity — the
+   * whole outbox goes in one request, exactly as before). Atomic write groups are NEVER
+   * split across requests: if adding a group would exceed the cap, the current request is
+   * flushed first and the group starts the next one (a single group larger than the cap
+   * still ships whole). Mostly a knob for tests and very large backlogs.
+   */
+  readonly maxPushBatch?: number;
   /** Offline-capable attachment pipeline (P5). Absent → createAttachment throws a
    *  configuration error; everything else works unchanged. */
   readonly attachments?: {
@@ -79,6 +94,64 @@ const MAX_PULL_ROUNDS = 10000;
 export type OperationOutcome =
   | { readonly opId: string; readonly status: "acked"; readonly result: unknown }
   | { readonly opId: string; readonly status: "rejected"; readonly error: string };
+
+/** One collected member of an in-flight atomic write group (engine.batch). Its op is
+ *  built (with the group tag) and committed only when the batch's fn settles. */
+type PlannedBatchOp = {
+  readonly opId: string;
+  readonly id: LocalId;
+  readonly buildOperation: (
+    createdAt: number,
+    group: { groupId: string; groupSize: number; groupIndex: number }
+  ) => LocalOperation;
+  readonly resolveLocal: (commit: LocalCommit) => void;
+  readonly rejectLocal: (error: Error) => void;
+  readonly resolveServer: (value: unknown) => void;
+  readonly rejectServer: (error: Error) => void;
+};
+
+/** The mutable context for one engine.batch(fn) call. `active` is true only while fn is
+ *  running (or awaiting), gating the "don't await .server inside fn" error. */
+type BatchContext = {
+  readonly groupId: string;
+  active: boolean;
+  readonly planned: PlannedBatchOp[];
+};
+
+/**
+ * Split ordered pending ops into request-sized chunks that never split an atomic group.
+ * Groups are contiguous in the input (their createdAt block is reserved in one pass), so
+ * a group is a maximal run of ops sharing a groupId. A group is added whole: if it would
+ * push the current chunk past `limit`, the chunk is flushed first and the group starts a
+ * fresh one (a lone group larger than `limit` still ships whole — correctness over the
+ * soft cap). `limit === Infinity` (the default) yields exactly one chunk.
+ */
+function chunkRespectingGroups(
+  pending: readonly LocalOperation[],
+  limit: number
+): LocalOperation[][] {
+  if (!(limit > 0) || pending.length === 0) return pending.length ? [pending.slice()] : [];
+  const chunks: LocalOperation[][] = [];
+  let chunk: LocalOperation[] = [];
+  let index = 0;
+  while (index < pending.length) {
+    // The next unit is a whole group (a run of same-groupId ops) or a single ungrouped op.
+    const op = pending[index]!;
+    let end = index + 1;
+    if (op.groupId !== undefined) {
+      while (end < pending.length && pending[end]!.groupId === op.groupId) end++;
+    }
+    const unit = pending.slice(index, end);
+    if (chunk.length > 0 && chunk.length + unit.length > limit) {
+      chunks.push(chunk);
+      chunk = [];
+    }
+    chunk.push(...unit);
+    index = end;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
 
 /** True for the server's idempotent no-op-delete ack ({ noop: true }) — an accepted op
  *  that produced NO canonical change, so it must be dropped from the outbox explicitly. */
@@ -99,6 +172,7 @@ export class LocalFirstEngine {
   private readonly clock: () => number;
   private readonly retry: { readonly retries: number; readonly baseDelayMs: number };
   private readonly syncTimeoutMs: number;
+  private readonly maxPushBatch: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private status: SyncStatus = {
     online: true,
@@ -109,7 +183,7 @@ export class LocalFirstEngine {
     lastError: null,
     blockedBySchemaMismatch: false,
     partial: false,
-    recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [] }
+    recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [], failedGroups: [] }
   };
   private readonly opStatuses = new Map<string, MutationStatus>();
   private readonly dataListeners = new Set<() => void>();
@@ -175,6 +249,7 @@ export class LocalFirstEngine {
     this.clock = options.clock ?? (() => Date.now());
     this.retry = options.retry ?? { retries: 3, baseDelayMs: 100 };
     this.syncTimeoutMs = options.syncTimeoutMs ?? 15000;
+    this.maxPushBatch = options.maxPushBatch && options.maxPushBatch > 0 ? options.maxPushBatch : Infinity;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     // Reflect any operations already durable in the store (e.g. after a reload)
     // so getStatus() is accurate without waiting for the first sync.
@@ -806,6 +881,36 @@ export class LocalFirstEngine {
           : planned.value
         : undefined;
     this.opStatuses.set(opId, { opId, status: "pending" });
+    // Build the durable operation at a given createdAt, optionally tagged with the atomic
+    // group it belongs to. Shared by the single-op and batch paths so a grouped op is
+    // byte-identical to an ungrouped one except for the group fields.
+    const buildOperation = (
+      createdAt: number,
+      group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number }
+    ): LocalOperation => ({
+      opId,
+      clientId: this.clientId,
+      userId: this.userId,
+      schemaVersion: this.manifest.schemaVersion,
+      functionName: definition.name,
+      table: planned.table,
+      kind: planned.kind,
+      id,
+      args: args as never,
+      value: insertValue,
+      patch: planned.kind === "patch" ? planned.patch : undefined,
+      createdAt,
+      status: "pending",
+      ...(group ?? {})
+    });
+
+    // Inside engine.batch(fn): defer commit+push and collect this op into the group. The
+    // synchronously-known id/opId are returned immediately so insert-then-patch-same-row
+    // works within the batch.
+    if (this.currentBatch) {
+      return this.enqueueBatched<TResult>(this.currentBatch, opId, id, buildOperation);
+    }
+
     // Do not assign createdAt until the durable high-water seed finishes. This is the
     // reload/backward-clock fence: an immediate post-reload edit can never sort before
     // an older operation still in the outbox.
@@ -814,21 +919,7 @@ export class LocalFirstEngine {
       // enqueued a causally-earlier op. Refresh once at mutation time so cross-tab
       // insert→delete intent cannot be reversed by equal/backward wall clocks.
       if (this.multiTabEnabled) await this.seedTimestampHighWater();
-      const operation: LocalOperation = {
-        opId,
-        clientId: this.clientId,
-        userId: this.userId,
-        schemaVersion: this.manifest.schemaVersion,
-        functionName: definition.name,
-        table: planned.table,
-        kind: planned.kind,
-        id,
-        args: args as never,
-        value: insertValue,
-        patch: planned.kind === "patch" ? planned.patch : undefined,
-        createdAt: this.monotonicNow(),
-        status: "pending"
-      };
+      const operation = buildOperation(this.monotonicNow());
       return { operation, local: await this.commitLocal(operation) };
     });
     const local = prepared.then(({ local }) => local);
@@ -845,10 +936,197 @@ export class LocalFirstEngine {
 
     return createLocalFirstMutationCall<TResult>({
       opId,
+      id,
       local,
       server,
       status: () => this.operationStatus(opId)
     });
+  }
+
+  // ---- Atomic write groups (DX v4 §5) ---------------------------------------
+  // The active batch context. Set only while an engine.batch(fn) is running; a mutate
+  // call sees it and joins the group instead of pushing on its own. A single mutable
+  // pointer means batches must not overlap concurrently — the documented contract.
+  private currentBatch: BatchContext | null = null;
+
+  /**
+   * Run `fn`, collecting every local-first mutation it issues into ONE atomic write
+   * group. The ops apply optimistically in order, are pushed together in a single
+   * request, and the server commits or rejects them as a unit. Returns a handle whose
+   * `.local` resolves once all ops are durably enqueued + applied, and whose `.server`
+   * resolves with the group's per-op results (or rejects with the group reason, reverting
+   * every op as one unit).
+   *
+   * `fn` may be sync or async, but MUST NOT await a batched call's `.server` (or the call
+   * itself) inside `fn` — the group hasn't been dispatched yet, so it would deadlock;
+   * doing so throws a clear error instead. Read a fresh insert's id synchronously via the
+   * returned call's `.id` (e.g. `const { id } = create({...}); update({ id, ... })`).
+   */
+  batch<T = unknown>(fn: () => void | Promise<void>): LocalFirstBatchCall<T> {
+    const groupId = createOpId(this.clientId);
+    const ctx: BatchContext = { groupId, active: true, planned: [] };
+    const previous = this.currentBatch;
+    this.currentBatch = ctx;
+
+    // Await fn (sync fns settle immediately; async fns keep the batch open across their
+    // awaits). Restore the previous batch pointer once fn settles, whatever the outcome.
+    const ran = (async () => {
+      try {
+        await fn();
+      } finally {
+        ctx.active = false;
+        this.currentBatch = previous;
+      }
+    })();
+
+    const dispatched = ran.then(
+      () => this.finalizeBatch(ctx),
+      (error) => {
+        // fn threw: nothing was committed (commit is deferred to finalize), so there is
+        // nothing to revert. Fail every collected op's promises and the group.
+        const err = error instanceof Error ? error : new Error(String(error));
+        for (const op of ctx.planned) {
+          op.rejectLocal(err);
+          op.rejectServer(err);
+        }
+        throw err;
+      }
+    );
+
+    const local = dispatched.then((r) => r.commits);
+    const server = dispatched.then((r) => r.server);
+    // Mark handled so a group whose caller only awaits `.local` doesn't surface an
+    // unhandled rejection when the server rejects (mirrors the single-op path).
+    server.catch(() => {});
+    local.catch(() => {});
+
+    return createLocalFirstBatchCall<T>({
+      groupId,
+      local,
+      server: server as Promise<readonly T[]>
+    });
+  }
+
+  /** Collect one op into the active batch and return its deferred call handle. The
+   *  handle's `.server` (and awaiting it) throws while the batch is still open. */
+  private enqueueBatched<TResult>(
+    ctx: BatchContext,
+    opId: string,
+    id: LocalId,
+    buildOperation: (
+      createdAt: number,
+      group: { groupId: string; groupSize: number; groupIndex: number }
+    ) => LocalOperation
+  ): LocalFirstMutationCall<TResult> {
+    let resolveLocal!: (commit: LocalCommit) => void;
+    let rejectLocal!: (error: Error) => void;
+    let resolveServer!: (value: unknown) => void;
+    let rejectServer!: (error: Error) => void;
+    const localPromise = new Promise<LocalCommit>((resolve, reject) => {
+      resolveLocal = resolve;
+      rejectLocal = reject;
+    });
+    const serverPromise = new Promise<TResult>((resolve, reject) => {
+      resolveServer = resolve as (value: unknown) => void;
+      rejectServer = reject;
+    });
+    // Never lets a deferred rejection escape as "unhandled" if the caller ignores it.
+    localPromise.catch(() => {});
+    serverPromise.catch(() => {});
+    ctx.planned.push({ opId, id, buildOperation, resolveLocal, rejectLocal, resolveServer, rejectServer });
+
+    const guard = () => {
+      if (ctx.active) {
+        throw new Error(
+          "convex-localfirst: do not await a batched mutation's .server (or the call itself) inside batch(fn) — the group has not been dispatched yet. Await the handle returned by batch() after fn returns."
+        );
+      }
+    };
+    // A bespoke handle (not a real Promise): `.server` and the thenable both throw while
+    // the batch is open, so an accidental in-fn await is a clear error instead of a hang.
+    const handle = {
+      opId,
+      id,
+      local: localPromise,
+      get server(): Promise<TResult> {
+        guard();
+        return serverPromise;
+      },
+      status: () => this.operationStatus(opId),
+      then<A = TResult, B = never>(
+        onF?: ((value: TResult) => A | PromiseLike<A>) | null,
+        onR?: ((reason: unknown) => B | PromiseLike<B>) | null
+      ): Promise<A | B> {
+        guard();
+        return serverPromise.then(onF, onR);
+      },
+      catch<B = never>(onR?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<TResult | B> {
+        guard();
+        return serverPromise.catch(onR);
+      },
+      finally(onFinally?: (() => void) | null): Promise<TResult> {
+        guard();
+        return serverPromise.finally(onFinally);
+      }
+    };
+    return handle as unknown as LocalFirstMutationCall<TResult>;
+  }
+
+  /** Commit the collected group locally (in order) then push it as one contiguous
+   *  request. Returns the local commits and a promise for the group's server outcome. */
+  private async finalizeBatch(
+    ctx: BatchContext
+  ): Promise<{ commits: readonly LocalCommit[]; server: Promise<readonly unknown[]> }> {
+    const planned = ctx.planned;
+    const groupSize = planned.length;
+    if (groupSize === 0) {
+      return { commits: [], server: Promise.resolve([]) };
+    }
+    await this.timestampSeed;
+    if (this.multiTabEnabled) await this.seedTimestampHighWater();
+    // Reserve a CONTIGUOUS createdAt block up front (tight loop, no awaits) so no
+    // interleaving mutation can land a createdAt inside the group's range — the group
+    // stays contiguous in the outbox and is never split across a push request.
+    const createdAts = planned.map(() => this.monotonicNow());
+    const operations: LocalOperation[] = planned.map((p, index) =>
+      p.buildOperation(createdAts[index]!, { groupId: ctx.groupId, groupSize, groupIndex: index })
+    );
+    // Register outcome waiters BEFORE pushing so the single-writer push (or a leader
+    // broadcast) settles each op's .server. observedOutcomes buffers any that resolve
+    // before the waiter is attached, so ordering is not load-bearing.
+    const serverPerOp = operations.map((op) => this.waitForOperationOutcome<unknown>(op.opId));
+    for (const promise of serverPerOp) promise.catch(() => {});
+
+    const commits: LocalCommit[] = [];
+    for (let index = 0; index < operations.length; index++) {
+      const operation = operations[index]!;
+      const commit = await this.commitLocal(operation);
+      commits.push(commit);
+      planned[index]!.resolveLocal(commit);
+    }
+
+    // Aggregate the group outcome: resolve with per-op results when all accept; reject
+    // with the group reason when any rejects (each op already reverted via its rejected
+    // status). Per-op .server promises settle from the same outcomes.
+    const server = Promise.allSettled(serverPerOp).then((settled) => {
+      const rejection = settled.find((s) => s.status === "rejected") as PromiseRejectedResult | undefined;
+      settled.forEach((s, index) => {
+        if (s.status === "fulfilled") planned[index]!.resolveServer(s.value);
+        else planned[index]!.rejectServer(s.reason instanceof Error ? s.reason : new Error(String(s.reason)));
+      });
+      if (rejection) {
+        throw rejection.reason instanceof Error ? rejection.reason : new Error(String(rejection.reason));
+      }
+      return settled.map((s) => (s as PromiseFulfilledResult<unknown>).value);
+    });
+    server.catch(() => {});
+
+    // Dispatch the group. In single-writer/leader mode this pushes the whole outbox (the
+    // group included, contiguously); a coordinated follower's commit already poked the
+    // leader via the cross-tab "changed" broadcast, so it just waits on the outcomes.
+    if (this.syncEnabled) this.flushPending();
+
+    return { commits, server };
   }
 
   async syncOnce(scopes: readonly SyncScope[] = []): Promise<void> {
@@ -1300,6 +1578,18 @@ export class LocalFirstEngine {
       this.setStatus({ online: false });
       return;
     }
+    // Partition into request-sized chunks that never split an atomic group. Default cap
+    // is Infinity → one chunk → identical to the historical single-request behavior.
+    for (const chunk of chunkRespectingGroups(pending, this.maxPushBatch)) {
+      const stop = await this.pushChunkNow(chunk);
+      if (stop) return;
+    }
+  }
+
+  /** Push ONE contiguous chunk of pending ops (a whole request). Returns true to stop the
+   *  outer drain (schema mismatch or a logout clear). Grouped ops within the chunk are
+   *  applied atomically by the server; the client acks/rejects each op as it comes back. */
+  private async pushChunkNow(pending: readonly LocalOperation[]): Promise<boolean> {
     const epoch = await this.store.getEpoch();
     for (const op of pending) await this.markStatus(op.opId, "pushing");
     let response: Awaited<ReturnType<SyncTransport["push"]>>;
@@ -1333,7 +1623,7 @@ export class LocalFirstEngine {
     if (response.schemaMismatch) {
       this.blockForSchemaMismatch();
       for (const op of pending) await this.markStatus(op.opId, "pending");
-      return;
+      return true;
     }
     // Apply confirming changes BEFORE acking: applyServerChanges is what prunes a
     // confirmed op from the outbox. If it threw AFTER we'd marked ops acked, those ops
@@ -1375,6 +1665,7 @@ export class LocalFirstEngine {
     }
     this.setStatus({ lastPushAt: response.serverTime });
     await this.refreshPendingCount();
+    return false;
   }
 
   private serializePush<T>(fn: () => Promise<T>): Promise<T> {
@@ -1731,8 +2022,10 @@ export class LocalFirstEngine {
   private async refreshPendingCount(): Promise<void> {
     const operations = await this.store.getAllOperations();
     const pending = operations.filter((operation) => operation.status === "pending" || operation.status === "pushing");
-    const rejectedOperations: RecoveryOperation[] = operations
-      .filter((operation) => operation.status === "rejected")
+    const rejected = operations.filter((operation) => operation.status === "rejected");
+    // Ungrouped rejected ops keep the exact per-op shape every prior release produced.
+    const rejectedOperations: RecoveryOperation[] = rejected
+      .filter((operation) => operation.groupId === undefined)
       .map(({ opId, table, id, kind, schemaVersion, createdAt, error }) => ({
         opId,
         table,
@@ -1742,9 +2035,29 @@ export class LocalFirstEngine {
         createdAt,
         error
       }));
+    // A rejected atomic group surfaces ONCE — fold every member op into one entry keyed
+    // by groupId (ordered by groupIndex), not N per-op rejections.
+    const groups = new Map<string, LocalOperation[]>();
+    for (const operation of rejected) {
+      if (operation.groupId === undefined) continue;
+      const bucket = groups.get(operation.groupId);
+      if (bucket) bucket.push(operation);
+      else groups.set(operation.groupId, [operation]);
+    }
+    const failedGroups: RecoveryGroup[] = Array.from(groups.entries()).map(([groupId, members]) => {
+      const ordered = [...members].sort((a, b) => (a.groupIndex ?? 0) - (b.groupIndex ?? 0));
+      return {
+        groupId,
+        opIds: ordered.map((operation) => operation.opId),
+        tables: Array.from(new Set(ordered.map((operation) => operation.table))),
+        schemaVersion: ordered[0]!.schemaVersion,
+        createdAt: Math.min(...ordered.map((operation) => operation.createdAt)),
+        error: ordered.find((operation) => operation.error)?.error
+      };
+    });
     this.setStatus({
       pendingMutations: pending.length,
-      recovery: { ...this.status.recovery, rejectedOperations }
+      recovery: { ...this.status.recovery, rejectedOperations, failedGroups }
     });
   }
 }

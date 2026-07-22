@@ -32,7 +32,7 @@ export * from "./manifest.js";
 export * from "./memoryStore.js";
 // rank: fractional-index helpers for kanban/manual ordering (public — no deps).
 export * from "./rank.js";
-export type { LocalFirstMutationCall } from "./mutationCall.js";
+export type { LocalFirstMutationCall, LocalFirstBatchCall } from "./mutationCall.js";
 export type { FunctionNameResolver } from "./functionName.js";
 // ordering (compareOperations) is an engine internal → "./internal.js".
 export * from "./status.js";

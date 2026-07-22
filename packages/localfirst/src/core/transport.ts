@@ -89,7 +89,11 @@ export function createConvexTransport(options: {
           kind: op.kind,
           localId: op.id,
           value: op.value,
-          patch: op.patch
+          patch: op.patch,
+          // Atomic write group tag (absent ⇒ ungrouped ⇒ exactly the prior behavior).
+          groupId: op.groupId,
+          groupSize: op.groupSize,
+          groupIndex: op.groupIndex
         }))
       })) as Omit<PushResponse, "changes"> & { changes: ServerStoredChange[] };
       return { ...response, changes: response.changes.map(toClientChange) };

@@ -9,5 +9,5 @@ export const initialSyncStatus: SyncStatus = {
   lastError: null,
   blockedBySchemaMismatch: false,
   partial: false,
-  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [] }
+  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [], failedGroups: [] }
 };
