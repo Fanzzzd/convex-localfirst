@@ -28,3 +28,6 @@ coverage/
 
 # local working notes (goal / specs / todo — not shipped)
 .notes/
+
+# playwright artifacts
+test-results/
