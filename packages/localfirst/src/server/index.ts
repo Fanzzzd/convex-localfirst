@@ -91,6 +91,15 @@ export type TableOptions<
   // non-searchable table.
   readonly searchFields?: readonly string[];
   /**
+   * Field names the SERVER mints (a `serverStamp` sequence number, or any server-only
+   * column of the shape). Declared here so the CLIENT knows to strip them from an
+   * undo-of-delete re-insert: resurrecting a deleted row re-mints these fresh (e.g. a
+   * `sequence_id` changes), and re-sending the captured old value is rejected as a
+   * serverOnlyField. Pair with the matching `createSyncFunctions({ serverStamp })` field
+   * list on the server. Client-only / advisory (like `searchFields`); omit if none.
+   */
+  readonly serverFields?: readonly string[];
+  /**
    * Optional CLIENT-SIDE mirror of `access.write` (DX v4 §6). Declared ONCE here, next to
    * the table, in the same isomorphic module the shape lives in: the server IGNORES it
    * (createSyncFunctions authorizes via its own `access.write`), the client evaluates it in
@@ -247,6 +256,10 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         setFields: tableOptions.setFields,
         counterFields: tableOptions.counterFields,
         searchFields: tableOptions.searchFields,
+        // Isomorphic: carried in the metadata so the CLIENT's collectManifest picks it up
+        // (meta.serverFields → LocalTableDefinition.serverFields, used by undo-of-delete).
+        // The server's collectTables ignores it; serverOnlyFields there come from serverStamp.
+        serverFields: tableOptions.serverFields,
         relations: tableOptions.relations,
         // Isomorphic: carried in the attached metadata so the CLIENT's collectManifest
         // picks it up (via meta.clientCan). The server's collectTables never reads it.

@@ -41,6 +41,14 @@
       "types": "./dist/react/shadow.d.ts",
       "import": "./dist/react/shadow.js"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./devtools": {
+      "types": "./dist/devtools/index.d.ts",
+      "import": "./dist/devtools/index.js"
+    },
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"

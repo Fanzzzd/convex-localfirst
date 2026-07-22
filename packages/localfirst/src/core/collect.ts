@@ -49,6 +49,10 @@ export type LocalFirstFunctionMeta = {
   readonly counterFields?: readonly string[];
   /** Fields fed to the local full-text search index (client-only). See search.ts. */
   readonly searchFields?: readonly string[];
+  /** Server-minted field names (serverStamp/server-only). The client strips them from an
+   *  undo-of-delete re-insert (they are re-minted fresh on resurrection). See
+   *  LocalTableDefinition.serverFields. */
+  readonly serverFields?: readonly string[];
   readonly relations?: DeclaredRelations;
   /** Optional client-side mirror of `access.write` (DX v4 §6), declared on lf.table.
    *  Isomorphic: the server ignores it, the client evaluates it in useCan. */
@@ -142,6 +146,7 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
     ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {}),
     ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {}),
+    ...(meta.serverFields?.length ? { serverFields: meta.serverFields } : {}),
     ...(meta.relations && Object.keys(meta.relations).length ? { relations: meta.relations } : {}),
     ...(meta.clientCan ? { clientCan: meta.clientCan } : {})
   };

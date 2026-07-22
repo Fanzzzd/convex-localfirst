@@ -1,4 +1,4 @@
-import { LocalCache, type QueryExplain } from "./cache.js";
+import { LocalCache, type QueryDebugInfo, type QueryExplain } from "./cache.js";
 import { AttachmentManager, type AttachmentBackend, type XhrLike } from "./attachments.js";
 import { SearchManager, type SearchOptions, type SearchResult } from "./search.js";
 import type {
@@ -264,6 +264,14 @@ export class LocalFirstEngine {
   private readonly partialRuns = new Map<string, number>();
   private nextPartialRun = 0;
   private readonly scopeEpochs = new Map<string, number>();
+  // ---- Per-scope status (DX v4 §10) ------------------------------------------
+  // hydratedScopes: a scope whose pull has delivered a cursor at least once (first paint
+  // ready). pullingScopes: in-flight pull count per scope (syncing). Denial rides the
+  // roles map (a `null` marker). partial rides partialScopes. useScopeStatus derives all
+  // four; scopeStatusListeners wake it on any per-scope transition.
+  private readonly hydratedScopes = new Set<string>();
+  private readonly pullingScopes = new Map<string, number>();
+  private readonly scopeStatusListeners = new Set<() => void>();
   private pullApplyChain: Promise<void> = Promise.resolve();
   private pushChain: Promise<void> = Promise.resolve();
   private readonly outcomeListeners = new Set<(outcome: OperationOutcome) => void>();
@@ -1471,6 +1479,163 @@ export class LocalFirstEngine {
     await this.refreshPlanScope({ kind, key });
   }
 
+  // ---- Per-scope status (DX v4 §10) ------------------------------------------
+
+  private notifyScopeStatusListeners(): void {
+    for (const listener of Array.from(this.scopeStatusListeners)) listener();
+  }
+
+  /** Subscribe to per-scope status transitions (hydration, in-flight pull, partial, denial). */
+  subscribeScopeStatus(listener: () => void): () => void {
+    this.scopeStatusListeners.add(listener);
+    return () => this.scopeStatusListeners.delete(listener);
+  }
+
+  /** The sync scope key for a scope-value object: the membership key when a workspace/
+   *  project field is present, else this engine's user scope (`u:<userId>`). Null when
+   *  neither applies (anonymous byUser). Mirrors the keys pullScopes uses. */
+  private scopeStatusKey(scope: Record<string, unknown> | null | undefined): ScopeKey | null {
+    const membership = this.scopeKeyForScopeArgs(scope);
+    if (membership) return membership;
+    return this.userId != null ? `u:${this.userId}` : null;
+  }
+
+  /**
+   * Per-scope hydration/sync/denial (DX v4 §10). `hydrated`: the scope has received server
+   * data at least once (first paint can render rather than flash empty). `partial`: a
+   * budget-limited drain left more to fetch. `syncing`: a pull is in flight. `denied`: the
+   * caller is not (or no longer) a member. Derived from the engine's existing per-scope
+   * bootstrap/partial/epoch/role state — cheap and reactive (subscribeScopeStatus).
+   */
+  getScopeStatus(scope: Record<string, unknown> | null | undefined): {
+    hydrated: boolean;
+    partial: boolean;
+    syncing: boolean;
+    denied: boolean;
+  } {
+    const key = this.scopeStatusKey(scope);
+    if (!key) return { hydrated: false, partial: false, syncing: false, denied: false };
+    return {
+      hydrated: this.hydratedScopes.has(key),
+      partial: this.partialScopes.has(key),
+      syncing: (this.pullingScopes.get(key) ?? 0) > 0,
+      denied: this.roles.has(key) && this.roles.get(key) === null
+    };
+  }
+
+  /** Background-pull the scope behind a `useScopeStatus` (membership OR byUser), so its
+   *  hydration/denial resolves even without a mounted query on it. Never throws. */
+  async syncScope(scope: Record<string, unknown> | null | undefined): Promise<void> {
+    const key = this.scopeStatusKey(scope);
+    if (!key) return;
+    const kind: SyncScope["kind"] = key.startsWith("u:") ? "byUser" : (key.slice(0, key.indexOf(":")) as SyncScope["kind"]);
+    await this.refreshPlanScope({ kind, key });
+  }
+
+  // ---- Devtools introspection (DX v4 §8) -------------------------------------
+  // Read-only snapshots for <LocalFirstDevtools />. Cheap and additive — nothing here
+  // changes engine behavior. The store-backed views are async (they read the durable store).
+
+  /** Every active live query/count view with its chosen plan (index vs scan) + result sizes. */
+  debugQueries(): QueryDebugInfo[] {
+    return this.cache.debugQueries();
+  }
+
+  /** Per-scope sync snapshot: cursor, hydrated/partial/syncing/denied, and the synced role. */
+  async debugScopes(): Promise<
+    Array<{
+      scopeKey: string;
+      cursor: string | null;
+      hydrated: boolean;
+      partial: boolean;
+      syncing: boolean;
+      denied: boolean;
+      role: RoleValue | null | undefined;
+    }>
+  > {
+    const keys = new Set<string>([
+      ...this.hydratedScopes,
+      ...this.partialScopes,
+      ...this.pullingScopes.keys(),
+      ...this.roles.keys()
+    ]);
+    const out: Array<{
+      scopeKey: string;
+      cursor: string | null;
+      hydrated: boolean;
+      partial: boolean;
+      syncing: boolean;
+      denied: boolean;
+      role: RoleValue | null | undefined;
+    }> = [];
+    for (const scopeKey of keys) {
+      out.push({
+        scopeKey,
+        cursor: await this.store.getCursor(scopeKey),
+        hydrated: this.hydratedScopes.has(scopeKey),
+        partial: this.partialScopes.has(scopeKey),
+        syncing: (this.pullingScopes.get(scopeKey) ?? 0) > 0,
+        denied: this.roles.has(scopeKey) && this.roles.get(scopeKey) === null,
+        role: this.roles.has(scopeKey) ? (this.roles.get(scopeKey) ?? null) : undefined
+      });
+    }
+    return out.sort((a, b) => (a.scopeKey < b.scopeKey ? -1 : 1));
+  }
+
+  /** The durable outbox for the devtools Outbox tab: every op with kind/table/status/age. */
+  async debugOutbox(): Promise<
+    Array<{
+      opId: string;
+      table: string;
+      id: string;
+      kind: OperationKind;
+      functionName: string;
+      status: string;
+      createdAt: number;
+      groupId?: string;
+      error?: string;
+    }>
+  > {
+    const operations = await this.store.getAllOperations();
+    return operations.map((op) => ({
+      opId: op.opId,
+      table: op.table,
+      id: op.id,
+      kind: op.kind,
+      functionName: op.functionName,
+      status: op.status,
+      createdAt: op.createdAt,
+      groupId: op.groupId,
+      error: op.error
+    }));
+  }
+
+  /** Local storage footprint for the devtools Storage tab: per-table row counts, the
+   *  attachment blob outbox size, and which tables have a local search index. */
+  async debugStorage(): Promise<{
+    tables: Array<{ table: string; rows: number }>;
+    attachments: { count: number; bytes: number };
+    search: Array<{ table: string; indexed: boolean }>;
+  }> {
+    const counts = this.cache.debugTableCounts();
+    const tables = Object.keys(this.manifest.tables).map((table) => ({ table, rows: counts[table] ?? 0 }));
+    let count = 0;
+    let bytes = 0;
+    try {
+      for (const record of await this.store.getAllBlobs()) {
+        count++;
+        bytes += record.blob.size ?? 0;
+      }
+    } catch {
+      // A store without a blob outbox reports zero attachments.
+    }
+    const search = Object.entries(this.manifest.tables).map(([table, def]) => ({
+      table,
+      indexed: (def.searchFields?.length ?? 0) > 0
+    }));
+    return { tables, attachments: { count, bytes }, search };
+  }
+
   /** Background-sync a raw sync scope (push pending + pull it). Never throws. */
   private async refreshPlanScope(scope: SyncScope): Promise<void> {
     try {
@@ -1654,6 +1819,18 @@ export class LocalFirstEngine {
     this.notifyUndoListeners();
   }
 
+  /** Drop the table's server-minted fields (manifest `serverFields`) from a value, so an
+   *  undo-of-delete re-insert carries only client-writable fields (the server re-mints the
+   *  rest). No-op for a table that declares none. */
+  private stripServerFields(table: string, value: Record<string, unknown>): Record<string, unknown> {
+    const serverFields = this.manifest.tables[table]?.serverFields;
+    if (!serverFields || serverFields.length === 0) return value;
+    const drop = new Set(serverFields);
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) if (!drop.has(key)) out[key] = val;
+    return out;
+  }
+
   /** A concrete op the engine committed/will commit, in the shape the inverter needs. */
   private toResolvedUndoOp(operation: LocalOperation): ResolvedUndoOp {
     if (operation.kind === "insert") {
@@ -1681,7 +1858,11 @@ export class LocalFirstEngine {
     if (op.kind === "delete") {
       const functionName = names?.insert;
       if (!functionName || !before) return null;
-      return { kind: "insert", table: op.table, id: op.id, functionName, value: stripSystemFields(before) };
+      // Strip client system fields AND server-minted fields (serverStamp/serverOnly): the
+      // resurrected row is a NEW server row that re-mints those fresh, and re-sending the
+      // captured stale value would be rejected as a serverOnlyField (§0). A sequence_id-style
+      // field therefore CHANGES on undo-of-delete — documented, and correct (it is a fresh row).
+      return { kind: "insert", table: op.table, id: op.id, functionName, value: this.stripServerFields(op.table, stripSystemFields(before)) };
     }
     // patch: restore each touched field to its prior value. A field absent before the
     // patch has no clean "unset" via a field-LWW patch, so it's restored to null.
@@ -2218,6 +2399,22 @@ export class LocalFirstEngine {
       this.setStatus({ online: false });
       return;
     }
+    // Mark these scopes as pulling (useScopeStatus → syncing) for the duration of the drain.
+    for (const scope of scopes) this.pullingScopes.set(scope.key, (this.pullingScopes.get(scope.key) ?? 0) + 1);
+    this.notifyScopeStatusListeners();
+    try {
+      await this.pullScopesInner(scopes);
+    } finally {
+      for (const scope of scopes) {
+        const next = (this.pullingScopes.get(scope.key) ?? 1) - 1;
+        if (next <= 0) this.pullingScopes.delete(scope.key);
+        else this.pullingScopes.set(scope.key, next);
+      }
+      this.notifyScopeStatusListeners();
+    }
+  }
+
+  private async pullScopesInner(scopes: readonly SyncScope[]): Promise<void> {
     const partialRun = ++this.nextPartialRun;
     for (const scope of scopes) this.partialRuns.set(scope.key, partialRun);
     const cursors: Record<string, string | null> = {};
@@ -2280,6 +2477,9 @@ export class LocalFirstEngine {
           await this.store.removeCursor(scopeKey, storeEpoch);
           cursors[scopeKey] = null;
           snapshotSeen.delete(scopeKey);
+          // Revoked: no longer hydrated (its data left the device). useScopeStatus →
+          // { hydrated:false, denied:true }.
+          this.hydratedScopes.delete(scopeKey);
           // Record the denial durably as a `null` role marker (§6): useRole → null (denied),
           // distinct from an absent entry (not yet synced → undefined).
           if (this.roles.get(scopeKey) !== null) {
@@ -2336,6 +2536,9 @@ export class LocalFirstEngine {
           if (cursors[scopeKey] !== cursor) advanced = true;
           await this.store.setCursor(scopeKey, cursor, storeEpoch);
           cursors[scopeKey] = cursor;
+          // A delivered cursor means this scope has received server data at least once —
+          // it is hydrated (first paint can render) even if a later round marks it partial.
+          this.hydratedScopes.add(scopeKey);
         }
         if ((await this.store.getEpoch()) !== storeEpoch) return null;
         this.setStatus({ lastPullAt: response.serverTime });

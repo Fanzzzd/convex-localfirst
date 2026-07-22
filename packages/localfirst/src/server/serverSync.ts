@@ -937,10 +937,15 @@ async function applyOp(
     // satisfies the app schema and can be correlated back to the client.
     value[tableConfig.idField] = op.localId;
     // A re-push of the SAME op is short-circuited by the ledger before applyOp, so
-    // reaching here with an existing (table, localId) means a DIFFERENT op reused
-    // the localId. localId must be globally unique — treat a collision as invalid
-    // rather than as license to append a change against an existing row.
-    if (await store.getServerId(op.table, op.localId)) {
+    // reaching here with an existing (table, localId) means either (a) a DIFFERENT op
+    // reused a LIVE localId — a collision, rejected — or (b) the id-map entry points at a
+    // now-DELETED row (no current row). Case (b) is a RESURRECTION: undo-of-delete
+    // re-inserts the same localId. Allow it — a fresh server row is minted below, the id
+    // map is repointed, and the change version continues from latestChangeVersion (so it is
+    // strictly greater than the delete's version and pulls order correctly). Any
+    // serverStamp/server-only field is re-minted fresh (the client strips the stale value).
+    const existingServerId = await store.getServerId(op.table, op.localId);
+    if (existingServerId && (await store.getRow(op.table, existingServerId))) {
       throw new RejectOp(`Duplicate localId for ${op.table}:${op.localId}`);
     }
     if (
@@ -1142,7 +1147,11 @@ export async function applyServerWrite(
     }
     const scopeKey =
       tableConfig.scope.kind === "byUser" ? scopeKeyForUser(scopeValue) : scopeKeyForValue(tableConfig.scope.kind, scopeValue);
-    if (await store.getServerId(write.table, localId)) {
+    // Symmetric with the push path: a LIVE row is a duplicate; an id-map entry whose row
+    // was deleted is a resurrection (re-insert the same localId), so a fresh row is minted
+    // and the id map repointed. The change version continues from latestChangeVersion.
+    const priorServerId = await store.getServerId(write.table, localId);
+    if (priorServerId && (await store.getRow(write.table, priorServerId))) {
       throw new Error(`serverWriter: duplicate localId for ${write.table}:${localId}`);
     }
     const serverId = await store.insertRow(write.table, value);

@@ -520,9 +520,44 @@ function LocalFirstProvider(
   return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
 }
 
-// Internal: the engine never appears in the public type surface (I13).
-function useLocalFirstEngine(): LocalFirstEngine | null {
+// The engine is exposed as a HEADLESS type only (createLocalFirstEngine is the public
+// factory); this hook reads the engine a provider mounted, for advanced/tools consumers
+// (the devtools panel, the test harness). App code uses the hooks below, not this.
+export function useLocalFirstEngine(): LocalFirstEngine | null {
   return useContext(LocalFirstReactContext)?.engine ?? null;
+}
+
+/**
+ * Provide a PREBUILT engine to the local-first hooks — the wiring the test harness
+ * (`convex-localfirst/testing`) and any imperative host use, instead of the Convex-aware
+ * `ConvexProvider`. The engine's lifecycle (create/dispose) is owned by the caller; this
+ * only publishes it on the context and (re)attaches its connectivity listeners on mount.
+ */
+export function LocalFirstEngineProvider(props: {
+  readonly engine: LocalFirstEngine;
+  readonly userId?: string | null;
+  readonly children: React.ReactNode;
+}) {
+  const value = useMemo<LocalFirstReactContextValue>(
+    () => ({
+      engine: props.engine,
+      // Presence rides plain Convex reactivity, not the engine — it is unavailable in a
+      // harness/devtools context (no ConvexReactClient). usePresence is simply unused there.
+      presence: {
+        client: undefined as never,
+        clientId: props.engine.clientId,
+        userId: props.userId ?? null,
+        beatName: "sync:presence",
+        listName: "sync:presenceList"
+      }
+    }),
+    [props.engine, props.userId]
+  );
+  useEffect(() => {
+    props.engine.resume();
+    // Deliberately no dispose on unmount: the caller owns the engine lifecycle.
+  }, [props.engine]);
+  return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
 }
 
 export type UseLocalFirstQueryOptions<TResult> = {
@@ -958,6 +993,58 @@ export function useSyncStatus(): SyncStatus {
  * app-provided export/migration/discard flow. */
 export function useSyncRecovery(): RecoveryStatus {
   return useSyncStatus().recovery;
+}
+
+export type ScopeStatus = {
+  /** The scope has received server data at least once — first paint can render real
+   *  (possibly empty) data instead of flashing a "0 results" state before hydration. */
+  readonly hydrated: boolean;
+  /** A budget-limited drain (large cold start) left more to fetch for this scope. */
+  readonly partial: boolean;
+  /** A pull for this scope is in flight right now. */
+  readonly syncing: boolean;
+  /** The caller is not (or no longer) a member of this scope — its data has been evicted. */
+  readonly denied: boolean;
+};
+
+const HYDRATING_SCOPE: ScopeStatus = { hydrated: false, partial: false, syncing: false, denied: false };
+
+/**
+ * Per-scope hydration honesty (DX v4 §10). Pass the scope-value object (`{ workspace_id }`,
+ * or `{}` for the user scope); get `{ hydrated, partial, syncing, denied }` so first paint
+ * can skeleton correctly instead of flashing an empty list before the cache catches up.
+ * Reactive and cheap — derived from the engine's existing per-scope bootstrap/partial/role
+ * state, re-rendering only on this scope's transitions.
+ *
+ * ```tsx
+ * const { hydrated, partial } = useScopeStatus({ workspace_id });
+ * if (!hydrated) return <Skeleton />;
+ * ```
+ */
+export function useScopeStatus(scope: Record<string, unknown> | null | undefined): ScopeStatus {
+  const engine = useLocalFirstEngine();
+  const scopeKey = useMemo(() => JSON.stringify(scope ?? null), [scope]);
+  const [status, setStatus] = useState<ScopeStatus>(() => engine?.getScopeStatus(scope) ?? HYDRATING_SCOPE);
+  useEffect(() => {
+    if (!engine) {
+      setStatus(HYDRATING_SCOPE);
+      return;
+    }
+    const read = () => setStatus(engine.getScopeStatus(scope));
+    read();
+    // Self-sufficient: pull the scope so hydration/denial resolves even without a mounted
+    // query on it (mirrors useRole).
+    void engine.syncScope(scope);
+    const unsubStatus = engine.subscribeScopeStatus(read);
+    const unsubRoles = engine.subscribeRoles(read); // denial rides the role cache
+    return () => {
+      unsubStatus();
+      unsubRoles();
+    };
+    // scope is read at effect time; scopeKey is its stable identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, scopeKey]);
+  return status;
 }
 
 /**

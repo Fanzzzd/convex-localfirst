@@ -75,6 +75,13 @@ export type LocalTableDefinition = {
   readonly searchFields?: readonly string[];
   /** Named client-side relations declared on `lf.table`. */
   readonly relations?: DeclaredRelations;
+  /** Fields the SERVER mints (serverStamp / server-only columns) — never accepted from a
+   *  client insert/patch. The client needs the NAMES so undo-of-delete can strip them
+   *  before re-inserting a captured before-row: on resurrection the server mints FRESH
+   *  values (a sequence_id-style field changes), and re-sending the old value is rejected
+   *  as a serverOnlyField. Purely a client concern (like searchFields); isomorphically
+   *  declared on `lf.table({ serverFields })`. Absent/empty = nothing stripped. */
+  readonly serverFields?: readonly string[];
   /** Optional client-side mirror of `access.write` (DX v4 §6), declared next to the
    *  table in the shared module. ADVISORY — evaluated by useCan to enable/disable UI;
    *  the server stays authoritative. Absent = every write reads as permitted. */
