@@ -6,6 +6,7 @@ import type {
   LocalId,
   LocalOperation,
   OperationStatus,
+  RoleValue,
   RowValue,
   ScopeKey,
   ServerChange,
@@ -20,13 +21,14 @@ export type IndexedDbStoreOptions = {
   readonly onBlocked?: () => void;
 };
 
-export const INDEXED_DB_SCHEMA_VERSION = 4;
+export const INDEXED_DB_SCHEMA_VERSION = 5;
 
 const CANONICAL = "canonical";
 const OPERATIONS = "operations";
 const CURSORS = "cursors";
 const META = "meta";
 const BLOBS = "blobs";
+const ROLES = "roles";
 const BY_TABLE = "by_table";
 const EPOCH_KEY = "epoch";
 
@@ -74,6 +76,13 @@ function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction): void 
     // Independent of canonical rows/ops; a stored blob == an upload still owed.
     if (!db.objectStoreNames.contains(BLOBS)) {
       db.createObjectStore(BLOBS, { keyPath: "localId" });
+    }
+  }
+  if (oldVersion < 5) {
+    // Durable per-scope role cache (DX v4 §6), keyed by scopeKey, so useRole/useCan
+    // survive a reload before the first pull. Wiped by clear() on logout.
+    if (!db.objectStoreNames.contains(ROLES)) {
+      db.createObjectStore(ROLES, { keyPath: "scopeKey" });
     }
   }
 }
@@ -414,6 +423,45 @@ export class IndexedDbStore implements LocalStore {
     return this.epoch;
   }
 
+  async getRoles(): Promise<Record<ScopeKey, RoleValue>> {
+    const db = await this.db();
+    const tx = db.transaction(ROLES, "readonly");
+    const rows = (await request(tx.objectStore(ROLES).getAll())) as Array<{ scopeKey: ScopeKey; role: RoleValue }>;
+    const out: Record<ScopeKey, RoleValue> = {};
+    for (const row of rows) out[row.scopeKey] = row.role;
+    return out;
+  }
+
+  async setRole(scopeKey: ScopeKey, role: RoleValue, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
+    // Epoch-guarded in one tx (like setCursor): a logout clear that committed first is
+    // observed here and the write is skipped, so a stale role can't outlive a logout.
+    const tx = db.transaction([ROLES, META], "readwrite");
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) === expected) {
+        tx.objectStore(ROLES).put({ scopeKey, role });
+      }
+    };
+    await transactionDone(tx);
+  }
+
+  async removeRole(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
+    const tx = db.transaction([ROLES, META], "readwrite");
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) === expected) {
+        tx.objectStore(ROLES).delete(scopeKey);
+      }
+    };
+    await transactionDone(tx);
+  }
+
   async putBlob(record: StoredBlob): Promise<void> {
     if (this.sessionEnded) return;
     const db = await this.db();
@@ -454,11 +502,12 @@ export class IndexedDbStore implements LocalStore {
 
   private async clearAtomic(): Promise<void> {
     const db = await this.db();
-    const tx = db.transaction([CANONICAL, OPERATIONS, CURSORS, META, BLOBS], "readwrite");
+    const tx = db.transaction([CANONICAL, OPERATIONS, CURSORS, META, BLOBS, ROLES], "readwrite");
     tx.objectStore(CANONICAL).clear();
     tx.objectStore(OPERATIONS).clear();
     tx.objectStore(CURSORS).clear();
     tx.objectStore(BLOBS).clear();
+    tx.objectStore(ROLES).clear();
     // Bump (NOT clear) the durable epoch in the SAME tx so a concurrent apply — in this
     // tab or another, which reads META in its own serialized tx — sees the advance and
     // aborts instead of resurrecting the just-cleared rows.

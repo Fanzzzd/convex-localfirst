@@ -166,7 +166,16 @@ export type PullResponse = {
   /** Requested scopes this user is not (or no longer) a member of: evict their
    *  rows and forget their cursors — revocation removes data from the device. */
   readonly deniedScopes?: readonly ScopeKey[];
+  /** Per (membership) scope: the role the server resolved for the caller (the value
+   *  `access.member` returned). Lets the client mirror access rules in the UI
+   *  (useRole/useCan). OPTIONAL and additive: a 0.3.x server omits it, and the client
+   *  then treats every scope's role as not-yet-synced (useRole → undefined). */
+  readonly roles?: Record<ScopeKey, RoleValue>;
 };
+
+/** A serializable membership role, as returned by `access.member` and shipped to the
+ *  client. Opaque to the library (apps use `number` / string enums / small objects). */
+export type RoleValue = JsonValue;
 
 export type SyncStatus = {
   readonly online: boolean;

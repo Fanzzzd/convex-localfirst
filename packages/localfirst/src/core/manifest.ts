@@ -1,11 +1,38 @@
 import type {
   FunctionName,
+  OperationKind,
   OperationPlan,
+  RoleValue,
   RowValue,
   SyncScope,
   TableName
 } from "./types.js";
 import type { DeclaredRelations } from "./relations.js";
+
+/** Arguments passed to a client-side `write` mirror (clientCan.write) — the SAME shape
+ *  the server's `access.write` receives, minus `ctx` (the mirror is pure). Advisory
+ *  only: the server stays authoritative. */
+export type ClientCanWriteInput<
+  Row extends Record<string, unknown> = Record<string, unknown>,
+  Role = unknown
+> = {
+  readonly userId: string | null;
+  readonly role: Role;
+  readonly table: string;
+  readonly action: OperationKind;
+  readonly before: Row | null;
+  readonly patch?: Record<string, unknown>;
+  readonly proposed: Row | null;
+};
+
+/** An optional client-side mirror of `access.write`, declared ONCE on `lf.table`
+ *  (isomorphic module: the server ignores it, the client uses it). Pure — no ctx. */
+export type ClientCanConfig<
+  Row extends Record<string, unknown> = Record<string, unknown>,
+  Role = unknown
+> = {
+  readonly write?: (input: ClientCanWriteInput<Row, Role>) => boolean;
+};
 
 export type ScopeDefinition =
   | {
@@ -48,6 +75,10 @@ export type LocalTableDefinition = {
   readonly searchFields?: readonly string[];
   /** Named client-side relations declared on `lf.table`. */
   readonly relations?: DeclaredRelations;
+  /** Optional client-side mirror of `access.write` (DX v4 §6), declared next to the
+   *  table in the shared module. ADVISORY — evaluated by useCan to enable/disable UI;
+   *  the server stays authoritative. Absent = every write reads as permitted. */
+  readonly clientCan?: ClientCanConfig;
 };
 
 export type LocalQueryContext = {
@@ -77,6 +108,11 @@ export type LocalMutationDefinition<TArgs = unknown, TResult = unknown> = {
   readonly kind: "mutation";
   readonly name: FunctionName;
   readonly table: TableName;
+  /** The operation kind this mutation produces (insert/patch/delete). Lets the engine
+   *  resolve a table's insert/patch/delete mutation by name — e.g. undo/redo needs a
+   *  delete mutation to invert an insert, an insert to invert a delete. Optional so a
+   *  hand-written manifest without it still works (that table just can't invert those). */
+  readonly operationKind?: OperationKind;
   readonly serverResult?: TResult;
   readonly plan: (args: TArgs, context: LocalMutationContext) => OperationPlan;
 };

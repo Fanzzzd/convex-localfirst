@@ -50,6 +50,9 @@ export type LocalFirstFunctionMeta = {
   /** Fields fed to the local full-text search index (client-only). See search.ts. */
   readonly searchFields?: readonly string[];
   readonly relations?: DeclaredRelations;
+  /** Optional client-side mirror of `access.write` (DX v4 §6), declared on lf.table.
+   *  Isomorphic: the server ignores it, the client evaluates it in useCan. */
+  readonly clientCan?: LocalTableDefinition["clientCan"];
   /** Auto-timestamp field names (lf.table's `timestamps` option). Stamped by the
    *  mutation plans below: insert sets both, patch sets updatedAt. */
   readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
@@ -139,7 +142,8 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
     ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {}),
     ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {}),
-    ...(meta.relations && Object.keys(meta.relations).length ? { relations: meta.relations } : {})
+    ...(meta.relations && Object.keys(meta.relations).length ? { relations: meta.relations } : {}),
+    ...(meta.clientCan ? { clientCan: meta.clientCan } : {})
   };
   const existing = tables[meta.tableName];
   if (!existing) {
@@ -233,6 +237,7 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
       kind: "mutation",
       name,
       table,
+      operationKind: "insert",
       plan(args, ctx) {
         const id = ctx.localId(table);
         const row = value({ ctx: forbiddenCtx(name), auth: { userId: ctx.userId }, args, now: ctx.now, localId: id });
@@ -256,6 +261,7 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
       kind: "mutation",
       name,
       table,
+      operationKind: "delete",
       plan: (args) => ({ kind: "delete", table, id: resolveId(args) })
     };
   }
@@ -265,6 +271,7 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
     kind: "mutation",
     name,
     table,
+    operationKind: "patch",
     plan(args, ctx) {
       const id = resolveId(args);
       const patch: Record<string, unknown> = {};

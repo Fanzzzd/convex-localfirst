@@ -3,6 +3,7 @@ import type {
   LocalId,
   LocalOperation,
   OperationStatus,
+  RoleValue,
   RowValue,
   ScopeKey,
   ServerChange,
@@ -93,6 +94,16 @@ export type LocalStore = {
   /** Forget a scope's cursor entirely (revocation): a later re-grant must
    *  re-bootstrap instead of resuming from a cursor whose rows were evicted. */
   removeCursor(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void>;
+
+  /**
+   * OPTIONAL durable per-scope role cache (DX v4 §6). The role the server resolved for
+   * this user in a membership scope, persisted so useRole/useCan survive a reload without
+   * waiting for the first pull. Absent (a custom store that predates this): roles live in
+   * engine memory only — correct, just not reload-durable. Dropped by clear() on logout.
+   */
+  getRoles?(): Promise<Record<ScopeKey, RoleValue>>;
+  setRole?(scopeKey: ScopeKey, role: RoleValue, expectedEpoch?: number): Promise<void>;
+  removeRole?(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void>;
 
   /** Logout generation. Pull responses carry the value they started under; stores
    *  reject every write from an older generation so clear() cannot be undone. */

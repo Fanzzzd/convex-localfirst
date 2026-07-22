@@ -2,7 +2,7 @@ import { defineTable, mutationGeneric as mutation, queryGeneric as query } from 
 import type { RegisteredMutation, RegisteredQuery, TableDefinition } from "convex/server";
 import { v } from "convex/values";
 import type { ObjectType, PropertyValidators, VFloat64, VString } from "convex/values";
-import type { ScopeDefinition } from "../core/index.js";
+import type { ClientCanConfig, ScopeDefinition } from "../core/index.js";
 import type { LocalTableDeclaration } from "../core/db.js";
 import type {
   BackrefRelationDescriptor,
@@ -23,6 +23,7 @@ export type {
   ManyRelationDescriptor,
   OneRelationDescriptor
 } from "../core/relations.js";
+export type { ClientCanConfig, ClientCanWriteInput } from "../core/manifest.js";
 
 // Identity is NOT configured here: this factory only declares local-first tables
 // and their spec closures. The server-authoritative user id is resolved at sync
@@ -89,6 +90,18 @@ export type TableOptions<
   // fields (e.g. `description_html`) are tag-stripped before tokenizing. Opt-in; omit for a
   // non-searchable table.
   readonly searchFields?: readonly string[];
+  /**
+   * Optional CLIENT-SIDE mirror of `access.write` (DX v4 §6). Declared ONCE here, next to
+   * the table, in the same isomorphic module the shape lives in: the server IGNORES it
+   * (createSyncFunctions authorizes via its own `access.write`), the client evaluates it in
+   * `useCan` to enable/disable UI. Pure — no `ctx`, same argument shape as the server hook.
+   * ADVISORY: the server stays authoritative. `role` is typed `unknown` (annotate/cast to
+   * your app's role type); `before`/`proposed` are the table's row, `patch` its fields.
+   */
+  readonly clientCan?: ClientCanConfig<
+    RowOf<Shape, IdField> & Record<TsFieldNames<Ts>, number>,
+    unknown
+  >;
 };
 
 /** The row type a table's queries return: your shape + the id field + Convex's
@@ -235,6 +248,9 @@ export function createLocalFirst<Ctx = unknown, DefaultIdField extends string = 
         counterFields: tableOptions.counterFields,
         searchFields: tableOptions.searchFields,
         relations: tableOptions.relations,
+        // Isomorphic: carried in the attached metadata so the CLIENT's collectManifest
+        // picks it up (via meta.clientCan). The server's collectTables never reads it.
+        clientCan: tableOptions.clientCan,
         timestamps: tsFields,
         // The complete synced surface — what bootstrap may ship (never `extra` columns).
         syncedFields: [

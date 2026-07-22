@@ -40,6 +40,7 @@ export function createTodoManifest(): LocalFirstManifest {
         kind: "mutation",
         name: "todos:create",
         table: "todos",
+        operationKind: "insert",
         plan(args, ctx) {
           return {
             kind: "insert",
@@ -60,6 +61,7 @@ export function createTodoManifest(): LocalFirstManifest {
         kind: "mutation",
         name: "todos:toggle",
         table: "todos",
+        operationKind: "patch",
         plan(args) {
           return { kind: "patch", table: "todos", id: args.id, patch: { done: args.done } };
         }
@@ -68,6 +70,7 @@ export function createTodoManifest(): LocalFirstManifest {
         kind: "mutation",
         name: "todos:remove",
         table: "todos",
+        operationKind: "delete",
         plan(args) {
           return { kind: "delete", table: "todos", id: args.id };
         }

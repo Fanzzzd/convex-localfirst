@@ -167,6 +167,37 @@ export type LocalDb<Modules extends Record<string, unknown>> = {
   >;
 };
 
+/** Every local-first table name declared across `Modules` (the db-root's table keys). */
+export type TableNamesOf<Modules extends Record<string, unknown>> = DeclarationName<TableDeclarations<Modules>>;
+
+/** The row type of table `Name` declared in `Modules` — shape + id + timestamps. */
+export type TableRowOf<
+  Modules extends Record<string, unknown>,
+  Name extends string
+> = RowOf<DeclarationForName<TableDeclarations<Modules>, Name>>;
+
+/**
+ * The object `useCan()` returns — the client-side write mirror (DX v4 §6). Pass the same
+ * `Modules` type you build the db root with to type table names and row shapes from the
+ * schema; the default (no `Modules`) is the loose, string-keyed form. Every method returns
+ * `true` when the table declares no `clientCan.write` (advisory — the server is authoritative).
+ */
+export type CanChecker<Modules extends Record<string, unknown> = never> = [Modules] extends [never]
+  ? {
+      insert(table: string, proposed: Record<string, unknown>): boolean;
+      patch(table: string, row: Record<string, unknown>, patch?: Record<string, unknown>): boolean;
+      remove(table: string, row: Record<string, unknown>): boolean;
+    }
+  : {
+      insert<Name extends TableNamesOf<Modules>>(table: Name, proposed: TableRowOf<Modules, Name>): boolean;
+      patch<Name extends TableNamesOf<Modules>>(
+        table: Name,
+        row: TableRowOf<Modules, Name>,
+        patch?: Partial<TableRowOf<Modules, Name>>
+      ): boolean;
+      remove<Name extends TableNamesOf<Modules>>(table: Name, row: TableRowOf<Modules, Name>): boolean;
+    };
+
 class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = never>
   implements LocalQueryPlan<Row, unknown, Group>
 {

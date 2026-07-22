@@ -24,6 +24,7 @@ import {
   viaIds,
   type AttachmentBackend,
   type AttachmentUploadState,
+  type CanChecker,
   type FunctionNameResolver,
   type LocalFirstManifest,
   type LocalDb,
@@ -76,6 +77,7 @@ export {
 };
 export type {
   BackrefRelationDescriptor,
+  CanChecker,
   DeclaredRelationDescriptor,
   DeclaredRelations,
   FilterParseError,
@@ -89,6 +91,7 @@ export type {
   RelationSpec,
   TypedTableQuery
 };
+export type { TableNamesOf, TableRowOf } from "../core/index.js";
 
 export const ConvexReactClient = ConvexReact.ConvexReactClient;
 export const Authenticated = ConvexReact.Authenticated;
@@ -955,6 +958,115 @@ export function useSyncStatus(): SyncStatus {
  * app-provided export/migration/discard flow. */
 export function useSyncRecovery(): RecoveryStatus {
   return useSyncStatus().recovery;
+}
+
+/**
+ * The caller's synced role in a membership scope (DX v4 §6). Pass the scope-value object
+ * (e.g. `{ workspace_id }`); returns the role, `null` (denied / no access), or `undefined`
+ * (not yet synced — the first pull hasn't landed, or the server is a 0.3.x build that omits
+ * roles). Type the role via the generic: `useRole<Role>({ workspace_id })`. Reactive — it
+ * re-renders when a pull updates the role or a logout clears it.
+ *
+ * ```tsx
+ * const role = useRole<number>({ workspace_id });
+ * if (role === undefined) return <Spinner />;   // still syncing
+ * if (role === null) return <NoAccess />;        // denied
+ * ```
+ */
+export function useRole<Role = unknown>(
+  scope: Record<string, unknown> | null | undefined
+): Role | null | undefined {
+  const engine = useLocalFirstEngine();
+  const scopeKey = useMemo(() => JSON.stringify(scope ?? null), [scope]);
+  const [role, setRole] = useState<Role | null | undefined>(() =>
+    engine ? (engine.getRole(scope) as Role | null | undefined) : undefined
+  );
+  useEffect(() => {
+    if (!engine) {
+      setRole(undefined);
+      return;
+    }
+    const read = () => setRole(engine.getRole(scope) as Role | null | undefined);
+    read();
+    // Actively pull the scope so the role is fetched even without a mounted query on it.
+    void engine.syncRoleScope(scope);
+    return engine.subscribeRoles(read);
+    // scope is read at effect time; scopeKey is its stable identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, scopeKey]);
+  return role;
+}
+
+/**
+ * The client-side write mirror (DX v4 §6): `{ insert, patch, remove }`, each returning
+ * whether the CURRENT user (with their synced role) may perform the write per the table's
+ * `clientCan.write`. Returns `true` when no mirror is declared, or the role isn't synced yet
+ * — ADVISORY only, the server stays authoritative. Pass your modules type to `useCan<typeof
+ * modules>()` for typed table names + row shapes.
+ *
+ * ```tsx
+ * const can = useCan();
+ * <Button disabled={!can.patch("issues", issue, { name })} />
+ * ```
+ */
+export function useCan<Modules extends Record<string, unknown> = never>(): CanChecker<Modules> {
+  const engine = useLocalFirstEngine();
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!engine) return;
+    return engine.subscribeRoles(() => setTick((t) => t + 1));
+  }, [engine]);
+  return useMemo(
+    () =>
+      ({
+        insert: (table: string, proposed: Record<string, unknown>) =>
+          engine ? engine.can(table, "insert", { proposed }) : true,
+        patch: (table: string, row: Record<string, unknown>, patch?: Record<string, unknown>) =>
+          engine ? engine.can(table, "patch", { before: row, patch, proposed: { ...row, ...(patch ?? {}) } }) : true,
+        remove: (table: string, row: Record<string, unknown>) =>
+          engine ? engine.can(table, "delete", { before: row, proposed: null }) : true
+      }) as CanChecker<Modules>,
+    // tick refreshes the checker identity when roles change, so consumers re-evaluate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [engine, tick]
+  );
+}
+
+/**
+ * Undo/redo (DX v4 §7). Pass a scope-value object to scope the stacks to that
+ * workspace/project (`useUndo({ workspace_id })`); omit it to operate across every scope
+ * (most-recent action first). `undo`/`redo` emit ordinary local-first mutations — they
+ * sync like any op; a batch group undoes as one unit.
+ *
+ * ```tsx
+ * const { undo, redo, canUndo, canRedo } = useUndo({ workspace_id });
+ * <button disabled={!canUndo} onClick={() => void undo()}>Undo</button>
+ * ```
+ */
+export function useUndo(scope?: Record<string, unknown> | null): {
+  readonly undo: () => Promise<void>;
+  readonly redo: () => Promise<void>;
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
+} {
+  const engine = useLocalFirstEngine();
+  const [tick, setTick] = useState(0);
+  const scopeKey = useMemo(() => JSON.stringify(scope ?? null), [scope]);
+  useEffect(() => {
+    if (!engine) return;
+    return engine.subscribeUndo(() => setTick((t) => t + 1));
+  }, [engine]);
+  return useMemo(
+    () => ({
+      undo: () => (engine ? engine.undo(scope) : Promise.resolve()),
+      redo: () => (engine ? engine.redo(scope) : Promise.resolve()),
+      canUndo: engine ? engine.canUndo(scope) : false,
+      canRedo: engine ? engine.canRedo(scope) : false
+    }),
+    // scope is read at call time; scopeKey + tick are the stable identity + change signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [engine, scopeKey, tick]
+  );
 }
 
 export type CreateAttachmentInput = {

@@ -37,7 +37,23 @@ export const issues = lf.table("issues", {
   scope: scopeWorkspaceId,
   timestamps: ["created_at", "updated_at"],
   indexes: { byWorkspace: ["workspace_id", "created_at"] },
-  setFields: ["label_ids", "assignee_ids", "module_ids"]
+  setFields: ["label_ids", "assignee_ids", "module_ids"],
+  // CLIENT-SIDE mirror of sync.ts's `access.write` (DX v4 §6). Declared here, in the SAME
+  // isomorphic module the shape lives in: the server IGNORES it (createSyncFunctions stays
+  // authoritative), the client evaluates it in `useCan` so buttons disable instead of the
+  // push rejecting. Kept byte-for-byte in step with the server rule below. `role` is the
+  // ws_members role the server ships per pull (admin/member ≥ 15, viewer 10, guest 5).
+  clientCan: {
+    write: ({ userId, role, action, before, proposed }) => {
+      const r = role as number;
+      if (r >= 15) return true; // admin / member
+      if (r !== 5) return false; // viewer (10) is read-only
+      const sees = (row: typeof before) =>
+        !!row && (row.created_by === userId || (row.assignee_ids ?? []).includes(userId ?? ""));
+      if (action === "insert") return proposed?.created_by === userId;
+      return sees(before) && (action === "delete" || sees(proposed));
+    }
+  }
 });
 
 // Derived from the shape: create takes every field (timestamps stamped automatically),

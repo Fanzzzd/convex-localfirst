@@ -6,6 +6,7 @@ import type {
   LocalId,
   LocalOperation,
   OperationStatus,
+  RoleValue,
   RowValue,
   ScopeKey,
   ServerChange,
@@ -30,6 +31,7 @@ export class MemoryLocalStore implements LocalStore {
   private readonly canonical = new Map<TableName, Map<LocalId, RowValue>>();
   private readonly operations = new Map<string, LocalOperation>();
   private readonly cursors = new Map<ScopeKey, string>();
+  private readonly roles = new Map<ScopeKey, RoleValue>();
   // Attachment blob outbox, keyed by localId. Blobs are immutable, so we share the
   // reference (no structuredClone — a Blob round-trip through it is a needless copy).
   private readonly blobs = new Map<LocalId, StoredBlob>();
@@ -163,6 +165,20 @@ export class MemoryLocalStore implements LocalStore {
     return this.epoch;
   }
 
+  async getRoles(): Promise<Record<ScopeKey, RoleValue>> {
+    return Object.fromEntries(this.roles);
+  }
+
+  async setRole(scopeKey: ScopeKey, role: RoleValue, expectedEpoch = this.epoch): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
+    this.roles.set(scopeKey, role);
+  }
+
+  async removeRole(scopeKey: ScopeKey, expectedEpoch = this.epoch): Promise<void> {
+    if (this.sessionEnded || expectedEpoch !== this.epoch) return;
+    this.roles.delete(scopeKey);
+  }
+
   async putBlob(record: StoredBlob): Promise<void> {
     if (this.sessionEnded) return;
     this.blobs.set(record.localId, { ...record });
@@ -187,6 +203,7 @@ export class MemoryLocalStore implements LocalStore {
     this.canonical.clear();
     this.operations.clear();
     this.cursors.clear();
+    this.roles.clear();
     this.blobs.clear();
     this.notify();
   }

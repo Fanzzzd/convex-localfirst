@@ -37,14 +37,18 @@ import type {
   LocalId,
   LocalOperation,
   MutationStatus,
+  OperationKind,
   RecoveryGroup,
   RecoveryOperation,
   RecoveryStatus,
+  RoleValue,
   RowDelta,
   RowValue,
+  ScopeKey,
   SyncScope,
   SyncStatus
 } from "./types.js";
+import type { ClientCanWriteInput } from "./manifest.js";
 
 type AnyLocalQueryPlan = LocalQueryPlan<Record<string, unknown>, unknown, string>;
 
@@ -153,6 +157,37 @@ function chunkRespectingGroups(
   return chunks;
 }
 
+// ---- Undo/redo (DX v4 §7) ---------------------------------------------------
+// A concrete, ready-to-emit inverse operation: the mutation NAME + kind + payload the
+// engine will push to undo (or redo) an earlier op. insert re-inserts a captured row,
+// patch restores the touched fields, delete removes a row.
+type ResolvedUndoOp =
+  | { readonly kind: "insert"; readonly table: string; readonly id: LocalId; readonly functionName: string; readonly value: Record<string, unknown> }
+  | { readonly kind: "patch"; readonly table: string; readonly id: LocalId; readonly functionName: string; readonly patch: Record<string, unknown> }
+  | { readonly kind: "delete"; readonly table: string; readonly id: LocalId; readonly functionName: string };
+
+/** One undoable unit: a single user op, or a whole atomic batch group (its members'
+ *  inverses in reverse order, replayed as ONE group so the group undoes as a unit). */
+type UndoEntry = {
+  readonly scopeKey: ScopeKey;
+  /** Global monotonic sequence, so a scope-less undo can pick the most-recent action. */
+  readonly seq: number;
+  readonly ops: readonly ResolvedUndoOp[];
+};
+
+/** Per-scope undo/redo cap (DX v4 §7). Oldest entries fall off the bottom. */
+const UNDO_CAP = 100;
+
+/** Strip client-only system fields (`_id`, `_version`, `_deleted`, `_pending`, …) from a
+ *  captured row so it re-inserts as a plain document (the idField carries identity). */
+function stripSystemFields(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (!key.startsWith("_")) out[key] = value;
+  }
+  return out;
+}
+
 /** True for the server's idempotent no-op-delete ack ({ noop: true }) — an accepted op
  *  that produced NO canonical change, so it must be dropped from the outbox explicitly. */
 function isNoopAck(serverResult: unknown): boolean {
@@ -237,6 +272,26 @@ export class LocalFirstEngine {
     Set<{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>
   >();
   private readonly observedOutcomes = new Map<string, OperationOutcome>();
+  // ---- Permission-aware UI (DX v4 §6) ----------------------------------------
+  // Per membership scope: the role the server resolved (durable via the store, so it
+  // survives reload). A stored `null` is a DENIED marker (useRole → null); an absent
+  // entry is "not yet synced" (useRole → undefined). Seeded from the store at boot.
+  private readonly roles = new Map<ScopeKey, RoleValue | null>();
+  private readonly roleListeners = new Set<() => void>();
+  private readonly rolesSeed: Promise<void>;
+  // ---- Undo/redo (DX v4 §7) --------------------------------------------------
+  // Per-scope inverse stacks. A user op pushes onto undo + clears redo; undo emits the
+  // inverse (ordinary local-first ops) and pushes the counter-inverse onto redo; redo
+  // does the reverse. NOT durable — cleared with local data on logout.
+  private readonly undoStacks = new Map<ScopeKey, UndoEntry[]>();
+  private readonly redoStacks = new Map<ScopeKey, UndoEntry[]>();
+  private readonly undoListeners = new Set<() => void>();
+  private undoSeq = 0;
+  // Table → its insert/patch/delete mutation NAME, so an inverse can name a real declared
+  // mutation the server will accept (invert an insert with the table's delete mutation, etc).
+  private readonly tableMutationNames = new Map<string, { insert?: string; patch?: string; delete?: string }>();
+  // Logout detection: the store epoch this engine last observed. A bump means clear() ran.
+  private knownEpoch = 0;
 
   constructor(options: LocalFirstEngineOptions) {
     this.manifest = options.manifest;
@@ -255,6 +310,20 @@ export class LocalFirstEngine {
     // so getStatus() is accurate without waiting for the first sync.
     void this.refreshPendingCount();
     this.timestampSeed = this.seedTimestampHighWater();
+    // Index each table's insert/patch/delete mutation name for undo (§7): inverting an
+    // insert needs the table's delete mutation, inverting a delete needs its insert, etc.
+    for (const definition of Object.values(this.manifest.mutations)) {
+      if (!definition.operationKind) continue;
+      const entry = this.tableMutationNames.get(definition.table) ?? {};
+      if (entry[definition.operationKind] === undefined) entry[definition.operationKind] = definition.name;
+      this.tableMutationNames.set(definition.table, entry);
+    }
+    // Seed the durable role cache so useRole/useCan are accurate right after a reload,
+    // before the first pull, and detect a logout (epoch bump) to clear derived state.
+    this.rolesSeed = this.seedRoles();
+    void this.store.getEpoch().then((epoch) => {
+      this.knownEpoch = epoch;
+    });
     this.cache = new LocalCache(this, this.store);
     void this.cache.hydrate();
     // The search index shares the cache's hydration + delta bus (built after hydrate,
@@ -696,6 +765,21 @@ export class LocalFirstEngine {
   private onStoreNotify(): void {
     this.notifyDataListeners();
     if (this.cacheWriteDepth === 0) void this.cache.resyncFromStore();
+    void this.detectLogoutClear();
+  }
+
+  /** A store epoch bump means clear() ran (logout / clear-local-data): drop the in-memory
+   *  role cache and the undo/redo stacks (§6/§7). The store already wiped its durable
+   *  copies; this reconciles the engine's derived state and wakes useRole/useUndo. */
+  private async detectLogoutClear(): Promise<void> {
+    const epoch = await this.store.getEpoch();
+    if (epoch === this.knownEpoch) return;
+    this.knownEpoch = epoch;
+    this.undoStacks.clear();
+    this.redoStacks.clear();
+    this.roles.clear();
+    this.notifyUndoListeners();
+    this.notifyRoleListeners();
   }
 
   /** Run an engine-owned store write with cache-resync suppression, so the store's
@@ -920,7 +1004,13 @@ export class LocalFirstEngine {
       // insert→delete intent cannot be reversed by equal/backward wall clocks.
       if (this.multiTabEnabled) await this.seedTimestampHighWater();
       const operation = buildOperation(this.monotonicNow());
-      return { operation, local: await this.commitLocal(operation) };
+      // Record the inverse from the before-image (§7) BEFORE commit — commitLocal rewrites
+      // set/counter patch fields into deltas, so the raw touched-field values must be read now.
+      const before = await this.getRow(operation.table, operation.id);
+      const inverse = this.inverseOf(this.toResolvedUndoOp(operation), before ?? null);
+      const local = await this.commitLocal(operation);
+      if (inverse) this.pushUndoEntry(this.scopeKeyForOp(operation, before ?? null), [inverse]);
+      return { operation, local };
     });
     const local = prepared.then(({ local }) => local);
     const server = prepared.then(({ operation }) =>
@@ -1098,12 +1188,23 @@ export class LocalFirstEngine {
     for (const promise of serverPerOp) promise.catch(() => {});
 
     const commits: LocalCommit[] = [];
+    // Collect each member's inverse (from its before-image, in order) so the group undoes
+    // as ONE unit (§7). Applied in REVERSE order at undo time (last op undone first).
+    const inverses: ResolvedUndoOp[] = [];
+    let undoScopeKey: ScopeKey | null = null;
     for (let index = 0; index < operations.length; index++) {
       const operation = operations[index]!;
+      const before = await this.getRow(operation.table, operation.id);
+      const inverse = this.inverseOf(this.toResolvedUndoOp(operation), before ?? null);
+      if (inverse) {
+        inverses.push(inverse);
+        undoScopeKey ??= this.scopeKeyForOp(operation, before ?? null);
+      }
       const commit = await this.commitLocal(operation);
       commits.push(commit);
       planned[index]!.resolveLocal(commit);
     }
+    if (inverses.length > 0 && undoScopeKey) this.pushUndoEntry(undoScopeKey, inverses.reverse());
 
     // Aggregate the group outcome: resolve with per-op results when all accept; reject
     // with the group reason when any rejects (each op already reverted via its rejected
@@ -1323,6 +1424,307 @@ export class LocalFirstEngine {
   /** Subscribe to one attachment's upload-state changes. */
   subscribeAttachment(localId: string, listener: () => void): () => void {
     return this.attachments.subscribe(localId, listener);
+  }
+
+  // ---- Permission-aware UI: role sync + write mirror (DX v4 §6) --------------
+
+  /** Load the durable role cache into memory at boot so useRole/useCan don't wait for a
+   *  first pull after a reload. Best-effort — a store without role support just stays empty. */
+  private async seedRoles(): Promise<void> {
+    try {
+      const stored = await this.store.getRoles?.();
+      if (stored) for (const [scopeKey, role] of Object.entries(stored)) this.roles.set(scopeKey, role);
+      if (stored && Object.keys(stored).length > 0) this.notifyRoleListeners();
+    } catch {
+      // In-memory roles still fill in from the next pull; only the reload seed is lost.
+    }
+  }
+
+  private notifyRoleListeners(): void {
+    for (const listener of Array.from(this.roleListeners)) listener();
+  }
+
+  /** Subscribe to role-cache changes (a pull delivered/updated a role, or logout cleared it). */
+  subscribeRoles(listener: () => void): () => void {
+    this.roleListeners.add(listener);
+    return () => this.roleListeners.delete(listener);
+  }
+
+  /**
+   * The caller's synced role in a membership scope: the role value, `null` (denied / no
+   * access), or `undefined` (not yet synced — a 0.3.x server, or the first pull hasn't
+   * landed). `scope` is the scope-value object (e.g. `{ workspace_id }`), mapped to the
+   * membership scope key via the table declarations.
+   */
+  getRole(scope: Record<string, unknown> | null | undefined): RoleValue | null | undefined {
+    const scopeKey = this.scopeKeyForScopeArgs(scope);
+    if (!scopeKey) return undefined;
+    return this.roles.has(scopeKey) ? (this.roles.get(scopeKey) ?? null) : undefined;
+  }
+
+  /** Pull the given membership scope so its role (and rows) are fetched — lets `useRole`
+   *  be self-sufficient even without a mounted query on that scope. Never throws. */
+  async syncRoleScope(scope: Record<string, unknown> | null | undefined): Promise<void> {
+    const key = this.scopeKeyForScopeArgs(scope);
+    if (!key) return;
+    const kind = key.slice(0, key.indexOf(":")) as SyncScope["kind"];
+    await this.refreshPlanScope({ kind, key });
+  }
+
+  /** Background-sync a raw sync scope (push pending + pull it). Never throws. */
+  private async refreshPlanScope(scope: SyncScope): Promise<void> {
+    try {
+      await this.syncOnce([scope]);
+    } catch {
+      // status.lastError already captures it; background sync must not throw to React.
+    }
+  }
+
+  /** Map a scope-value object (`{ <partitionField>: value }`) to its membership scope
+   *  key (`byWorkspace:<value>` / `byProject:<value>`). Null when no membership table
+   *  declares that field, or the value is missing — byUser scopes carry no role. */
+  private scopeKeyForScopeArgs(scope: Record<string, unknown> | null | undefined): ScopeKey | null {
+    if (!scope) return null;
+    for (const definition of Object.values(this.manifest.tables)) {
+      const def = definition.scope;
+      if (def.kind !== "byWorkspace" && def.kind !== "byProject") continue;
+      const field = def.kind === "byWorkspace" ? def.workspaceIdField : def.projectIdField;
+      const value = scope[field];
+      if (value != null) return `${def.kind}:${String(value)}`;
+    }
+    return null;
+  }
+
+  /** The membership scope key a row lives in, or null for a byUser/unscoped table. */
+  private membershipScopeKeyForRow(table: string, row: Record<string, unknown> | null): ScopeKey | null {
+    if (!row) return null;
+    const scope = this.manifest.tables[table]?.scope;
+    if (!scope || scope.kind === "byUser") return null;
+    const field = scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
+    const value = row[field];
+    return value == null ? null : `${scope.kind}:${String(value)}`;
+  }
+
+  /**
+   * Evaluate the client-side write mirror (§6) for one action. ADVISORY — the server is
+   * authoritative. Returns `true` when the table declares no mirror, or when the row's role
+   * is not yet synced (a 0.3.x server / pre-first-pull); `false` when the scope is denied
+   * (role `null`); otherwise the mirror's verdict. byUser tables have no role → always true.
+   */
+  can(
+    table: string,
+    action: OperationKind,
+    input: { before?: Record<string, unknown> | null; patch?: Record<string, unknown>; proposed?: Record<string, unknown> | null }
+  ): boolean {
+    const mirror = this.manifest.tables[table]?.clientCan?.write;
+    if (!mirror) return true;
+    const before = input.before ?? null;
+    const proposed = input.proposed ?? null;
+    const subject = action === "insert" ? proposed : before;
+    const scopeKey = this.membershipScopeKeyForRow(table, subject);
+    if (!scopeKey) return true; // byUser / unscoped — server enforces ownership
+    if (!this.roles.has(scopeKey)) return true; // not synced yet — advisory, don't block
+    const role = this.roles.get(scopeKey) ?? null;
+    if (role === null) return false; // denied
+    const args: ClientCanWriteInput = { userId: this.userId, role, table, action, before, patch: input.patch, proposed };
+    return mirror(args);
+  }
+
+  // ---- Undo/redo (DX v4 §7) --------------------------------------------------
+
+  private notifyUndoListeners(): void {
+    for (const listener of Array.from(this.undoListeners)) listener();
+  }
+
+  /** Subscribe to undo/redo stack changes (a recorded op, an undo/redo, or a logout clear). */
+  subscribeUndo(listener: () => void): () => void {
+    this.undoListeners.add(listener);
+    return () => this.undoListeners.delete(listener);
+  }
+
+  /** Whether an undo is available — for `scope` (a scope-value object) if given, else any scope. */
+  canUndo(scope?: Record<string, unknown> | null): boolean {
+    return this.hasEntry(this.undoStacks, scope);
+  }
+
+  /** Whether a redo is available — scoped like canUndo. */
+  canRedo(scope?: Record<string, unknown> | null): boolean {
+    return this.hasEntry(this.redoStacks, scope);
+  }
+
+  private hasEntry(stacks: Map<ScopeKey, UndoEntry[]>, scope?: Record<string, unknown> | null): boolean {
+    if (scope) {
+      const key = this.scopeKeyForScopeArgs(scope);
+      return key ? (stacks.get(key)?.length ?? 0) > 0 : false;
+    }
+    for (const stack of stacks.values()) if (stack.length > 0) return true;
+    return false;
+  }
+
+  /** Undo the most recent action — in `scope` if given, else globally (most-recent by
+   *  seq). Emits ordinary local-first mutations (they sync like any op) and records the
+   *  redo. A batch group undoes as ONE group. No-op if nothing to undo. */
+  async undo(scope?: Record<string, unknown> | null): Promise<void> {
+    const entry = this.popEntry(this.undoStacks, scope);
+    if (entry) await this.emitInverse(entry, this.redoStacks);
+  }
+
+  /** Redo the most recently undone action — scoped like undo. */
+  async redo(scope?: Record<string, unknown> | null): Promise<void> {
+    const entry = this.popEntry(this.redoStacks, scope);
+    if (entry) await this.emitInverse(entry, this.undoStacks);
+  }
+
+  private popEntry(stacks: Map<ScopeKey, UndoEntry[]>, scope?: Record<string, unknown> | null): UndoEntry | null {
+    if (scope) {
+      const key = this.scopeKeyForScopeArgs(scope);
+      const stack = key ? stacks.get(key) : undefined;
+      return stack && stack.length > 0 ? stack.pop()! : null;
+    }
+    // Scope-less: pop the globally most-recent entry across every stack.
+    let best: { stack: UndoEntry[]; entry: UndoEntry } | null = null;
+    for (const stack of stacks.values()) {
+      const top = stack[stack.length - 1];
+      if (top && (!best || top.seq > best.entry.seq)) best = { stack, entry: top };
+    }
+    if (!best) return null;
+    best.stack.pop();
+    return best.entry;
+  }
+
+  /** Push a recorded undo unit (a user op or a batch group). Clears the scope's redo
+   *  stack (a new action forks history) and caps the undo stack at UNDO_CAP. */
+  private pushUndoEntry(scopeKey: ScopeKey, ops: readonly ResolvedUndoOp[]): void {
+    if (ops.length === 0) return;
+    const stack = this.undoStacks.get(scopeKey) ?? [];
+    stack.push({ scopeKey, seq: ++this.undoSeq, ops });
+    if (stack.length > UNDO_CAP) stack.shift();
+    this.undoStacks.set(scopeKey, stack);
+    this.redoStacks.delete(scopeKey); // a fresh action invalidates the redo future
+    this.notifyUndoListeners();
+  }
+
+  /**
+   * Emit an entry's inverse ops as ordinary local-first mutations and record the
+   * counter-entry onto `counterStacks`. A multi-op entry is emitted as ONE atomic group.
+   * The deleted-row edge (§7): a patch inverse whose row was remotely deleted is skipped
+   * (its entry is dropped, never resurrected). Counter ops are computed from before-images
+   * captured HERE, so redo is the inverse of the undo.
+   */
+  private async emitInverse(entry: UndoEntry, counterStacks: Map<ScopeKey, UndoEntry[]>): Promise<void> {
+    const applicable: Array<{ op: ResolvedUndoOp; before: Record<string, unknown> | null }> = [];
+    for (const op of entry.ops) {
+      const before = (await this.getRow(op.table, op.id)) ?? null;
+      // Deleted-row edge: undoing a patch on a remotely-deleted row is a no-op — skip it
+      // (do not resurrect). An insert inverse (undo of a delete) is meant to resurrect.
+      if (op.kind === "patch" && !before) continue;
+      applicable.push({ op, before });
+    }
+    if (applicable.length === 0) {
+      this.notifyUndoListeners(); // the entry was dropped
+      return;
+    }
+    await this.timestampSeed;
+    if (this.multiTabEnabled) await this.seedTimestampHighWater();
+    const isGroup = applicable.length > 1;
+    const groupId = isGroup ? createOpId(this.clientId) : undefined;
+    const createdAts = applicable.map(() => this.monotonicNow());
+    const operations: LocalOperation[] = [];
+    const counterOps: ResolvedUndoOp[] = [];
+    applicable.forEach(({ op, before }, index) => {
+      operations.push(
+        this.buildUndoOperation(
+          op,
+          createdAts[index]!,
+          isGroup ? { groupId: groupId!, groupSize: applicable.length, groupIndex: index } : undefined
+        )
+      );
+      const counter = this.inverseOf(op, before);
+      if (counter) counterOps.push(counter);
+    });
+    for (const operation of operations) await this.commitLocal(operation);
+    // The counter-entry replays in REVERSE order (mirror of how a group is recorded).
+    if (counterOps.length > 0) {
+      const stack = counterStacks.get(entry.scopeKey) ?? [];
+      stack.push({ scopeKey: entry.scopeKey, seq: ++this.undoSeq, ops: counterOps.reverse() });
+      if (stack.length > UNDO_CAP) stack.shift();
+      counterStacks.set(entry.scopeKey, stack);
+    }
+    if (this.syncEnabled) this.flushPending();
+    this.notifyUndoListeners();
+  }
+
+  /** A concrete op the engine committed/will commit, in the shape the inverter needs. */
+  private toResolvedUndoOp(operation: LocalOperation): ResolvedUndoOp {
+    if (operation.kind === "insert") {
+      return { kind: "insert", table: operation.table, id: operation.id, functionName: operation.functionName, value: operation.value ?? {} };
+    }
+    if (operation.kind === "patch") {
+      return { kind: "patch", table: operation.table, id: operation.id, functionName: operation.functionName, patch: operation.patch ?? {} };
+    }
+    return { kind: "delete", table: operation.table, id: operation.id, functionName: operation.functionName };
+  }
+
+  /**
+   * The inverse of an op, ready to emit — or null when it can't be built (no
+   * insert/delete mutation declared for the table, or a delete with no before-image).
+   *  - insert → delete (needs the table's delete mutation)
+   *  - delete → insert of the captured before-row (needs the table's insert mutation)
+   *  - patch  → patch restoring the touched fields to their before values (same mutation)
+   */
+  private inverseOf(op: ResolvedUndoOp, before: Record<string, unknown> | null): ResolvedUndoOp | null {
+    const names = this.tableMutationNames.get(op.table);
+    if (op.kind === "insert") {
+      const functionName = names?.delete;
+      return functionName ? { kind: "delete", table: op.table, id: op.id, functionName } : null;
+    }
+    if (op.kind === "delete") {
+      const functionName = names?.insert;
+      if (!functionName || !before) return null;
+      return { kind: "insert", table: op.table, id: op.id, functionName, value: stripSystemFields(before) };
+    }
+    // patch: restore each touched field to its prior value. A field absent before the
+    // patch has no clean "unset" via a field-LWW patch, so it's restored to null.
+    const inversePatch: Record<string, unknown> = {};
+    for (const field of Object.keys(op.patch)) {
+      inversePatch[field] = before && field in before ? before[field] : null;
+    }
+    return { kind: "patch", table: op.table, id: op.id, functionName: op.functionName, patch: inversePatch };
+  }
+
+  /** Build a durable LocalOperation for an inverse op (an undo/redo emission). */
+  private buildUndoOperation(
+    op: ResolvedUndoOp,
+    createdAt: number,
+    group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number }
+  ): LocalOperation {
+    const opId = createOpId(this.clientId);
+    this.opStatuses.set(opId, { opId, status: "pending" });
+    return {
+      opId,
+      clientId: this.clientId,
+      userId: this.userId,
+      schemaVersion: this.manifest.schemaVersion,
+      functionName: op.functionName,
+      table: op.table,
+      kind: op.kind,
+      id: op.id,
+      args: {},
+      value: op.kind === "insert" ? op.value : undefined,
+      patch: op.kind === "patch" ? op.patch : undefined,
+      createdAt,
+      status: "pending",
+      ...(group ?? {})
+    };
+  }
+
+  /** The scope key an op's undo entry belongs to: byUser → the user scope; membership →
+   *  the row's partition (from the inserted value, or the before-image for patch/delete). */
+  private scopeKeyForOp(operation: LocalOperation, before: Record<string, unknown> | null): ScopeKey {
+    const scope = this.manifest.tables[operation.table]?.scope;
+    if (!scope || scope.kind === "byUser") return `u:${this.userId ?? "anon"}`;
+    const row = operation.kind === "insert" ? operation.value ?? null : before;
+    return this.membershipScopeKeyForRow(operation.table, row) ?? `u:${this.userId ?? "anon"}`;
   }
 
   /**
@@ -1869,6 +2271,7 @@ export class LocalFirstEngine {
         }
 
         const denied = new Set(response.deniedScopes ?? []);
+        let rolesChanged = false;
         // Bump before eviction. Any older response waiting in the apply queue now fails
         // the epoch check above and cannot resurrect this scope.
         for (const scopeKey of denied) {
@@ -1877,7 +2280,25 @@ export class LocalFirstEngine {
           await this.store.removeCursor(scopeKey, storeEpoch);
           cursors[scopeKey] = null;
           snapshotSeen.delete(scopeKey);
+          // Record the denial durably as a `null` role marker (§6): useRole → null (denied),
+          // distinct from an absent entry (not yet synced → undefined).
+          if (this.roles.get(scopeKey) !== null) {
+            this.roles.set(scopeKey, null);
+            await this.store.setRole?.(scopeKey, null, storeEpoch);
+            rolesChanged = true;
+          }
         }
+        // Ship the server-resolved roles into the durable cache (§6). Denied scopes are
+        // handled above (null); everything here is an authorized membership role.
+        for (const [scopeKey, role] of Object.entries(response.roles ?? {})) {
+          if (denied.has(scopeKey)) continue;
+          if (this.roles.get(scopeKey) !== role) {
+            this.roles.set(scopeKey, role as RoleValue);
+            await this.store.setRole?.(scopeKey, role as RoleValue, storeEpoch);
+            rolesChanged = true;
+          }
+        }
+        if (rolesChanged) this.notifyRoleListeners();
 
         for (const scopeKey of response.snapshotScopes ?? []) {
           if (!denied.has(scopeKey) && !snapshotSeen.has(scopeKey)) snapshotSeen.set(scopeKey, new Map());

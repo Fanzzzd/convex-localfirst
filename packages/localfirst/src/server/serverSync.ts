@@ -241,6 +241,10 @@ export type PullResult = {
    *  The client evicts the scope's rows and forgets its cursor: after a
    *  revocation, data leaves the device on the next sync. */
   readonly deniedScopes: string[];
+  /** Per membership scope: the role `access.member` resolved for the caller (DX v4 §6),
+   *  so the client can mirror access rules in the UI (useRole/useCan). Only membership
+   *  scopes appear (byUser has no role). ADDITIVE — a 0.3.x client ignores the field. */
+  readonly roles: Record<string, unknown>;
 };
 
 /**
@@ -1264,6 +1268,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     snapshotScopes: [],
     bootstrapCursors: {},
     deniedScopes: [],
+    roles: {},
     serverTime: now()
   };
 
@@ -1321,6 +1326,9 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
         continue;
       }
       scopeKey = scopeKeyForValue(scope.kind, scope.value);
+      // Ship the resolved role so the client can mirror access rules (DX v4 §6). Derived
+      // from identity + membership here — never client-supplied. byUser has no role.
+      out.roles[scopeKey] = role;
     } else {
       continue;
     }
