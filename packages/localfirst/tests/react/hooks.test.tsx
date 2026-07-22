@@ -38,7 +38,7 @@ vi.mock("convex/react", () => ({
 }));
 
 // Imported AFTER the mock so the wrapper picks up the stubbed convex/react.
-const { ConvexProvider, ConvexReactClient, collection, many, useLiveQuery, useMutation, useQuery, useSearch, useSyncStatus } =
+const { ConvexProvider, ConvexReactClient, collection, many, useLiveCounts, useLiveQuery, useMutation, useQuery, useSearch, useSyncStatus } =
   await import("../../src/react/index");
 
 function manifest() {
@@ -180,6 +180,40 @@ function SearchTodos({ query }: { query: string }) {
 }
 
 describe("react hooks", () => {
+  it("useLiveCounts returns scalar/grouped counts and updates after a group move", async () => {
+    const store = new MemoryLocalStore();
+    const seed = (id: string, status: string) => store.applyServerChange({
+      changeId: `c-${id}`, scopeKey: "byWorkspace:w1", table: "issues", id, kind: "insert" as const,
+      value: { workspaceId: "w1", status }, version: 1, serverTime: 1
+    });
+    await seed("i1", "open");
+    await seed("i2", "open");
+    await seed("i3", "closed");
+
+    function Counts() {
+      const plan = collection<RowValue>("issues").scope({ workspaceId: "w1" });
+      const total = useLiveCounts(plan);
+      const grouped = useLiveCounts(plan.groupBy("status"));
+      return <span data-testid="counts">{total ?? -1}:{JSON.stringify(grouped ?? {})}</span>;
+    }
+
+    render(
+      <ConvexProvider
+        client={new ConvexReactClient("http://localhost")}
+        localFirst={{ manifest: manifest(), transport: acceptAll, store, userId: "user_a", nameOf: String }}
+      >
+        <Counts />
+      </ConvexProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId("counts").textContent).toBe('3:{"open":2,"closed":1}'));
+
+    await act(() => store.applyServerChange({
+      changeId: "move", scopeKey: "byWorkspace:w1", table: "issues", id: "i3", kind: "patch",
+      patch: { status: "open" }, version: 2, serverTime: 2
+    }));
+    await waitFor(() => expect(screen.getByTestId("counts").textContent).toBe('3:{"open":3}'));
+  });
+
   it("useSearch returns empty for an empty query and finds a row after it is created (delta-driven)", async () => {
     render(wrap(<SearchTodos query="" />));
     // Empty query → empty result, zero cost (no subscription).

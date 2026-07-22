@@ -16,6 +16,7 @@ export * from "./db.js";
 // adapter can wire its own upload transport. AttachmentManager itself is internal.
 export type { AttachmentBackend, XhrLike } from "./attachments.js";
 export * from "./collection.js";
+export * from "./filter.js";
 // collectManifest: the codegen-free client manifest — built at runtime from the same
 // imported lf.table modules the server's collectTables consumes. LF_METADATA_KEY and
 // the meta TYPE stay internal (only the server DSL writes them).

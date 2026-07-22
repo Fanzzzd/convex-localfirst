@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MemoryLocalStore,
   byWorkspace,
@@ -10,7 +10,7 @@ import {
   type RowValue,
   type ServerChange
 } from "../../src/core";
-import { LocalFirstEngine, SortedIndex } from "../../src/core/internal";
+import { LocalCache, LocalFirstEngine, SortedIndex } from "../../src/core/internal";
 
 function issuesManifest() {
   const ws = byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" });
@@ -233,5 +233,126 @@ describe("query planner (explain)", () => {
     // A scoped table queried with no scope value fails closed.
     const closed = engine.explainQuery(collection("issues"));
     expect(closed.scopeSatisfied).toBe(false);
+  });
+
+  it("plans filter eq/in prefixes and the next-field range, but not opaque where predicates", async () => {
+    const { engine } = await makeEngine();
+    const eq = engine.explainQuery(
+      collection<RowValue>("issues")
+        .scope({ workspaceId: "w1" })
+        .filter({ status: "open", rank: { gte: "b", lt: "z" } })
+        .order("rank")
+    );
+    expect(eq).toMatchObject({ strategy: "index", index: "byStatusRank", prefix: ["w1", "open"] });
+    expect(eq.range).toEqual({ field: "rank", gte: "b", lt: "z" });
+
+    const union = engine.explainQuery(
+      collection<RowValue>("issues")
+        .scope({ workspaceId: "w1" })
+        .filter({ status: { in: ["open", "closed"] } })
+        .order("rank")
+    );
+    expect(union).toMatchObject({ strategy: "index", index: "byStatusRank", sortedByIndex: false });
+    expect(union.prefixes).toEqual([["w1", "open"], ["w1", "closed"]]);
+
+    const largeIn = engine.explainQuery(
+      collection<RowValue>("issues")
+        .scope({ workspaceId: "w1" })
+        .filter({ status: { in: Array.from({ length: 17 }, (_, index) => `s${index}`) } })
+        .order("rank")
+    );
+    expect(largeIn.strategy).toBe("scan");
+
+    const opaque = engine.explainQuery(
+      collection<RowValue>("issues")
+        .scope({ workspaceId: "w1" })
+        .where((row) => row.status === "open")
+        .order("rank")
+    );
+    expect(opaque.index).toBe("byRank");
+    expect(opaque.index).not.toBe("byStatusRank");
+  });
+});
+
+describe("grouped and count-only live views", () => {
+  it("moves rows between groups, adds/removes groups, and preserves unaffected identities", async () => {
+    const { engine, store } = await makeEngine([
+      seedChange("issues", "i0", { workspaceId: "w1", status: null, rank: "0" }),
+      seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "b" }),
+      seedChange("issues", "i2", { workspaceId: "w1", status: "closed", rank: "a" })
+    ]);
+    const sub = engine.subscribeLiveQuery(
+      collection<RowValue>("issues").scope({ workspaceId: "w1" }).groupBy("status").order("rank"),
+      () => {}
+    );
+    await flush();
+    const initial = sub.current()!;
+    const initialClosed = initial.get("closed")!;
+    const initialNull = initial.get(null)!;
+    expect(initialNull.map((row) => row._id)).toEqual(["i0"]);
+    expect(initial.get("open")?.map((row) => row._id)).toEqual(["i1"]);
+
+    await store.applyServerChange({
+      changeId: "move", scopeKey: "byWorkspace:w1", table: "issues", id: "i1",
+      kind: "patch", patch: { status: "closed", rank: "c" }, version: 2, serverTime: 2
+    });
+    engine.pokeLocalChange();
+    await flush();
+    const moved = sub.current()!;
+    expect(moved).not.toBe(initial);
+    expect(moved.has("open")).toBe(false);
+    expect(moved.get("closed")?.map((row) => row._id)).toEqual(["i2", "i1"]);
+    expect(moved.get(null)).toBe(initialNull);
+
+    const movedClosed = moved.get("closed")!;
+    await store.applyServerChange(
+      seedChange("issues", "i3", { workspaceId: "w1", status: "backlog", rank: "d" })
+    );
+    engine.pokeLocalChange();
+    await flush();
+    const appeared = sub.current()!;
+    expect(appeared.get("closed")).toBe(movedClosed);
+    expect(appeared.get("backlog")?.map((row) => row._id)).toEqual(["i3"]);
+
+    const stable = sub.current();
+    engine.pokeLocalChange();
+    await flush();
+    expect(sub.current()).toBe(stable);
+    expect(initialClosed).not.toBe(movedClosed);
+    sub.dispose();
+  });
+
+  it("maintains grouped and scalar counts without invoking the row-output path", async () => {
+    const store = new MemoryLocalStore();
+    for (const change of [
+      seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "a" }),
+      seedChange("issues", "i2", { workspaceId: "w1", status: "open", rank: "b" }),
+      seedChange("issues", "i3", { workspaceId: "w1", status: "closed", rank: "c" })
+    ]) await store.applyServerChange(change);
+    const host = new LocalFirstEngine({
+      manifest: issuesManifest(), store: new MemoryLocalStore(), clientId: "c", userId: "u", nameOf: String
+    });
+    const cache = new LocalCache(host, store);
+    await cache.hydrate();
+    const rowPath = vi.spyOn(cache as unknown as { _tableRowsInternal(table: string): readonly RowValue[] }, "_tableRowsInternal");
+    const plan = collection<RowValue>("issues").scope({ workspaceId: "w1" }).groupBy("status");
+    const rowRun = vi.spyOn(plan, "run");
+    const grouped = cache.subscribeCounts(plan, () => {});
+    const scalar = cache.subscribeCounts(collection<RowValue>("issues").scope({ workspaceId: "w1" }), () => {});
+    expect(grouped.current()).toEqual({ open: 2, closed: 1 });
+    expect(scalar.current()).toBe(3);
+    expect(rowPath).not.toHaveBeenCalled();
+    expect(rowRun).not.toHaveBeenCalled();
+
+    cache.applyServerChanges([{
+      changeId: "move-count", scopeKey: "byWorkspace:w1", table: "issues", id: "i3",
+      kind: "patch", patch: { status: "open" }, version: 2, serverTime: 2
+    }]);
+    expect(grouped.current()).toEqual({ open: 3 });
+    expect(scalar.current()).toBe(3);
+    expect(rowPath).not.toHaveBeenCalled();
+    expect(rowRun).not.toHaveBeenCalled();
+    grouped.dispose();
+    scalar.dispose();
   });
 });

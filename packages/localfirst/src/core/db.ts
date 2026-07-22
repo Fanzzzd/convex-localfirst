@@ -1,5 +1,6 @@
 import { collectManifest } from "./collect.js";
 import { collection, type LocalQueryPlan, type RelationsResult } from "./collection.js";
+import type { FilterSpec } from "./filter.js";
 import type { ScopeDefinition } from "./manifest.js";
 import {
   many as relationMany,
@@ -64,7 +65,7 @@ type RowOf<Declaration> = Declaration extends { readonly row: infer Row extends 
   ? Row
   : never;
 
-type ShapeOf<Declaration> = Declaration extends { readonly shape: infer Shape extends object }
+type ShapeOf<Declaration> = Declaration extends { readonly shape: infer Shape extends Record<string, unknown> }
   ? Shape
   : never;
 
@@ -115,43 +116,49 @@ type DeclaredRelationsResult<
 export type TypedTableQuery<
   Modules extends Record<string, unknown>,
   Declaration,
-  Rel = Record<never, never>
-> = LocalQueryPlan<RowOf<Declaration>, Rel> & {
-  scope(values: ScopeValues<Declaration>): TypedTableQuery<Modules, Declaration, Rel>;
-  filter(values: Partial<ShapeOf<Declaration>>): TypedTableQuery<Modules, Declaration, Rel>;
-  where(predicate: (row: RowOf<Declaration>) => boolean): TypedTableQuery<Modules, Declaration, Rel>;
+  Rel = Record<never, never>,
+  Group extends string = never
+> = LocalQueryPlan<RowOf<Declaration>, Rel, Group> & {
+  scope(values: ScopeValues<Declaration>): TypedTableQuery<Modules, Declaration, Rel, Group>;
+  filter(values: FilterSpec<ShapeOf<Declaration>>): TypedTableQuery<Modules, Declaration, Rel, Group>;
+  /** Closure escape hatch; opaque predicates are always evaluated after index scanning. */
+  where(predicate: (row: RowOf<Declaration>) => boolean): TypedTableQuery<Modules, Declaration, Rel, Group>;
   where<Field extends ShapeField<Declaration>>(
     field: Field,
     value: ShapeOf<Declaration>[Field]
-  ): TypedTableQuery<Modules, Declaration, Rel>;
+  ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   order<Field extends ShapeField<Declaration>>(
     field: Field,
     direction?: "asc" | "desc"
-  ): TypedTableQuery<Modules, Declaration, Rel>;
+  ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   orderBy: {
     <Field extends ShapeField<Declaration>>(
       field: Field,
       direction?: "asc" | "desc"
-    ): TypedTableQuery<Modules, Declaration, Rel>;
+    ): TypedTableQuery<Modules, Declaration, Rel, Group>;
     readonly field: string;
     readonly dir: "asc" | "desc";
   };
-  limit(n: number): TypedTableQuery<Modules, Declaration, Rel>;
+  limit(n: number): TypedTableQuery<Modules, Declaration, Rel, Group>;
+  groupBy<Field extends ShapeField<Declaration>>(
+    field: Field
+  ): TypedTableQuery<Modules, Declaration, Rel, Field>;
   related<Name extends string, Target extends Record<string, unknown>, Many extends boolean>(
     name: Name,
     spec: RelationSpec<Target, Many>
-  ): TypedTableQuery<Modules, Declaration, Rel & { [Key in Name]: Many extends true ? Target[] : Target | undefined }>;
+  ): TypedTableQuery<Modules, Declaration, Rel & { [Key in Name]: Many extends true ? Target[] : Target | undefined }, Group>;
   withRelations<Specs extends Record<string, RelationSpec>>(
     specs: Specs
-  ): TypedTableQuery<Modules, Declaration, Rel & RelationsResult<Specs>>;
+  ): TypedTableQuery<Modules, Declaration, Rel & RelationsResult<Specs>, Group>;
   with<const Names extends ReadonlyArray<Extract<keyof RelationsOf<Declaration>, string>>>(
     ...names: Names
   ): TypedTableQuery<
     Modules,
     Declaration,
-    Rel & DeclaredRelationsResult<Modules, RelationsOf<Declaration>, Names[number]>
+    Rel & DeclaredRelationsResult<Modules, RelationsOf<Declaration>, Names[number]>,
+    Group
   >;
-};
+} & ([Group] extends [never] ? object : { readonly __group: Group });
 
 export type LocalDb<Modules extends Record<string, unknown>> = {
   [Name in DeclarationName<TableDeclarations<Modules>>]: TypedTableQuery<
@@ -160,16 +167,19 @@ export type LocalDb<Modules extends Record<string, unknown>> = {
   >;
 };
 
-class LocalDbQuery<Row extends Record<string, unknown>> implements LocalQueryPlan<Row, unknown> {
+class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = never>
+  implements LocalQueryPlan<Row, unknown, Group>
+{
   readonly __localFirstQuery = true as const;
   declare readonly __rel: unknown;
-  readonly orderBy: ((field: keyof Row, direction?: "asc" | "desc") => LocalDbQuery<Row>) & {
+  declare readonly __group: Group;
+  readonly orderBy: ((field: keyof Row, direction?: "asc" | "desc") => LocalDbQuery<Row, Group>) & {
     readonly field: string;
     readonly dir: "asc" | "desc";
   };
 
   constructor(
-    private readonly query: LocalQuery<Row, unknown>,
+    private readonly query: LocalQuery<Row, unknown, Group>,
     private readonly declaredRelations: DeclaredRelations
   ) {
     const orderBy = (field: keyof Row, direction: "asc" | "desc" = "asc") => this.order(field, direction);
@@ -204,21 +214,33 @@ class LocalDbQuery<Row extends Record<string, unknown>> implements LocalQueryPla
     return this.query.predicateCount;
   }
 
+  get filters(): readonly FilterSpec[] {
+    return this.query.filters;
+  }
+
+  get groupField(): string | undefined {
+    return this.query.groupField;
+  }
+
+  matchesRow(row: Record<string, unknown>): boolean {
+    return this.query.matchesRow(row);
+  }
+
   run(rows: readonly RowValue[]): Row[] {
     return this.query.run(rows);
   }
 
-  scope(values: Record<string, unknown>): LocalDbQuery<Row> {
+  scope(values: Record<string, unknown>): LocalDbQuery<Row, Group> {
     return new LocalDbQuery(this.query.scope(values as Partial<Row>), this.declaredRelations);
   }
 
-  filter(values: Record<string, unknown>): LocalDbQuery<Row> {
-    return this.where((row) => Object.entries(values).every(([field, value]) => Object.is(row[field], value)));
+  filter(values: FilterSpec<Row>): LocalDbQuery<Row, Group> {
+    return new LocalDbQuery(this.query.filter(values), this.declaredRelations);
   }
 
-  where(predicate: (row: Row) => boolean): LocalDbQuery<Row>;
-  where(field: string, value: unknown): LocalDbQuery<Row>;
-  where(predicateOrField: ((row: Row) => boolean) | string, value?: unknown): LocalDbQuery<Row> {
+  where(predicate: (row: Row) => boolean): LocalDbQuery<Row, Group>;
+  where(field: string, value: unknown): LocalDbQuery<Row, Group>;
+  where(predicateOrField: ((row: Row) => boolean) | string, value?: unknown): LocalDbQuery<Row, Group> {
     const predicate =
       typeof predicateOrField === "function"
         ? predicateOrField
@@ -226,23 +248,27 @@ class LocalDbQuery<Row extends Record<string, unknown>> implements LocalQueryPla
     return new LocalDbQuery(this.query.where(predicate), this.declaredRelations);
   }
 
-  order(field: keyof Row, direction: "asc" | "desc" = "asc"): LocalDbQuery<Row> {
+  order(field: keyof Row, direction: "asc" | "desc" = "asc"): LocalDbQuery<Row, Group> {
     return new LocalDbQuery(this.query.order(field, direction), this.declaredRelations);
   }
 
-  limit(n: number): LocalDbQuery<Row> {
+  limit(n: number): LocalDbQuery<Row, Group> {
     return new LocalDbQuery(this.query.limit(n), this.declaredRelations);
   }
 
-  related(name: string, spec: RelationSpec): LocalDbQuery<Row> {
+  groupBy<Field extends Extract<keyof Row, string>>(field: Field): LocalDbQuery<Row, Field> {
+    return new LocalDbQuery(this.query.groupBy(field), this.declaredRelations);
+  }
+
+  related(name: string, spec: RelationSpec): LocalDbQuery<Row, Group> {
     return new LocalDbQuery(this.query.related(name, spec), this.declaredRelations);
   }
 
-  withRelations(specs: Record<string, RelationSpec>): LocalDbQuery<Row> {
+  withRelations(specs: Record<string, RelationSpec>): LocalDbQuery<Row, Group> {
     return new LocalDbQuery(this.query.withRelations(specs), this.declaredRelations);
   }
 
-  with(...names: readonly string[]): LocalDbQuery<Row> {
+  with(...names: readonly string[]): LocalDbQuery<Row, Group> {
     const specs: Record<string, RelationSpec> = {};
     for (const name of names) {
       const descriptor = this.declaredRelations[name];

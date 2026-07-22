@@ -1,7 +1,12 @@
 import { LocalCache, type QueryExplain } from "./cache.js";
 import { AttachmentManager, type AttachmentBackend, type XhrLike } from "./attachments.js";
 import { SearchManager, type SearchOptions, type SearchResult } from "./search.js";
-import type { LocalQueryPlan } from "./collection.js";
+import type {
+  LocalQueryCountResult,
+  LocalQueryGroupKey,
+  LocalQueryPlan,
+  LocalQueryResult
+} from "./collection.js";
 import { attachRelations, relationTables } from "./relations.js";
 import { createDefaultIdFactory, createOpId, type IdFactory } from "./id.js";
 import type { FunctionNameResolver } from "./functionName.js";
@@ -33,6 +38,8 @@ import type {
   SyncScope,
   SyncStatus
 } from "./types.js";
+
+type AnyLocalQueryPlan = LocalQueryPlan<Record<string, unknown>, unknown, string>;
 
 export type LocalFirstEngineOptions = {
   readonly manifest: LocalFirstManifest;
@@ -296,21 +303,19 @@ export class LocalFirstEngine {
    */
   private filterToScope(table: string, rows: readonly RowValue[], scopeArgs: unknown): readonly RowValue[] {
     const scope = this.manifest.tables[table]?.scope;
-    if (!scope) {
-      return rows;
-    }
-    if (scope.kind === "byUser") {
-      // Anonymous/local-only mode (no userId) has no owner to match; leave as-is.
-      return this.userId == null ? rows : rows.filter((row) => row[scope.field] === this.userId);
-    }
-    if (scope.kind === "byWorkspace" || scope.kind === "byProject") {
-      const field = scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
-      const value = (scopeArgs as Record<string, unknown> | null | undefined)?.[field];
-      // Missing value is already failed-closed by scopedQueryMissingScope; if it ever
-      // reaches here without one, do not silently widen to all scopes — return none.
-      return value == null ? [] : rows.filter((row) => row[field] === value);
-    }
-    return rows;
+    if (!scope || (scope.kind === "byUser" && this.userId == null)) return rows;
+    return rows.filter((row) => this.rowMatchesScope(table, row, scopeArgs));
+  }
+
+  private rowMatchesScope(table: string, row: RowValue, scopeArgs: unknown): boolean {
+    const scope = this.manifest.tables[table]?.scope;
+    if (!scope) return true;
+    if (scope.kind === "byUser") return this.userId == null || row[scope.field] === this.userId;
+    const field = scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
+    const value = (scopeArgs as Record<string, unknown> | null | undefined)?.[field];
+    // Missing value is already failed closed by scopedQueryMissingScope. Keep this
+    // direct guard too so the count-only row path can never widen a scope.
+    return value != null && row[field] === value;
   }
 
   /** True when `table` is workspace/project-scoped but `args` carry no scope value. */
@@ -335,7 +340,7 @@ export class LocalFirstEngine {
   }
 
   /** Every table a plan reads: its base table plus any relation targets/join tables. */
-  tablesForPlan(plan: LocalQueryPlan): string[] {
+  tablesForPlan(plan: AnyLocalQueryPlan): string[] {
     return [plan.table, ...relationTables(plan.relations)];
   }
 
@@ -345,23 +350,33 @@ export class LocalFirstEngine {
    * React hook (useLiveQuery) can call it at render and cannot bypass the guard by
    * running plan.run directly.
    */
-  applyLocalQuery<Row extends Record<string, unknown>, Rel>(
-    plan: LocalQueryPlan<Row, Rel>,
+  applyLocalQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
+    plan: LocalQueryPlan<Row, Rel, Group>,
     rowsByTable: Record<string, readonly RowValue[]>
-  ): Array<Row & Rel> {
+  ): LocalQueryResult<Row, Rel, Group> {
     if (this.scopedQueryMissingScope(plan.table, plan.scopeValues)) {
       // Fail closed: a workspace/project query with no scope value must not return
       // the whole local cache (which can span scopes). Empty .scope({}) lands here.
-      return [];
+      return (plan.groupField === undefined ? [] : new Map()) as unknown as LocalQueryResult<Row, Rel, Group>;
     }
     const scoped = this.filterToScope(plan.table, rowsByTable[plan.table] ?? [], plan.scopeValues);
     const base = plan.run(scoped);
-    return attachRelations(base, plan.relations, rowsByTable) as Array<Row & Rel>;
+    const rows = attachRelations(base, plan.relations, rowsByTable) as Array<Row & Rel>;
+    if (plan.groupField === undefined) return rows as LocalQueryResult<Row, Rel, Group>;
+    const grouped = new Map<LocalQueryGroupKey, Array<Row & Rel>>();
+    for (const row of rows) {
+      const value = row[plan.groupField];
+      const key = value == null ? null : String(value);
+      const bucket = grouped.get(key);
+      if (bucket) bucket.push(row);
+      else grouped.set(key, [row]);
+    }
+    return grouped as unknown as LocalQueryResult<Row, Rel, Group>;
   }
 
-  async runLocalQuery<Row extends Record<string, unknown>, Rel>(
-    plan: LocalQueryPlan<Row, Rel>
-  ): Promise<Array<Row & Rel>> {
+  async runLocalQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
+    plan: LocalQueryPlan<Row, Rel, Group>
+  ): Promise<LocalQueryResult<Row, Rel, Group>> {
     const rowsByTable: Record<string, readonly RowValue[]> = {};
     for (const table of this.tablesForPlan(plan)) {
       rowsByTable[table] = await this.tableRows(table);
@@ -375,9 +390,9 @@ export class LocalFirstEngine {
    * pending). Prefer over hand-orchestrating refreshPlan + runLocalQuery. For reactive UI
    * use useLiveQuery instead.
    */
-  async read<Row extends Record<string, unknown>, Rel>(
-    plan: LocalQueryPlan<Row, Rel>
-  ): Promise<Array<Row & Rel>> {
+  async read<Row extends Record<string, unknown>, Rel, Group extends string = never>(
+    plan: LocalQueryPlan<Row, Rel, Group>
+  ): Promise<LocalQueryResult<Row, Rel, Group>> {
     await this.refreshPlan(plan);
     return this.runLocalQuery(plan);
   }
@@ -398,7 +413,7 @@ export class LocalFirstEngine {
    * table is scoped that way, else the authed user. Key format mirrors the
    * declarative path so pull cursors and server membership checks line up.
    */
-  scopeForPlan(plan: LocalQueryPlan): SyncScope | null {
+  scopeForPlan(plan: AnyLocalQueryPlan): SyncScope | null {
     const definition = this.manifest.tables[plan.table];
     if (!definition) {
       return null;
@@ -419,7 +434,7 @@ export class LocalFirstEngine {
   }
 
   /** Background sync for a mounted plan (push pending + pull its scope). Never throws. */
-  async refreshPlan(plan: LocalQueryPlan): Promise<void> {
+  async refreshPlan(plan: AnyLocalQueryPlan): Promise<void> {
     const scope = this.scopeForPlan(plan);
     if (!scope) {
       // A workspace/project table with no .scope({...}) can neither filter nor
@@ -451,7 +466,7 @@ export class LocalFirstEngine {
    * push, no polling. Returns an unsubscribe, or `null` when the transport is not
    * reactive (the caller should fall back to polling) or the plan has no scope.
    */
-  watchPlan(plan: LocalQueryPlan): (() => void) | null {
+  watchPlan(plan: AnyLocalQueryPlan): (() => void) | null {
     const subscribe = this.transport.subscribe;
     if (!subscribe) {
       return null;
@@ -620,17 +635,17 @@ export class LocalFirstEngine {
   }
 
   /** @internal Cache host: false when a scoped table is queried with no scope value. */
-  planScopeSatisfied(plan: LocalQueryPlan): boolean {
+  planScopeSatisfied(plan: AnyLocalQueryPlan): boolean {
     return !this.scopedQueryMissingScope(plan.table, plan.scopeValues);
   }
 
   /** @internal Cache host: exact parity with the store read path — a row passes iff the
    *  scope guard holds, it survives filterToScope (byUser owner / byWorkspace field), and
    *  every predicate matches. */
-  rowMatchesPlan(plan: LocalQueryPlan, row: RowValue): boolean {
+  rowMatchesPlan(plan: AnyLocalQueryPlan, row: RowValue): boolean {
     if (this.scopedQueryMissingScope(plan.table, plan.scopeValues)) return false;
-    const scoped = this.filterToScope(plan.table, [row], plan.scopeValues);
-    return plan.run(scoped as readonly RowValue[]).length === 1;
+    if (!this.rowMatchesScope(plan.table, row, plan.scopeValues)) return false;
+    return plan.matchesRow ? plan.matchesRow(row) : plan.run([row]).length === 1;
   }
 
   /**
@@ -648,15 +663,48 @@ export class LocalFirstEngine {
    * chosen query plan (`explain`), and a disposer. `onChange` fires only when the visible
    * result actually changes — the engine never re-reads whole tables per notification.
    */
-  subscribeLiveQuery<Row extends Record<string, unknown>, Rel>(
-    plan: LocalQueryPlan<Row, Rel>,
+  subscribeLiveQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
+    plan: LocalQueryPlan<Row, Rel, Group>,
     onChange: () => void
-  ): { current(): Array<Row & Rel> | undefined; explain(): QueryExplain | null; dispose(): void } {
-    let sub: { current(): Array<Row & Rel>; explain(): QueryExplain; dispose(): void } | null = null;
+  ): { current(): LocalQueryResult<Row, Rel, Group> | undefined; explain(): QueryExplain | null; dispose(): void } {
+    let sub: {
+      current(): LocalQueryResult<Row, Rel, Group>;
+      explain(): QueryExplain;
+      dispose(): void;
+    } | null = null;
     let disposed = false;
     const start = () => {
       if (disposed) return;
       sub = this.cache.subscribeQuery(plan, onChange);
+      onChange();
+    };
+    if (this.cache.isHydrated) start();
+    else void this.cache.hydrate().then(start);
+    return {
+      current: () => (sub ? sub.current() : undefined),
+      explain: () => (sub ? sub.explain() : null),
+      dispose: () => {
+        disposed = true;
+        sub?.dispose();
+      }
+    };
+  }
+
+  /** Count-only live aggregation. Grouped plans return a record keyed by group;
+   * ungrouped plans return one number. No row result arrays are built. */
+  subscribeLiveCounts<Row extends Record<string, unknown>, Rel, Group extends string = never>(
+    plan: LocalQueryPlan<Row, Rel, Group>,
+    onChange: () => void
+  ): { current(): LocalQueryCountResult<Group> | undefined; explain(): QueryExplain | null; dispose(): void } {
+    let sub: {
+      current(): LocalQueryCountResult<Group>;
+      explain(): QueryExplain;
+      dispose(): void;
+    } | null = null;
+    let disposed = false;
+    const start = () => {
+      if (disposed) return;
+      sub = this.cache.subscribeCounts(plan, onChange);
       onChange();
     };
     if (this.cache.isHydrated) start();
@@ -704,7 +752,7 @@ export class LocalFirstEngine {
 
   /** The plan the incremental query engine would choose for `plan` (index vs full scan),
    *  for debugging/telemetry. */
-  explainQuery(plan: LocalQueryPlan): QueryExplain {
+  explainQuery(plan: AnyLocalQueryPlan): QueryExplain {
     return this.cache.explain(plan);
   }
 

@@ -1,7 +1,7 @@
 import { expectTypeOf, test } from "vitest";
 import { v } from "convex/values";
-import { createLocalDb } from "../../src/core";
-import { useLiveQuery } from "../../src/react";
+import { collection, createLocalDb } from "../../src/core";
+import { useLiveCounts, useLiveQuery } from "../../src/react";
 import { createLocalFirst } from "../../src/server";
 
 const lf = createLocalFirst();
@@ -81,4 +81,33 @@ test("createLocalDb infers rows, scopes, fields, and declared relation results",
   db.issues.where("priority", "high");
   // @ts-expect-error filters reject fields outside the shape
   db.issues.filter({ missing: true });
+  db.issues.filter({
+    priority: { in: [1, 2], gte: 1 },
+    labelIds: { contains: "bug", overlaps: ["urgent"] },
+    OR: [{ stateId: { eq: "open" } }, { NOT: { title: "Archived" } }]
+  });
+  // @ts-expect-error scalar fields do not support array membership operators
+  db.issues.filter({ priority: { contains: 1 } });
+  // @ts-expect-error operator operands follow the field type
+  db.issues.filter({ priority: { lt: "high" } });
+  // @ts-expect-error unknown operators are rejected
+  db.issues.filter({ title: { startsWith: "B" } });
+
+  const groupedPlan = db.issues.scope({ workspaceId: "w1" }).groupBy("stateId").orderBy("priority");
+  expectTypeOf(useLiveQuery(groupedPlan)).toEqualTypeOf<
+    ReadonlyMap<string | null, IssueRow[]> | undefined
+  >();
+  expectTypeOf(useLiveCounts(groupedPlan)).toEqualTypeOf<Record<string, number> | undefined>();
+  expectTypeOf(useLiveCounts(db.issues.scope({ workspaceId: "w1" }))).toEqualTypeOf<number | undefined>();
+  // @ts-expect-error grouping is limited to declared shape fields
+  db.issues.groupBy("missing");
+
+  const untyped = collection<{ stateId: string | null; priority: number; labelIds: string[] }>("issues")
+    .filter({ priority: { gte: 1 }, labelIds: { contains: "bug" } })
+    .groupBy("stateId");
+  expectTypeOf(useLiveQuery(untyped)).toEqualTypeOf<
+    ReadonlyMap<string | null, Array<{ stateId: string | null; priority: number; labelIds: string[] }>> | undefined
+  >();
+  // @ts-expect-error untyped collection filters still follow their declared Row generic
+  collection<{ priority: number }>("issues").filter({ priority: { in: ["high"] } });
 });

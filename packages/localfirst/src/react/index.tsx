@@ -17,15 +17,23 @@ import {
   rankBetween,
   rankCompare,
   isValidRank,
+  matchesFilter,
+  parseFilter,
   rebalance,
+  serializeFilter,
   viaIds,
   type AttachmentBackend,
   type AttachmentUploadState,
   type FunctionNameResolver,
   type LocalFirstManifest,
   type LocalDb,
+  type FilterParseError,
+  type FilterParseResult,
+  type FilterSpec,
   type LocalFirstMutationCall,
+  type LocalQueryCountResult,
   type LocalQueryPlan,
+  type LocalQueryResult,
   type TypedTableQuery,
   type BackrefRelationDescriptor,
   type DeclaredRelationDescriptor,
@@ -50,11 +58,28 @@ import {
   defaultFunctionName
 } from "../core/internal.js";
 
-export { collection, createLocalDb, many, manyToMany, one, viaIds, rankBetween, rankCompare, isValidRank, rebalance };
+export {
+  collection,
+  createLocalDb,
+  many,
+  manyToMany,
+  one,
+  viaIds,
+  rankBetween,
+  rankCompare,
+  isValidRank,
+  rebalance,
+  matchesFilter,
+  parseFilter,
+  serializeFilter
+};
 export type {
   BackrefRelationDescriptor,
   DeclaredRelationDescriptor,
   DeclaredRelations,
+  FilterParseError,
+  FilterParseResult,
+  FilterSpec,
   LocalDb,
   LocalQueryPlan,
   ManyRelationDescriptor,
@@ -631,14 +656,44 @@ export type UseLiveQueryOptions = {
   readonly pollMs?: number;
 };
 
-export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
-  query: LocalQueryPlan<Row, Rel> | "skip",
+function liveStructuralKey<Row extends Record<string, unknown>, Rel, Group extends string>(
+  engine: LocalFirstEngine,
+  query: LocalQueryPlan<Row, Rel, Group>
+): string {
+  return JSON.stringify({
+    t: [...engine.tablesForPlan(query)].sort(),
+    s: query.scopeValues ?? null,
+    f: query.filters ?? [],
+    o: query.orderSpec ?? (typeof query.orderBy === "function" ? null : (query.orderBy ?? null)),
+    l: query.rowLimit ?? null,
+    p: query.predicateCount ?? 0,
+    g: query.groupField ?? null
+  });
+}
+
+export function useLiveQuery<Row extends Record<string, unknown>, Rel, Group extends string>(
+  query: (LocalQueryPlan<Row, Rel, Group> & ([Group] extends [never] ? never : { readonly __group: Group })) | "skip",
   options?: UseLiveQueryOptions
-): Array<Row & Rel> | undefined {
+): ReadonlyMap<string | null, Array<Row & Rel>> | undefined;
+export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
+  query: LocalQueryPlan<Row, Rel, never> | "skip",
+  options?: UseLiveQueryOptions
+): Array<Row & Rel> | undefined;
+export function useLiveQuery<
+  Row extends Record<string, unknown> = RowValue,
+  Rel = unknown,
+  Group extends string = never
+>(
+  query: LocalQueryPlan<Row, Rel, Group> | "skip",
+  options?: UseLiveQueryOptions
+): Array<Row & Rel> | ReadonlyMap<string | null, Array<Row & Rel>> | undefined {
   const engine = useLocalFirstEngine();
   const [, setTick] = useState(0);
   const rerender = () => setTick((t) => t + 1);
-  const subRef = useRef<{ current(): Array<Row & Rel> | undefined; dispose(): void } | null>(null);
+  const subRef = useRef<{
+    current(): LocalQueryResult<Row, Rel, Group> | undefined;
+    dispose(): void;
+  } | null>(null);
 
   // Structural signature of the query's SHAPE (read set, scope, order, limit, predicate
   // count). The incremental view is re-subscribed only when this changes; ordinary data
@@ -647,13 +702,7 @@ export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel
   const structuralKey =
     query === "skip" || !engine
       ? null
-      : JSON.stringify({
-          t: [...engine.tablesForPlan(query)].sort(),
-          s: query.scopeValues ?? null,
-          o: query.orderSpec ?? (typeof query.orderBy === "function" ? null : (query.orderBy ?? null)),
-          l: query.rowLimit ?? null,
-          p: query.predicateCount ?? 0
-        });
+      : liveStructuralKey(engine, query);
 
   useEffect(() => {
     if (!engine || query === "skip") {
@@ -682,6 +731,58 @@ export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel
 
   if (query === "skip" || !engine) return undefined;
   // The view returns a stable array reference while unchanged, so downstream deps hold.
+  return subRef.current?.current();
+}
+
+/** Live aggregate counts over the same scope/filter plan as `useLiveQuery`.
+ * Ordering and row limits do not affect counts. Grouped plans return a record;
+ * ungrouped plans return one number. */
+export function useLiveCounts<Row extends Record<string, unknown>, Rel, Group extends string>(
+  query: (LocalQueryPlan<Row, Rel, Group> & ([Group] extends [never] ? never : { readonly __group: Group })) | "skip",
+  options?: UseLiveQueryOptions
+): Record<string, number> | undefined;
+export function useLiveCounts<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
+  query: LocalQueryPlan<Row, Rel, never> | "skip",
+  options?: UseLiveQueryOptions
+): number | undefined;
+export function useLiveCounts<
+  Row extends Record<string, unknown> = RowValue,
+  Rel = unknown,
+  Group extends string = never
+>(
+  query: LocalQueryPlan<Row, Rel, Group> | "skip",
+  options?: UseLiveQueryOptions
+): number | Record<string, number> | undefined {
+  const engine = useLocalFirstEngine();
+  const [, setTick] = useState(0);
+  const rerender = () => setTick((tick) => tick + 1);
+  const subRef = useRef<{
+    current(): LocalQueryCountResult<Group> | undefined;
+    dispose(): void;
+  } | null>(null);
+  const structuralKey = query === "skip" || !engine ? null : liveStructuralKey(engine, query);
+
+  useEffect(() => {
+    if (!engine || query === "skip") {
+      subRef.current = null;
+      return;
+    }
+    const sub = engine.subscribeLiveCounts(query, rerender);
+    subRef.current = sub;
+    void engine.refreshPlan(query);
+    const unwatch = engine.watchPlan(query);
+    const pollMs = options?.pollMs;
+    const timer = !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
+    return () => {
+      sub.dispose();
+      subRef.current = null;
+      unwatch?.();
+      if (timer) clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, structuralKey]);
+
+  if (query === "skip" || !engine) return undefined;
   return subRef.current?.current();
 }
 
