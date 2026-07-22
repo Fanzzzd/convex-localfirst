@@ -1,4 +1,8 @@
-import { collectTables, createAttachmentFunctions, createSyncFunctions } from "convex-localfirst/server";
+import {
+  collectTables,
+  createAttachmentFunctions,
+  createSyncFunctions,
+} from "convex-localfirst/server";
 import { components } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 
@@ -21,7 +25,8 @@ import * as attachmentsMod from "./attachments";
 
 const guestCanSee = (userId: string, row: Record<string, unknown> | null) =>
   row !== null &&
-  (row.created_by === userId || ((row.assignee_ids as string[] | undefined) ?? []).includes(userId));
+  (row.created_by === userId ||
+    ((row.assignee_ids as string[] | undefined) ?? []).includes(userId));
 
 // Attachments are a local-first table too, so they must be in the SAME sync config
 // (clients sync the metadata rows; finalize's serverWriter writes into it).
@@ -36,7 +41,7 @@ const tables = collectTables({
   modules,
   issues,
   docUpdates,
-  attachments: attachmentsMod
+  attachments: attachmentsMod,
 });
 
 // Membership (I7): the server decides workspace access. scopeValue is the workspace
@@ -51,13 +56,14 @@ const access = {
       .unique();
     return row?.role ?? null;
   },
-  read: (_ctx: any, { userId, role, row }: any) => role >= 10 || (role === 5 && guestCanSee(userId, row)),
+  read: (_ctx: any, { userId, role, row }: any) =>
+    role >= 10 || (role === 5 && guestCanSee(userId, row)),
   write: (_ctx: any, { userId, role, action, before, proposed }: any) => {
     if (role >= 15) return true; // admin/member
     if (role !== 5) return false; // viewer (10) is read-only
     if (action === "insert") return proposed?.created_by === userId;
     return guestCanSee(userId, before) && (action === "delete" || guestCanSee(userId, proposed));
-  }
+  },
 } as const;
 
 export const { push, pull, gc, serverWriter } = createSyncFunctions<number>({
@@ -70,7 +76,7 @@ export const { push, pull, gc, serverWriter } = createSyncFunctions<number>({
   onWrite: async (ctx, { table, action, before, after, userId }) => {
     if (table !== "issues" || action !== "patch" || !before || !after) return;
     const field = Object.keys(after).find(
-      (key) => !["_id", "_creationTime", "updated_at"].includes(key) && before[key] !== after[key]
+      (key) => !["_id", "_creationTime", "updated_at"].includes(key) && before[key] !== after[key],
     );
     if (!field) return;
     await serverWriter(ctx, userId).insert("issue_activities", {
@@ -82,7 +88,7 @@ export const { push, pull, gc, serverWriter } = createSyncFunctions<number>({
       field,
       old_value: before[field] == null ? null : String(before[field]),
       new_value: after[field] == null ? null : String(after[field]),
-      created_by: userId
+      created_by: userId,
     });
   },
   // Server-minted per-project issue numbers (PROJ-123). Runs inside the push
@@ -100,11 +106,11 @@ export const { push, pull, gc, serverWriter } = createSyncFunctions<number>({
         if (counter) await ctx.db.patch(counter._id, { value: next });
         else await ctx.db.insert("counters", { key, value: next });
         return { sequence_id: next };
-      }
-    }
+      },
+    },
   },
   // Local backend has no auth provider; identity comes from the client userId. Dev only.
-  devUnsafeAllowClientUserId: true
+  devUnsafeAllowClientUserId: true,
 });
 
 // Offline-capable attachment pipeline (P5): the two mutations the client uploader calls.
@@ -119,5 +125,5 @@ export const { getUploadUrl, finalize } = createAttachmentFunctions<number>({
   access,
   table: "attachments",
   generateUploadUrl: (ctx) => ctx.storage.generateUploadUrl(),
-  devUnsafeAllowClientUserId: true
+  devUnsafeAllowClientUserId: true,
 });

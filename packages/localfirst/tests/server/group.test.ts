@@ -7,7 +7,7 @@ import {
   type ServerOperation,
   type ServerStore,
   type StoredChange,
-  type SyncConfig
+  type SyncConfig,
 } from "../../src/server/serverSync";
 
 // Minimal in-memory authoritative server (same contract the Convex component implements).
@@ -17,7 +17,10 @@ class MemoryServerStore implements ServerStore {
   idmap = new Map<string, string>();
   changes: StoredChange[] = [];
   members = new Set<string>();
-  rowVersions = new Map<string, { table: string; localId: string; rowKey: string; scopeKey: string; version: number }>();
+  rowVersions = new Map<
+    string,
+    { table: string; localId: string; rowKey: string; scopeKey: string; version: number }
+  >();
   private seq = 0;
   private serverIdSeq = 0;
   /** Denylist of `${table}:${localId}` an access.write hook rejects (for authz tests). */
@@ -40,7 +43,7 @@ class MemoryServerStore implements ServerStore {
     return serverId;
   }
   async patchRow(table: string, serverId: string, patch: Record<string, unknown>) {
-    this.table(table).set(serverId, { ...(this.table(table).get(serverId) ?? {}), ...patch });
+    this.table(table).set(serverId, { ...this.table(table).get(serverId), ...patch });
   }
   async deleteRow(table: string, serverId: string) {
     this.table(table).delete(serverId);
@@ -50,20 +53,21 @@ class MemoryServerStore implements ServerStore {
   }
   async commitOp(
     userId: string,
-    op: ServerOperation,
+    operation: ServerOperation,
     entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
-    change?: Omit<StoredChange, "changeId">
+    change?: Omit<StoredChange, "changeId">,
   ) {
-    if (this.ledger.has(`${userId}:${op.opId}`)) throw new Error(`ops: duplicate commit for ${op.opId}`);
+    if (this.ledger.has(`${userId}:${operation.opId}`))
+      throw new Error(`ops: duplicate commit for ${operation.opId}`);
     let stored: StoredChange | null = null;
     if (change) {
       const changeId = await this.appendChange(change);
       stored = { ...change, changeId };
     }
-    this.ledger.set(`${userId}:${op.opId}`, {
+    this.ledger.set(`${userId}:${operation.opId}`, {
       ...entry,
-      schemaVersion: op.schemaVersion,
-      changes: stored ? [stored] : undefined
+      schemaVersion: operation.schemaVersion,
+      changes: stored ? [stored] : undefined,
     });
     return stored;
   }
@@ -81,7 +85,7 @@ class MemoryServerStore implements ServerStore {
       localId: change.localId,
       rowKey: `${change.table}:${change.localId}`,
       scopeKey: change.scopeKey,
-      version: change.version
+      version: change.version,
     });
     return changeId;
   }
@@ -107,10 +111,13 @@ const config: SyncConfig = {
       scope: byUser("ownerId"),
       idField: "localId",
       mutations: {
-        "todos:create": { kind: "insert", fields: ["ownerId", "localId", "listId", "text", "done"] },
+        "todos:create": {
+          kind: "insert",
+          fields: ["ownerId", "localId", "listId", "text", "done"],
+        },
         "todos:toggle": { kind: "patch", fields: ["done", "text"] },
-        "todos:remove": { kind: "delete", fields: [] }
-      }
+        "todos:remove": { kind: "delete", fields: [] },
+      },
     },
     docs: {
       scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
@@ -118,13 +125,15 @@ const config: SyncConfig = {
       mutations: {
         "docs:create": { kind: "insert", fields: ["wsId", "localId", "title"] },
         "docs:update": { kind: "patch", fields: ["title"] },
-        "docs:remove": { kind: "delete", fields: [] }
-      }
-    }
+        "docs:remove": { kind: "delete", fields: [] },
+      },
+    },
   },
   access: {
     member: ({ userId, scopeValue, membershipTable }, store) =>
-      (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`) ? "member" : null,
+      (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`)
+        ? "member"
+        : null,
     // Deny any write to a row on the store's denylist (for the mid-group authz test).
     write: ({ table, before, proposed }, ...rest) => {
       // The bound signature passes the store as the runtime second arg via serverSync's
@@ -132,8 +141,8 @@ const config: SyncConfig = {
       void rest;
       const localId = (proposed?.localId ?? before?.localId) as string | undefined;
       return !(localId !== undefined && denyRef.has(`${table}:${localId}`));
-    }
-  }
+    },
+  },
 };
 
 // The access.write hook above has no store handle in serverSync's bound form, so tests
@@ -160,11 +169,15 @@ function op(input: {
     localId: input.localId,
     value: input.value,
     patch: input.patch,
-    ...(input.group ?? {})
+    ...input.group,
   };
 }
 
-const G = (groupId: string, size: number) => (index: number) => ({ groupId, groupSize: size, groupIndex: index });
+const G = (groupId: string, size: number) => (index: number) => ({
+  groupId,
+  groupSize: size,
+  groupIndex: index,
+});
 
 describe("server sync — atomic write groups (DX v4 §5)", () => {
   it("applies an all-pass group atomically: every op accepted, one change each", async () => {
@@ -176,10 +189,34 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
       clientId: "c1",
       schemaVersion: 1,
       mutations: [
-        op({ opId: "o1", fn: "todos:create", table: "todos", kind: "insert", localId: "t1", value: { listId: "a", text: "one" }, group: g(0) }),
-        op({ opId: "o2", fn: "todos:create", table: "todos", kind: "insert", localId: "t2", value: { listId: "a", text: "two" }, group: g(1) }),
-        op({ opId: "o3", fn: "todos:toggle", table: "todos", kind: "patch", localId: "t1", patch: { done: true }, group: g(2) })
-      ]
+        op({
+          opId: "o1",
+          fn: "todos:create",
+          table: "todos",
+          kind: "insert",
+          localId: "t1",
+          value: { listId: "a", text: "one" },
+          group: g(0),
+        }),
+        op({
+          opId: "o2",
+          fn: "todos:create",
+          table: "todos",
+          kind: "insert",
+          localId: "t2",
+          value: { listId: "a", text: "two" },
+          group: g(1),
+        }),
+        op({
+          opId: "o3",
+          fn: "todos:toggle",
+          table: "todos",
+          kind: "patch",
+          localId: "t1",
+          patch: { done: true },
+          group: g(2),
+        }),
+      ],
     });
     expect(res.rejected).toHaveLength(0);
     expect(res.accepted.map((a) => a.opId).sort()).toEqual(["o1", "o2", "o3"]);
@@ -202,9 +239,25 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
       clientId: "c1",
       schemaVersion: 1,
       mutations: [
-        op({ opId: "i1", fn: "todos:create", table: "todos", kind: "insert", localId: "t9", value: { listId: "a", text: "hi" }, group: g(0) }),
-        op({ opId: "p1", fn: "todos:toggle", table: "todos", kind: "patch", localId: "t9", patch: { text: "edited", done: true }, group: g(1) })
-      ]
+        op({
+          opId: "i1",
+          fn: "todos:create",
+          table: "todos",
+          kind: "insert",
+          localId: "t9",
+          value: { listId: "a", text: "hi" },
+          group: g(0),
+        }),
+        op({
+          opId: "p1",
+          fn: "todos:toggle",
+          table: "todos",
+          kind: "patch",
+          localId: "t9",
+          patch: { text: "edited", done: true },
+          group: g(1),
+        }),
+      ],
     });
     expect(res.rejected).toHaveLength(0);
     expect(res.accepted).toHaveLength(2);
@@ -224,10 +277,34 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
       clientId: "c1",
       schemaVersion: 1,
       mutations: [
-        op({ opId: "a1", fn: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "d1" }, group: g(0) }),
-        op({ opId: "a2", fn: "docs:create", table: "docs", kind: "insert", localId: "d2", value: { wsId: "ws1", title: "d2" }, group: g(1) }),
-        op({ opId: "a3", fn: "docs:update", table: "docs", kind: "patch", localId: "d2", patch: { title: "changed" }, group: g(2) })
-      ]
+        op({
+          opId: "a1",
+          fn: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d1",
+          value: { wsId: "ws1", title: "d1" },
+          group: g(0),
+        }),
+        op({
+          opId: "a2",
+          fn: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d2",
+          value: { wsId: "ws1", title: "d2" },
+          group: g(1),
+        }),
+        op({
+          opId: "a3",
+          fn: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d2",
+          patch: { title: "changed" },
+          group: g(2),
+        }),
+      ],
     });
     expect(res.accepted).toHaveLength(0);
     expect(res.rejected.map((r) => r.opId).sort()).toEqual(["a1", "a2", "a3"]);
@@ -246,20 +323,51 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
     denyRef = store.denyWrite;
     const g = G("grp-replay", 2);
     const mutations = [
-      op({ opId: "r1", fn: "todos:create", table: "todos", kind: "insert", localId: "t1", value: { listId: "a", text: "one" }, group: g(0) }),
-      op({ opId: "r2", fn: "todos:create", table: "todos", kind: "insert", localId: "t2", value: { listId: "a", text: "two" }, group: g(1) })
+      op({
+        opId: "r1",
+        fn: "todos:create",
+        table: "todos",
+        kind: "insert",
+        localId: "t1",
+        value: { listId: "a", text: "one" },
+        group: g(0),
+      }),
+      op({
+        opId: "r2",
+        fn: "todos:create",
+        table: "todos",
+        kind: "insert",
+        localId: "t2",
+        value: { listId: "a", text: "two" },
+        group: g(1),
+      }),
     ];
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations });
+    await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations,
+    });
     const rowsAfterFirst = store.rows.get("todos")?.size;
     // Full replay.
-    const replay = await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations });
+    const replay = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations,
+    });
     expect(replay.accepted.map((a) => a.opId).sort()).toEqual(["r1", "r2"]);
     expect(replay.rejected).toHaveLength(0);
     // Re-delivers the confirming changes; no new rows.
     expect(replay.changes).toHaveLength(2);
     expect(store.rows.get("todos")?.size).toBe(rowsAfterFirst);
     // Subset replay (just one member) still re-acks that member from the ledger.
-    const subset = await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [mutations[0]!] });
+    const subset = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [mutations[0]!],
+    });
     expect(subset.accepted.map((a) => a.opId)).toEqual(["r1"]);
     expect(subset.changes).toHaveLength(1);
   });
@@ -271,11 +379,37 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
     store.denyWrite.add("docs:d2");
     const g = G("grp-rr", 2);
     const mutations = [
-      op({ opId: "x1", fn: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "d1" }, group: g(0) }),
-      op({ opId: "x2", fn: "docs:create", table: "docs", kind: "insert", localId: "d2", value: { wsId: "ws1", title: "d2" }, group: g(1) })
+      op({
+        opId: "x1",
+        fn: "docs:create",
+        table: "docs",
+        kind: "insert",
+        localId: "d1",
+        value: { wsId: "ws1", title: "d1" },
+        group: g(0),
+      }),
+      op({
+        opId: "x2",
+        fn: "docs:create",
+        table: "docs",
+        kind: "insert",
+        localId: "d2",
+        value: { wsId: "ws1", title: "d2" },
+        group: g(1),
+      }),
     ];
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations });
-    const replay = await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations });
+    await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations,
+    });
+    const replay = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations,
+    });
     expect(replay.accepted).toHaveLength(0);
     expect(replay.rejected.map((r) => r.opId).sort()).toEqual(["x1", "x2"]);
   });
@@ -292,11 +426,34 @@ describe("server sync — atomic write groups (DX v4 §5)", () => {
       schemaVersion: 1,
       mutations: [
         // A plain ungrouped op — no group fields, exactly the historical shape.
-        op({ opId: "u1", fn: "todos:create", table: "todos", kind: "insert", localId: "t1", value: { listId: "a", text: "solo" } }),
+        op({
+          opId: "u1",
+          fn: "todos:create",
+          table: "todos",
+          kind: "insert",
+          localId: "t1",
+          value: { listId: "a", text: "solo" },
+        }),
         // A group that fails on its second member.
-        op({ opId: "g1", fn: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "d1" }, group: g(0) }),
-        op({ opId: "g2", fn: "docs:update", table: "docs", kind: "patch", localId: "d2", patch: { title: "z" }, group: g(1) })
-      ]
+        op({
+          opId: "g1",
+          fn: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d1",
+          value: { wsId: "ws1", title: "d1" },
+          group: g(0),
+        }),
+        op({
+          opId: "g2",
+          fn: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d2",
+          patch: { title: "z" },
+          group: g(1),
+        }),
+      ],
     });
     // The ungrouped op is accepted; the group is fully rejected.
     expect(res.accepted.map((a) => a.opId)).toEqual(["u1"]);

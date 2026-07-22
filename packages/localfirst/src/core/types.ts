@@ -290,5 +290,15 @@ export type MutationStatus = {
  * `delete` means the row left the visible view (removed or tombstoned).
  */
 export type RowDelta =
-  | { readonly table: TableName; readonly localId: LocalId; readonly kind: "upsert"; readonly row: RowValue }
-  | { readonly table: TableName; readonly localId: LocalId; readonly kind: "delete"; readonly row: null };
+  | {
+      readonly table: TableName;
+      readonly localId: LocalId;
+      readonly kind: "upsert";
+      readonly row: RowValue;
+    }
+  | {
+      readonly table: TableName;
+      readonly localId: LocalId;
+      readonly kind: "delete";
+      readonly row: null;
+    };

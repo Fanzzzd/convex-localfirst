@@ -29,7 +29,7 @@ const MUST_BE_INTERNAL = [
   "createOpId",
   "createDefaultIdFactory",
   "openLocalFirstDb",
-  "INDEXED_DB_SCHEMA_VERSION"
+  "INDEXED_DB_SCHEMA_VERSION",
 ];
 
 describe("public API surface (I13)", () => {
@@ -42,7 +42,16 @@ describe("public API surface (I13)", () => {
 
   it("the internal entry DOES expose the engine + DSL metadata contract for the adapters", () => {
     const keys = Object.keys(internalApi);
-    for (const name of ["LocalFirstEngine", "createFallbackMutationCall", "defaultFunctionName", "LF_METADATA_KEY", "TabLeadership", "compareOperations", "createOpId", "openLocalFirstDb"]) {
+    for (const name of [
+      "LocalFirstEngine",
+      "createFallbackMutationCall",
+      "defaultFunctionName",
+      "LF_METADATA_KEY",
+      "TabLeadership",
+      "compareOperations",
+      "createOpId",
+      "openLocalFirstDb",
+    ]) {
       expect(keys, `"${name}" should be available on the internal entry`).toContain(name);
     }
   });
@@ -56,7 +65,15 @@ describe("public API surface (I13)", () => {
     // NOTE: "LocalFirstEngine" is intentionally absent here now — the headless factory
     // (createLocalFirstEngine) + the engine instance type are deliberately public. The
     // CLASS VALUE staying internal is asserted by the runtime allowlist + MUST_BE_INTERNAL.
-    for (const token of ["rebaseAndReplay", "RebaseInput", "RebaseOutput", "deriveView", "LF_METADATA_KEY", "TabLeadership", "LeadershipOptions"]) {
+    for (const token of [
+      "rebaseAndReplay",
+      "RebaseInput",
+      "RebaseOutput",
+      "deriveView",
+      "LF_METADATA_KEY",
+      "TabLeadership",
+      "LeadershipOptions",
+    ]) {
       expect(text, `dist/index.d.ts must not mention "${token}"`).not.toContain(token);
     }
   });

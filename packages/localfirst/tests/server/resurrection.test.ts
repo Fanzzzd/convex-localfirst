@@ -7,7 +7,7 @@ import {
   localMutation,
   localTable,
   type RowValue,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 import { LocalFirstEngine } from "../../src/core/internal.js";
 import { handlePush, handlePull, type PushOp, type SyncConfig } from "../../src/server/serverSync";
@@ -34,10 +34,10 @@ function serverConfig(): { config: SyncConfig; seq: () => number } {
         serverStamp: () => ({ seq: ++seq }),
         mutations: {
           "notes:create": { kind: "insert", fields: ["ownerId", "localId", "text"] },
-          "notes:remove": { kind: "delete", fields: [] }
-        }
-      }
-    }
+          "notes:remove": { kind: "delete", fields: [] },
+        },
+      },
+    },
   };
   return { config, seq: () => seq };
 }
@@ -50,7 +50,7 @@ const create = (localId: string, opId: string): PushOp => ({
   table: "notes",
   kind: "insert",
   localId,
-  value: { ownerId: USER, localId, text: "hello" }
+  value: { ownerId: USER, localId, text: "hello" },
 });
 const remove = (localId: string, opId: string): PushOp => ({
   opId,
@@ -59,7 +59,7 @@ const remove = (localId: string, opId: string): PushOp => ({
   functionName: "notes:remove",
   table: "notes",
   kind: "delete",
-  localId
+  localId,
 });
 const push = (store: MemoryServerStore, config: SyncConfig, mutations: PushOp[]) =>
   handlePush(store, config, { userId: USER, clientId: "c1", schemaVersion: 1, mutations });
@@ -112,7 +112,10 @@ describe("§0 server resurrection (undo of delete re-inserts the same localId)",
     await push(store, config, [remove("n4", "op2")]);
     // A NON-stripping client would resend seq — must be rejected (serverOnlyField); the
     // real engine strips it (see the convergence test below).
-    const forged: PushOp = { ...create("n4", "op3"), value: { ownerId: USER, localId: "n4", text: "hello", seq: 99 } };
+    const forged: PushOp = {
+      ...create("n4", "op3"),
+      value: { ownerId: USER, localId: "n4", text: "hello", seq: 99 },
+    };
     const res = await push(store, config, [forged]);
     expect(res.accepted).toEqual([]);
     expect(res.rejected[0]?.message).toBe("serverOnlyField");
@@ -126,7 +129,13 @@ function manifest() {
     schemaVersion: 1,
     tables: {
       // The client declares `serverFields` so undo-of-delete strips server-minted fields.
-      notes: localTable({ table: "notes", idField: "localId", scope: byUser("ownerId"), indexes: {}, serverFields: ["seq"] })
+      notes: localTable({
+        table: "notes",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+        serverFields: ["seq"],
+      }),
     },
     queries: {
       "notes:list": {
@@ -134,8 +143,8 @@ function manifest() {
         name: "notes:list",
         table: "notes",
         initial: [] as readonly RowValue[],
-        run: (rows: readonly RowValue[]) => rows
-      }
+        run: (rows: readonly RowValue[]) => rows,
+      },
     },
     mutations: {
       "notes:create": localMutation<{ localId: string; text: string }>({
@@ -143,16 +152,21 @@ function manifest() {
         name: "notes:create",
         table: "notes",
         operationKind: "insert",
-        plan: (args) => ({ kind: "insert", table: "notes", id: args.localId, value: { ownerId: USER, text: args.text } })
+        plan: (args) => ({
+          kind: "insert",
+          table: "notes",
+          id: args.localId,
+          value: { ownerId: USER, text: args.text },
+        }),
       }),
       "notes:remove": localMutation<{ localId: string }>({
         kind: "mutation",
         name: "notes:remove",
         table: "notes",
         operationKind: "delete",
-        plan: (args) => ({ kind: "delete", table: "notes", id: args.localId })
-      })
-    }
+        plan: (args) => ({ kind: "delete", table: "notes", id: args.localId }),
+      }),
+    },
   });
 }
 
@@ -162,9 +176,10 @@ describe("§0 end-to-end: undo-of-delete resurrects and a 2nd client converges",
     const { config } = serverConfig();
     const SCOPE = { kind: "byUser", key: `u:${USER}`, table: "notes" } as const;
     const client = {
-      mutation: async (_r: unknown, args: Record<string, unknown>) => handlePush(server, config, args as never),
+      mutation: async (_r: unknown, args: Record<string, unknown>) =>
+        handlePush(server, config, args as never),
       query: async (_r: unknown, args: Record<string, unknown>) =>
-        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} })
+        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} }),
     };
     const transport = (clientId: string): SyncTransport =>
       createConvexTransport({ client, push: "PUSH", pull: "PULL", clientId, userId: USER });
@@ -176,7 +191,7 @@ describe("§0 end-to-end: undo-of-delete resurrects and a 2nd client converges",
       userId: USER,
       transport: transport("a"),
       nameOf: (r) => String(r),
-      sleep: async () => {}
+      sleep: async () => {},
     });
 
     // Create → sync → delete → sync.
@@ -184,13 +199,17 @@ describe("§0 end-to-end: undo-of-delete resurrects and a 2nd client converges",
     await engineA.syncOnce([SCOPE]);
     await engineA.mutate("notes:remove", { localId: "x1" }).local;
     await engineA.syncOnce([SCOPE]);
-    expect([...(server.rows.get("notes")?.values() ?? [])].filter((r) => r.localId === "x1")).toHaveLength(0);
+    expect(
+      [...(server.rows.get("notes")?.values() ?? [])].filter((r) => r.localId === "x1"),
+    ).toHaveLength(0);
 
     // Undo the delete → re-inserts the stripped before-row → sync → server resurrects.
     // Global undo (byUser stacks key on the user scope, which has no scope-arg form).
     await engineA.undo();
     await engineA.syncOnce([SCOPE]);
-    const resurrected = [...(server.rows.get("notes")?.values() ?? [])].filter((r) => r.localId === "x1");
+    const resurrected = [...(server.rows.get("notes")?.values() ?? [])].filter(
+      (r) => r.localId === "x1",
+    );
     expect(resurrected).toHaveLength(1);
     expect(resurrected[0]?.text).toBe("hello");
     expect(resurrected[0]?.seq).toBe(2); // re-minted fresh (was 1 before the delete)
@@ -203,7 +222,7 @@ describe("§0 end-to-end: undo-of-delete resurrects and a 2nd client converges",
       userId: USER,
       transport: transport("b"),
       nameOf: (r) => String(r),
-      sleep: async () => {}
+      sleep: async () => {},
     });
     await engineB.syncOnce([SCOPE]);
     const bRows = (await engineB.query<unknown, RowValue[]>("notes:list", {})) ?? [];

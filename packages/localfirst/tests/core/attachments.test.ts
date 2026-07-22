@@ -9,7 +9,7 @@ import {
   type LocalFirstManifest,
   type PushResponse,
   type SyncTransport,
-  type XhrLike
+  type XhrLike,
 } from "../../src/core/index.js";
 import { LocalFirstEngine } from "../../src/core/internal.js";
 
@@ -19,7 +19,12 @@ function attachmentsManifest(): LocalFirstManifest {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      attachments: localTable({ table: "attachments", idField: "localId", scope: byUser("ownerId"), indexes: {} })
+      attachments: localTable({
+        table: "attachments",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
     },
     queries: {},
     mutations: {
@@ -31,16 +36,21 @@ function attachmentsManifest(): LocalFirstManifest {
           kind: "insert",
           table: "attachments",
           id: args.localId ?? ctx.localId("attachments"),
-          value: { ownerId: ctx.userId ?? "anon", name: args.name, issueId: args.issueId, storageId: null }
-        })
+          value: {
+            ownerId: ctx.userId ?? "anon",
+            name: args.name,
+            issueId: args.issueId,
+            storageId: null,
+          },
+        }),
       }),
       "attachments:remove": localMutation<{ id: string }>({
         kind: "mutation",
         name: "attachments:remove",
         table: "attachments",
-        plan: (args) => ({ kind: "delete", table: "attachments", id: args.id })
-      })
-    }
+        plan: (args) => ({ kind: "delete", table: "attachments", id: args.id }),
+      }),
+    },
   });
 }
 
@@ -53,12 +63,12 @@ function acceptAll(): SyncTransport {
         rejected: [],
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
 }
 
@@ -84,8 +94,10 @@ class FakeEndpoint {
 class FakeXhr {
   status = 0;
   responseText = "";
-  upload: { onprogress: ((e: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } = {
-    onprogress: null
+  upload: {
+    onprogress: ((e: { lengthComputable: boolean; loaded: number; total: number }) => void) | null;
+  } = {
+    onprogress: null,
   };
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -107,7 +119,9 @@ class FakeXhr {
   }
   succeed(storageId?: string): void {
     this.status = 200;
-    this.responseText = JSON.stringify({ storageId: storageId ?? `storage_${++this.endpoint.seq}` });
+    this.responseText = JSON.stringify({
+      storageId: storageId ?? `storage_${++this.endpoint.seq}`,
+    });
     this.onload?.();
   }
   drive(): void {
@@ -125,7 +139,10 @@ class FakeXhr {
 
 type BackendControl = {
   backend: AttachmentBackend;
-  calls: { getUploadUrl: Array<{ table: string; localId: string }>; finalize: Array<{ table: string; localId: string; storageId: string }> };
+  calls: {
+    getUploadUrl: Array<{ table: string; localId: string }>;
+    finalize: Array<{ table: string; localId: string; storageId: string }>;
+  };
   finalizeError: Error | null;
   finalizeGate: Promise<void> | null;
 };
@@ -135,7 +152,7 @@ function makeBackend(): BackendControl {
     calls: { getUploadUrl: [], finalize: [] },
     finalizeError: null,
     finalizeGate: null,
-    backend: null as unknown as AttachmentBackend
+    backend: null as unknown as AttachmentBackend,
   };
   control.backend = {
     async getUploadUrl(input) {
@@ -146,7 +163,7 @@ function makeBackend(): BackendControl {
       control.calls.finalize.push(input);
       if (control.finalizeGate) await control.finalizeGate;
       if (control.finalizeError) throw control.finalizeError;
-    }
+    },
   };
   return control;
 }
@@ -172,7 +189,7 @@ function makeEngine(opts: {
     retry: { retries: 3, baseDelayMs: 1 },
     sleep: () => Promise.resolve(),
     syncTimeoutMs: 0,
-    attachments: { backend: opts.backend, createXhr: opts.createXhr, storageIdField: "storageId" }
+    attachments: { backend: opts.backend, createXhr: opts.createXhr, storageIdField: "storageId" },
   });
 }
 
@@ -196,12 +213,17 @@ describe("attachments — happy path", () => {
     // Finalize gated so we can observe the blob is still present until it resolves.
     let releaseFinalize: () => void = () => {};
     bc.finalizeGate = new Promise<void>((resolve) => (releaseFinalize = resolve));
-    const engine = makeEngine({ store, transport: acceptAll(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     const { localId } = await engine.createAttachment({
       insert: "attachments:create",
       metadata: { name: "f.txt", issueId: "i1" },
-      blob: blobOf("hello")
+      blob: blobOf("hello"),
     });
 
     // Metadata row is optimistic immediately (synced/rebased like any row).
@@ -227,12 +249,17 @@ describe("attachments — offline create then resume on reload", () => {
     const endpoint = new FakeEndpoint();
     const bc1 = makeBackend();
     // First session is offline: metadata never syncs, so the uploader is gated.
-    const engine1 = makeEngine({ store, transport: offline(), backend: bc1.backend, createXhr: endpoint.createXhr });
+    const engine1 = makeEngine({
+      store,
+      transport: offline(),
+      backend: bc1.backend,
+      createXhr: endpoint.createXhr,
+    });
     engine1.setOnline(false);
     const { localId } = await engine1.createAttachment({
       insert: "attachments:create",
       metadata: { name: "offline.txt", issueId: "i9" },
-      blob: blobOf("bytes")
+      blob: blobOf("bytes"),
     });
     // Blob is durable; nothing uploaded while offline.
     expect(await store.getBlob(localId)).not.toBeNull();
@@ -243,7 +270,13 @@ describe("attachments — offline create then resume on reload", () => {
     // "Reload": a fresh engine over the SAME durable store, now online.
     const endpoint2 = new FakeEndpoint();
     const bc2 = makeBackend();
-    const engine2 = makeEngine({ store, transport: acceptAll(), backend: bc2.backend, createXhr: endpoint2.createXhr, clientId: "c2" });
+    const engine2 = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc2.backend,
+      createXhr: endpoint2.createXhr,
+      clientId: "c2",
+    });
     // Push the inherited pending metadata op, unblocking the upload gate.
     await engine2.syncOnce();
     await until(async () => (await store.getBlob(localId)) === null, "resumed upload evicts blob");
@@ -258,10 +291,19 @@ describe("attachments — quota failure on blob persist", () => {
     const endpoint = new FakeEndpoint();
     const bc = makeBackend();
     store.putBlob = () => Promise.reject(new Error("QuotaExceededError"));
-    const engine = makeEngine({ store, transport: acceptAll(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     await expect(
-      engine.createAttachment({ insert: "attachments:create", metadata: { name: "big", issueId: "i1" }, blob: blobOf("x") })
+      engine.createAttachment({
+        insert: "attachments:create",
+        metadata: { name: "big", issueId: "i1" },
+        blob: blobOf("x"),
+      }),
     ).rejects.toThrow(/Quota/);
 
     // No metadata row, no pending op — the insert never happened (blob-first ordering).
@@ -277,12 +319,17 @@ describe("attachments — upload retry/backoff", () => {
     const endpoint = new FakeEndpoint();
     endpoint.outcomes = ["neterror", "neterror", "ok"]; // fail twice, then succeed
     const bc = makeBackend();
-    const engine = makeEngine({ store, transport: acceptAll(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     const { localId } = await engine.createAttachment({
       insert: "attachments:create",
       metadata: { name: "retry.txt", issueId: "i1" },
-      blob: blobOf("data")
+      blob: blobOf("data"),
     });
     await until(async () => (await store.getBlob(localId)) === null, "eventual success");
     expect(bc.calls.getUploadUrl.length).toBe(3); // one url per attempt
@@ -298,12 +345,17 @@ describe("attachments — finalize rejection", () => {
     const endpoint = new FakeEndpoint();
     const bc = makeBackend();
     bc.finalizeError = new Error("finalize denied");
-    const engine = makeEngine({ store, transport: acceptAll(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     const { localId } = await engine.createAttachment({
       insert: "attachments:create",
       metadata: { name: "denied.txt", issueId: "i1" },
-      blob: blobOf("data")
+      blob: blobOf("data"),
     });
     await until(() => engine.getAttachmentState(localId)?.state === "failed", "failed state");
     // Blob retained (never evicted before a confirmed finalize).
@@ -323,12 +375,18 @@ describe("attachments — leader death mid-upload", () => {
     const endpoint1 = new FakeEndpoint();
     const bc1 = makeBackend();
     bc1.finalizeGate = new Promise<void>(() => {});
-    const leader = makeEngine({ store, transport: acceptAll(), backend: bc1.backend, createXhr: endpoint1.createXhr, clientId: "leader" });
+    const leader = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc1.backend,
+      createXhr: endpoint1.createXhr,
+      clientId: "leader",
+    });
 
     const { localId } = await leader.createAttachment({
       insert: "attachments:create",
       metadata: { name: "resume.txt", issueId: "i1" },
-      blob: blobOf("payload")
+      blob: blobOf("payload"),
     });
     await until(() => bc1.calls.finalize.length === 1, "leader started finalize");
     expect(await store.getBlob(localId)).not.toBeNull(); // not evicted — leader is stuck
@@ -339,7 +397,13 @@ describe("attachments — leader death mid-upload", () => {
     // A follower is promoted (it starts gated, then gains leadership).
     const endpoint2 = new FakeEndpoint();
     const bc2 = makeBackend();
-    const follower = makeEngine({ store, transport: acceptAll(), backend: bc2.backend, createXhr: endpoint2.createXhr, clientId: "follower" });
+    const follower = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc2.backend,
+      createXhr: endpoint2.createXhr,
+      clientId: "follower",
+    });
     follower.setSyncEnabled(false);
     await new Promise((r) => setTimeout(r, 5));
     expect(bc2.calls.getUploadUrl).toHaveLength(0); // follower does not upload
@@ -357,12 +421,17 @@ describe("attachments — delete before upload", () => {
     const endpoint = new FakeEndpoint();
     const bc = makeBackend();
     // Offline: metadata never syncs, so the upload stays gated and cancellable.
-    const engine = makeEngine({ store, transport: offline(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: offline(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     const { localId } = await engine.createAttachment({
       insert: "attachments:create",
       metadata: { name: "temp.txt", issueId: "i1" },
-      blob: blobOf("data")
+      blob: blobOf("data"),
     });
     expect(await store.getBlob(localId)).not.toBeNull();
 
@@ -380,12 +449,17 @@ describe("attachments — progress", () => {
     const endpoint = new FakeEndpoint();
     endpoint.mode = "manual"; // we drive the XHR by hand to observe intermediate progress
     const bc = makeBackend();
-    const engine = makeEngine({ store, transport: acceptAll(), backend: bc.backend, createXhr: endpoint.createXhr });
+    const engine = makeEngine({
+      store,
+      transport: acceptAll(),
+      backend: bc.backend,
+      createXhr: endpoint.createXhr,
+    });
 
     const { localId } = await engine.createAttachment({
       insert: "attachments:create",
       metadata: { name: "prog.txt", issueId: "i1" },
-      blob: blobOf("data")
+      blob: blobOf("data"),
     });
     await until(() => endpoint.live.length === 1, "xhr started");
     const xhr = endpoint.live[0]!;

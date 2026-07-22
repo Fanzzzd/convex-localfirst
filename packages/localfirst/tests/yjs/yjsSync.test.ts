@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { REMOTE_ORIGIN, applyUpdateSafe, base64ToBytes, bytesToBase64, makeSnapshot } from "../../src/yjs/yjsSync.js";
+import {
+  REMOTE_ORIGIN,
+  applyUpdateSafe,
+  base64ToBytes,
+  bytesToBase64,
+  makeSnapshot,
+} from "../../src/yjs/yjsSync.js";
 
 // Proves the whole premise of doc_updates: a Yjs CRDT carried as insert-only
 // base64 rows converges no matter the delivery order, duplication, or concurrency
@@ -107,7 +113,10 @@ describe("doc_updates compaction (snapshot + prune)", () => {
 
     // Compact: snapshot + drop every row it subsumed.
     const subsumed = new Set(rows.map((r) => r.id));
-    const compacted: Row[] = [...rows.filter((r) => !subsumed.has(r.id)), { id: "snap", update: makeSnapshot(A) }];
+    const compacted: Row[] = [
+      ...rows.filter((r) => !subsumed.has(r.id)),
+      { id: "snap", update: makeSnapshot(A) },
+    ];
     expect(compacted.length).toBe(1); // only the snapshot remains
 
     // A fresh device that ONLY ever sees the compacted rows gets identical content.
@@ -156,7 +165,9 @@ describe("doc_updates compaction (snapshot + prune)", () => {
     // Bad base64 (invalid chars) and valid-base64-but-garbage-Yjs both return false
     // instead of throwing, so one bad row can't brick the document.
     expect(applyUpdateSafe(b, "!!! not base64 !!!", undefined)).toBe(false);
-    expect(applyUpdateSafe(b, bytesToBase64(new Uint8Array([9, 9, 9, 9, 9, 9])), undefined)).toBe(false);
+    expect(applyUpdateSafe(b, bytesToBase64(new Uint8Array([9, 9, 9, 9, 9, 9])), undefined)).toBe(
+      false,
+    );
     expect(applyUpdateSafe(b, good, undefined)).toBe(true);
     expect(b.getText("t").toString()).toBe("good content");
   });
@@ -165,7 +176,11 @@ describe("doc_updates compaction (snapshot + prune)", () => {
     const base: Row[] = [];
     let n = 0;
     const A = new Y.Doc();
-    A.on("update", (u: Uint8Array, o: unknown) => o !== REMOTE_ORIGIN && base.push({ id: "a" + n++, update: bytesToBase64(u) }));
+    A.on(
+      "update",
+      (u: Uint8Array, o: unknown) =>
+        o !== REMOTE_ORIGIN && base.push({ id: "a" + n++, update: bytesToBase64(u) }),
+    );
     A.getText("t").insert(0, "shared ");
 
     // B catches up to A's history, then makes one concurrent edit A hasn't seen.

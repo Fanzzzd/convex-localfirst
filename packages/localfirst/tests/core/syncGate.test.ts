@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MemoryLocalStore, type PushResponse, type SyncScope, type SyncTransport } from "../../src/core";
+import {
+  MemoryLocalStore,
+  type PushResponse,
+  type SyncScope,
+  type SyncTransport,
+} from "../../src/core";
 import { createHarness } from "./helpers";
 
 /** A transport that counts push/pull and records the ops each push carried. */
@@ -16,17 +21,20 @@ function recordingTransport(): SyncTransport & {
       t.pushCount++;
       t.pushedOpIds.push(request.mutations.map((op) => op.opId));
       return {
-        accepted: request.mutations.map((op) => ({ opId: op.opId, serverResult: { ok: true, id: op.id } })),
+        accepted: request.mutations.map((op) => ({
+          opId: op.opId,
+          serverResult: { ok: true, id: op.id },
+        })),
         rejected: [],
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       t.pullCount++;
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
   return t;
 }
@@ -48,7 +56,7 @@ async function seedPending(store: MemoryLocalStore, opId: string): Promise<void>
     args: {},
     value: { ownerId: "user_a", listId: "l1", text: "x", done: false, createdAt: 1, updatedAt: 1 },
     createdAt: 1,
-    status: "pending"
+    status: "pending",
   });
 }
 
@@ -156,7 +164,7 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const { engine } = createHarness({ store, transport });
     const call = engine.mutate("todos:create", { listId: "l1", text: "hi" });
@@ -172,7 +180,7 @@ describe("LocalFirstEngine — multi-tab sync gate (setSyncEnabled)", () => {
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const { engine } = createHarness({ store, transport });
     const call = engine.mutate("todos:create", { listId: "l1", text: "hi" });

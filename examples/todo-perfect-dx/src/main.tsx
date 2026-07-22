@@ -19,10 +19,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       localFirst={{
         modules,
         userId,
-        databaseName: "todo-perfect-dx"
+        databaseName: "todo-perfect-dx",
       }}
     >
       <App />
     </ConvexProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

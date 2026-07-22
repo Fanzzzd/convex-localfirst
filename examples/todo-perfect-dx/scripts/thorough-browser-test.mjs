@@ -18,7 +18,7 @@ const check = (cond, m) => (cond ? ok(m) : bad(m));
 
 // Read every record in every IndexedDB store, return true if `needle` appears.
 async function idbContains(page, needle) {
-  return page.evaluate(async (needle) => {
+  return page.evaluate(async (searchNeedle) => {
     const dbs = (await indexedDB.databases?.()) ?? [];
     for (const { name } of dbs) {
       if (!name) continue;
@@ -33,7 +33,7 @@ async function idbContains(page, needle) {
           req.onsuccess = () => res(req.result);
           req.onerror = () => res([]);
         });
-        if (JSON.stringify(all).includes(needle)) {
+        if (JSON.stringify(all).includes(searchNeedle)) {
           db.close();
           return true;
         }
@@ -70,18 +70,33 @@ try {
   await page1.waitForSelector(`[data-title="${t1}"]`, { timeout: 5000 });
   ok(`issue visible ${Date.now() - start}ms after click (optimistic)`);
   await page1.screenshot({ path: `${SHOT}/02-created.png`, fullPage: true });
-  check(await idbContains(page1, t1), "issue is actually written to IndexedDB (not just React state)");
+  check(
+    await idbContains(page1, t1),
+    "issue is actually written to IndexedDB (not just React state)",
+  );
 
   console.log("\n[3] Reload persistence (online)");
   await page1.reload();
   await page1.waitForSelector('[data-testid="sync-status"]');
   check(await page1.isVisible(`[data-title="${t1}"]`), "issue survives a reload");
-  await page1.waitForFunction(() => document.querySelector('[data-testid="pending"]')?.textContent?.trim() === "0", null, { timeout: 15000 }).catch(() => {});
+  await page1
+    .waitForFunction(
+      () => document.querySelector('[data-testid="pending"]')?.textContent?.trim() === "0",
+      null,
+      { timeout: 15000 },
+    )
+    .catch(() => {});
   check((await pending(page1)) === "0", "pending drains to 0 (synced to server)");
 
   console.log("\n[4] OFFLINE create + offline reload persistence");
   await ctx1.setOffline(true);
-  await page1.waitForFunction(() => document.querySelector('[data-testid="sync-status"]')?.textContent?.includes("offline"), null, { timeout: 8000 }).catch(() => {});
+  await page1
+    .waitForFunction(
+      () => document.querySelector('[data-testid="sync-status"]')?.textContent?.includes("offline"),
+      null,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
   check((await status(page1)).includes("offline"), "status flips to offline (navigator.onLine)");
   const t2 = "OFFLINE-" + Date.now();
   await page1.fill('[data-testid="new-issue-title"]', t2);
@@ -98,12 +113,21 @@ try {
 
   console.log("\n[5] Reconnect flush + reload persistence");
   await ctx1.setOffline(false);
-  await page1.waitForFunction(() => document.querySelector('[data-testid="pending"]')?.textContent?.trim() === "0", null, { timeout: 20000 }).catch(() => {});
+  await page1
+    .waitForFunction(
+      () => document.querySelector('[data-testid="pending"]')?.textContent?.trim() === "0",
+      null,
+      { timeout: 20000 },
+    )
+    .catch(() => {});
   check((await pending(page1)) === "0", "outbox flushes to 0 on reconnect");
   check((await status(page1)).includes("online"), "status back to online");
   await page1.reload();
   await page1.waitForSelector('[data-testid="sync-status"]');
-  check(await page1.isVisible(`[data-title="${t2}"]`), "formerly-offline issue still present after reconnect + reload");
+  check(
+    await page1.isVisible(`[data-title="${t2}"]`),
+    "formerly-offline issue still present after reconnect + reload",
+  );
 
   console.log("\n[6] Fresh device pulls from the server (proves real round-trip)");
   const ctx2 = await browser.newContext(); // isolated storage — empty IndexedDB
@@ -113,16 +137,30 @@ try {
   // a brand-new device has NO local data; if it shows the issues they came from the server
   await page2.waitForSelector(`[data-title="${t1}"]`, { timeout: 20000 }).catch(() => {});
   await page2.waitForSelector(`[data-title="${t2}"]`, { timeout: 20000 }).catch(() => {});
-  check(await page2.isVisible(`[data-title="${t1}"]`), "fresh device pulled the online-created issue");
-  check(await page2.isVisible(`[data-title="${t2}"]`), "fresh device pulled the (formerly offline) issue");
+  check(
+    await page2.isVisible(`[data-title="${t1}"]`),
+    "fresh device pulled the online-created issue",
+  );
+  check(
+    await page2.isVisible(`[data-title="${t2}"]`),
+    "fresh device pulled the (formerly offline) issue",
+  );
   await page2.screenshot({ path: `${SHOT}/04-device2.png`, fullPage: true });
 
   console.log("\n[7] No runtime errors (render-loop / schema class of bug)");
   check(errors.length === 0, `no pageerrors/console.errors (${errors.length})`);
-  if (errors.length) console.log(errors.slice(0, 8).map((e) => "    " + e).join("\n"));
+  if (errors.length)
+    console.log(
+      errors
+        .slice(0, 8)
+        .map((e) => "    " + e)
+        .join("\n"),
+    );
 } finally {
   await browser.close();
 }
 
-console.log(`\n${failures === 0 ? "ALL BROWSER CHECKS PASSED" : failures + " CHECK(S) FAILED"} — screenshots in ${SHOT}`);
+console.log(
+  `\n${failures === 0 ? "ALL BROWSER CHECKS PASSED" : failures + " CHECK(S) FAILED"} — screenshots in ${SHOT}`,
+);
 process.exit(failures === 0 ? 0 : 1);

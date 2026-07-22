@@ -5,7 +5,7 @@ import {
   createHarness,
   offlineTransport,
   rejectingTransport,
-  serverChange
+  serverChange,
 } from "./helpers";
 
 const seededTodo = (id: string, extra: Record<string, unknown> = {}) =>
@@ -13,7 +13,7 @@ const seededTodo = (id: string, extra: Record<string, unknown> = {}) =>
     id,
     kind: "insert",
     version: 1,
-    value: { ownerId: "user_a", listId: "inbox", text: "x", done: false, ...extra }
+    value: { ownerId: "user_a", listId: "inbox", text: "x", done: false, ...extra },
   });
 
 describe("core runtime", () => {
@@ -21,7 +21,10 @@ describe("core runtime", () => {
     const { engine } = createHarness({ transport: offlineTransport() });
     const call = engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "hi" });
     await call.local;
-    const rows = await engine.query<{ listId: string }, readonly { text?: string }[]>("todos:list", { listId: "inbox" });
+    const rows = await engine.query<{ listId: string }, readonly { text?: string }[]>(
+      "todos:list",
+      { listId: "inbox" },
+    );
     expect(rows).toHaveLength(1);
     expect(rows?.[0]?.text).toBe("hi");
   });
@@ -31,7 +34,10 @@ describe("core runtime", () => {
     await store.applyServerChange(seededTodo("t1"));
     const call = engine.mutate("todos:toggle", { id: "t1", done: true });
     await call.local;
-    const rows = await engine.query<{ listId: string }, readonly { done?: boolean }[]>("todos:list", { listId: "inbox" });
+    const rows = await engine.query<{ listId: string }, readonly { done?: boolean }[]>(
+      "todos:list",
+      { listId: "inbox" },
+    );
     expect(rows?.[0]?.done).toBe(true);
   });
 
@@ -40,7 +46,9 @@ describe("core runtime", () => {
     await store.applyServerChange(seededTodo("t1"));
     const call = engine.mutate("todos:remove", { id: "t1" });
     await call.local;
-    const visible = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", { listId: "inbox" });
+    const visible = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", {
+      listId: "inbox",
+    });
     expect(visible).toHaveLength(0);
     const raw = await store.getRows("todos");
     expect(raw.find((row) => row._id === "t1")?._deleted).toBe(true);
@@ -60,7 +68,7 @@ describe("core runtime", () => {
       args: {},
       value: { listId: "inbox" },
       createdAt: 1,
-      status: "pending"
+      status: "pending",
     };
     await store.enqueueOperation(op);
     await store.enqueueOperation(op);
@@ -70,13 +78,17 @@ describe("core runtime", () => {
   it("pending operations survive a reload", async () => {
     const store = new MemoryLocalStore();
     const first = createHarness({ store, transport: offlineTransport() });
-    await first.engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "persist" }).local;
+    await first.engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "persist" })
+      .local;
 
     // Reload = a fresh engine over the same durable store.
     const second = createHarness({ store, transport: offlineTransport() });
-    const rows = await second.engine.query<{ listId: string }, readonly { text?: string }[]>("todos:list", {
-      listId: "inbox"
-    });
+    const rows = await second.engine.query<{ listId: string }, readonly { text?: string }[]>(
+      "todos:list",
+      {
+        listId: "inbox",
+      },
+    );
     expect(rows?.[0]?.text).toBe("persist");
     expect((await store.getPendingOperations()).length).toBe(1);
   });
@@ -102,13 +114,16 @@ describe("core runtime", () => {
           return {
             changes: [seededTodo("t2", { text: "pulled" })],
             cursors: { "user:user_a": "c1" },
-            serverTime: 1
+            serverTime: 1,
           };
-        }
-      }
+        },
+      },
     });
     await engine.syncOnce([{ kind: "byUser", key: "user:user_a" }]);
-    const rows = await engine.query<{ listId: string }, readonly { text?: string }[]>("todos:list", { listId: "inbox" });
+    const rows = await engine.query<{ listId: string }, readonly { text?: string }[]>(
+      "todos:list",
+      { listId: "inbox" },
+    );
     expect(rows?.some((row) => row.text === "pulled")).toBe(true);
   });
 
@@ -120,14 +135,16 @@ describe("core runtime", () => {
           return {
             changes: [serverChange({ id: "t1", kind: "delete", version: 2 })],
             cursors: { "user:user_a": "c1" },
-            serverTime: 1
+            serverTime: 1,
           };
-        }
-      }
+        },
+      },
     });
     await store.applyServerChange(seededTodo("t1"));
     await engine.syncOnce([{ kind: "byUser", key: "user:user_a" }]);
-    const visible = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", { listId: "inbox" });
+    const visible = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", {
+      listId: "inbox",
+    });
     expect(visible).toHaveLength(0);
     expect((await store.getRows("todos")).find((row) => row._id === "t1")?._deleted).toBe(true);
   });
@@ -140,11 +157,15 @@ describe("core runtime", () => {
     await engine.mutate("todos:toggle", { id: "t1", done: true }).local;
 
     // A server change for the SAME row arrives on a different field, higher version.
-    await store.applyServerChange(serverChange({ id: "t1", kind: "patch", version: 2, patch: { title: "server-edit" } }));
+    await store.applyServerChange(
+      serverChange({ id: "t1", kind: "patch", version: 2, patch: { title: "server-edit" } }),
+    );
 
-    const row = (await engine.query<{ listId: string }, readonly Record<string, unknown>[]>("todos:list", {
-      listId: "inbox"
-    }))?.[0];
+    const row = (
+      await engine.query<{ listId: string }, readonly Record<string, unknown>[]>("todos:list", {
+        listId: "inbox",
+      })
+    )?.[0];
     expect(row?.title).toBe("server-edit"); // canonical server change applied
     expect(row?.done).toBe(true); // pending local op replayed on top — NOT clobbered
   });
@@ -152,9 +173,13 @@ describe("core runtime", () => {
   it("out-of-order server responses do not corrupt state", async () => {
     const store = new MemoryLocalStore();
     await store.applyServerChange(seededTodo("t1", { text: "v1" }));
-    await store.applyServerChange(serverChange({ id: "t1", kind: "patch", version: 3, patch: { text: "v3" } }));
+    await store.applyServerChange(
+      serverChange({ id: "t1", kind: "patch", version: 3, patch: { text: "v3" } }),
+    );
     // Stale change (v2) arrives after v3 — must be ignored.
-    await store.applyServerChange(serverChange({ id: "t1", kind: "patch", version: 2, patch: { text: "v2-stale" } }));
+    await store.applyServerChange(
+      serverChange({ id: "t1", kind: "patch", version: 2, patch: { text: "v2-stale" } }),
+    );
     expect((await store.getRows("todos")).find((row) => row._id === "t1")?.text).toBe("v3");
   });
 
@@ -174,11 +199,19 @@ describe("core runtime", () => {
     expect((await store.getPendingOperations()).length).toBe(1);
 
     await store.applyServerChange(
-      serverChange({ id: "t1", kind: "insert", version: 1, opId: call.opId, value: { ownerId: "user_a", listId: "inbox", text: "x", done: false } })
+      serverChange({
+        id: "t1",
+        kind: "insert",
+        version: 1,
+        opId: call.opId,
+        value: { ownerId: "user_a", listId: "inbox", text: "x", done: false },
+      }),
     );
 
     expect((await store.getPendingOperations()).length).toBe(0);
-    const rows = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", { listId: "inbox" });
+    const rows = await engine.query<{ listId: string }, readonly unknown[]>("todos:list", {
+      listId: "inbox",
+    });
     expect(rows).toHaveLength(1); // single row, now canonical (no duplicate)
   });
 });

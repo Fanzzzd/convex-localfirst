@@ -1,5 +1,11 @@
 import * as Y from "yjs";
-import { REMOTE_ORIGIN, applyUpdateSafe, base64ToBytes, bytesToBase64, makeSnapshot } from "./yjsSync.js";
+import {
+  REMOTE_ORIGIN,
+  applyUpdateSafe,
+  base64ToBytes,
+  bytesToBase64,
+  makeSnapshot,
+} from "./yjsSync.js";
 
 // A production Yjs provider that rides a local-first append-only log. It owns the
 // full document lifecycle so an app never has to hand-roll the two subtle bugs this
@@ -137,7 +143,7 @@ function asError(cause: unknown): Error {
  */
 export function createCollaborativeDoc(
   persistence: DocPersistence,
-  options: CreateCollaborativeDocOptions
+  options: CreateCollaborativeDocOptions,
 ): CollaborativeDoc {
   const ownsDoc = !options.doc;
   const ydoc = options.doc ?? new Y.Doc({ gc: options.gc ?? true });
@@ -175,7 +181,7 @@ export function createCollaborativeDoc(
       synced: outbox.length === 0 && !flushing && !compacting,
       pendingUpdates: outbox.length + (flushing ? 1 : 0),
       compacting,
-      lastError
+      lastError,
     };
   }
   function emit() {
@@ -200,7 +206,9 @@ export function createCollaborativeDoc(
     if (destroyed) return;
     // Scope to THIS document (item 3: the provider filters, callers need not pre-filter)
     // and apply in a deterministic order so every mount folds rows in identically.
-    const scoped = rows.filter((row) => row.doc === options.docId).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const scoped = rows
+      .filter((row) => row.doc === options.docId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     liveRows = scoped;
     let changed = false;
     for (const row of scoped) {
@@ -314,8 +322,12 @@ export function createCollaborativeDoc(
       if (destroyed) return;
       // 2) Only now delete the subsumed rows. Crash between 1 and 2 just leaves redundant
       //    rows (pruned on the next pass), never lost history.
-      const results = await Promise.allSettled(subsumed.map((id) => Promise.resolve(toStages(prune(id)).server)));
-      const failed = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+      const results = await Promise.allSettled(
+        subsumed.map((id) => Promise.resolve(toStages(prune(id)).server)),
+      );
+      const failed = results.find((r) => r.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
       for (const id of subsumed) {
         // Drop dedup/byte accounting so cadence resets; a re-delivered pruned row is a
         // no-op apply anyway. The snapshot row itself re-enters via the next ingest.
@@ -382,7 +394,7 @@ export function createCollaborativeDoc(
       await flush();
     },
     compactNow,
-    destroy
+    destroy,
   };
 }
 

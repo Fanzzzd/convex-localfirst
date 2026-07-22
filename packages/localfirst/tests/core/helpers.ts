@@ -9,7 +9,7 @@ import {
   type PushResponse,
   type RowValue,
   type ServerChange,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core";
 import { LocalFirstEngine } from "../../src/core/internal";
 
@@ -21,8 +21,8 @@ export function createTodoManifest(): LocalFirstManifest {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        indexes: { byList: ["ownerId", "listId", "createdAt"] }
-      })
+        indexes: { byList: ["ownerId", "listId", "createdAt"] },
+      }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly RowValue[]>({
@@ -32,8 +32,8 @@ export function createTodoManifest(): LocalFirstManifest {
         initial: [],
         run(rows, args) {
           return rows.filter((row) => row.listId === args.listId);
-        }
-      })
+        },
+      }),
     },
     mutations: {
       "todos:create": localMutation<{ localId?: string; listId: string; text: string }>({
@@ -52,10 +52,10 @@ export function createTodoManifest(): LocalFirstManifest {
               text: args.text,
               done: false,
               createdAt: ctx.now,
-              updatedAt: ctx.now
-            }
+              updatedAt: ctx.now,
+            },
           };
-        }
+        },
       }),
       "todos:toggle": localMutation<{ id: string; done: boolean }>({
         kind: "mutation",
@@ -64,7 +64,7 @@ export function createTodoManifest(): LocalFirstManifest {
         operationKind: "patch",
         plan(args) {
           return { kind: "patch", table: "todos", id: args.id, patch: { done: args.done } };
-        }
+        },
       }),
       "todos:remove": localMutation<{ id: string }>({
         kind: "mutation",
@@ -73,9 +73,9 @@ export function createTodoManifest(): LocalFirstManifest {
         operationKind: "delete",
         plan(args) {
           return { kind: "delete", table: "todos", id: args.id };
-        }
-      })
-    }
+        },
+      }),
+    },
   });
 }
 
@@ -98,7 +98,7 @@ export function createHarness(
     clientId?: string;
     syncTimeoutMs?: number;
     maxPushBatch?: number;
-  } = {}
+  } = {},
 ): Harness {
   const store = options.store ?? new MemoryLocalStore();
   let now = 1000;
@@ -115,27 +115,32 @@ export function createHarness(
     retry: options.retry,
     syncTimeoutMs: options.syncTimeoutMs,
     maxPushBatch: options.maxPushBatch,
-    sleep: options.sleep ?? (() => Promise.resolve())
+    sleep: options.sleep ?? (() => Promise.resolve()),
   });
   return { store, engine, tick: () => now++ };
 }
 
 /** Push transport that accepts everything and optionally echoes server changes. */
-export function acceptAllTransport(changesFor?: (opId: string) => readonly ServerChange[]): SyncTransport {
+export function acceptAllTransport(
+  changesFor?: (opId: string) => readonly ServerChange[],
+): SyncTransport {
   return {
     async push(request): Promise<PushResponse> {
       const changes = request.mutations.flatMap((op) => changesFor?.(op.opId) ?? []);
       return {
-        accepted: request.mutations.map((op) => ({ opId: op.opId, serverResult: { ok: true, id: op.id } })),
+        accepted: request.mutations.map((op) => ({
+          opId: op.opId,
+          serverResult: { ok: true, id: op.id },
+        })),
         rejected: [],
         idMaps: [],
         changes,
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
 }
 
@@ -148,12 +153,12 @@ export function rejectingTransport(message: string): SyncTransport {
         rejected: request.mutations.map((op) => ({ opId: op.opId, message })),
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
 }
 
@@ -161,11 +166,13 @@ export function rejectingTransport(message: string): SyncTransport {
 export function offlineTransport(): SyncTransport {
   return {
     push: () => new Promise<PushResponse>(() => {}),
-    pull: () => new Promise(() => {})
+    pull: () => new Promise(() => {}),
   };
 }
 
-export function serverChange(input: Partial<ServerChange> & Pick<ServerChange, "id" | "kind" | "version">): ServerChange {
+export function serverChange(
+  input: Partial<ServerChange> & Pick<ServerChange, "id" | "kind" | "version">,
+): ServerChange {
   return {
     changeId: input.changeId ?? `chg_${input.id}_${input.version}`,
     scopeKey: input.scopeKey ?? "user:user_a",
@@ -176,6 +183,6 @@ export function serverChange(input: Partial<ServerChange> & Pick<ServerChange, "
     patch: input.patch,
     version: input.version,
     serverTime: input.serverTime ?? input.version,
-    opId: input.opId
+    opId: input.opId,
   };
 }

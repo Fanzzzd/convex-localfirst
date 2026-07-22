@@ -28,7 +28,7 @@ function init() {
 // Auth is resolved server-side at sync time (convex/sync.ts → createSyncFunctions),
 // not here — this factory only declares the local-first tables.
 export const lf = createLocalFirst();
-`
+`,
     },
     {
       path: join("convex", "todos.ts"),
@@ -70,7 +70,7 @@ export const toggle = todos.patch({
 });
 
 export const remove = todos.remove();
-`
+`,
     },
     {
       path: join("convex", "schema.ts"),
@@ -83,7 +83,7 @@ import { todos } from "./todos";
 export default defineSchema({
   todos: todos.table()
 });
-`
+`,
     },
     {
       path: join("convex", "convex.config.ts"),
@@ -97,7 +97,7 @@ const app = defineApp();
 app.use(localfirst);
 
 export default app;
-`
+`,
     },
     {
       path: join("convex", "sync.ts"),
@@ -117,8 +117,8 @@ export const { push, pull, presence, presenceList } = createSyncFunctions({
   // production, DELETE this line and resolve identity from ctx.auth instead.
   devUnsafeAllowClientUserId: true
 });
-`
-    }
+`,
+    },
   ];
 
   const created: string[] = [];
@@ -161,7 +161,9 @@ async function check() {
   // `check` parses your source with the TypeScript compiler API, but `typescript` is an
   // OPTIONAL peer — `init`/`help` must work without it. Load the check module (and its
   // `typescript` import) only now, and turn a missing peer into a clear instruction.
-  let runCheck: (dir: string) => Array<{ file: string; line: number; table: string; method: string; snippet: string }>;
+  let runCheck: (
+    dir: string,
+  ) => Array<{ file: string; line: number; table: string; method: string; snippet: string }>;
   try {
     ({ runCheck } = await import("./check.js"));
   } catch (error) {
@@ -169,7 +171,7 @@ async function check() {
     if (err.code === "ERR_MODULE_NOT_FOUND" && /typescript/i.test(err.message ?? "")) {
       console.error(
         "convex-localfirst check: this command needs TypeScript, an optional peer dependency.\n" +
-          "  Install it in your project:  npm install --save-dev typescript"
+          "  Install it in your project:  npm install --save-dev typescript",
       );
       process.exitCode = 1;
       return;
@@ -182,9 +184,13 @@ async function check() {
     console.log(`convex-localfirst check: ${CHECK_SCOPE_NOTE}`);
     return;
   }
-  console.error(`convex-localfirst check: found ${violations.length} direct write(s) to local-first tables:`);
+  console.error(
+    `convex-localfirst check: found ${violations.length} direct write(s) to local-first tables:`,
+  );
   for (const v of violations) {
-    console.error(`  ${v.file}:${v.line}  ctx.db.${v.method}("${v.table}", ...)  — write through the lf.table DSL instead`);
+    console.error(
+      `  ${v.file}:${v.line}  ctx.db.${v.method}("${v.table}", ...)  — write through the lf.table DSL instead`,
+    );
     console.error(`    ${v.snippet}`);
   }
   console.error(`convex-localfirst check: ${CHECK_SCOPE_NOTE}`);

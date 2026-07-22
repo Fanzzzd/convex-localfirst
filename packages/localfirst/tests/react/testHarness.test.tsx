@@ -23,8 +23,8 @@ describe("createTestHarness (public API only)", () => {
       access: {
         member: () => "member",
         // The server rejects any rename to "REJECT" — a deterministic conflict.
-        write: ({ action, patch }) => !(action === "patch" && patch?.title === "REJECT")
-      }
+        write: ({ action, patch }) => !(action === "patch" && patch?.title === "REJECT"),
+      },
     });
     await t.server.seed("docs", [{ localId: "d1", wsId: "w1", title: "hello" }]);
 
@@ -32,20 +32,26 @@ describe("createTestHarness (public API only)", () => {
       () => ({
         rows: useLiveQuery(t.db.docs.scope({ wsId: "w1" })),
         recovery: useSyncRecovery(),
-        rename: useMutation(api.docs.rename)
+        rename: useMutation(api.docs.rename),
       }),
-      { wrapper: t.Provider }
+      { wrapper: t.Provider },
     );
 
-    await act(async () => { await t.settled(); });
+    await act(async () => {
+      await t.settled();
+    });
     expect(result.current.rows?.[0]?.title).toBe("hello");
 
     t.goOffline();
-    await act(async () => { await result.current.rename({ id: "d1", title: "REJECT" }).local; });
+    await act(async () => {
+      await result.current.rename({ id: "d1", title: "REJECT" }).local;
+    });
     expect(result.current.rows?.[0]?.title).toBe("REJECT"); // optimistic
 
     t.goOnline();
-    await act(async () => { await t.settled(); });
+    await act(async () => {
+      await t.settled();
+    });
 
     expect(result.current.recovery.rejectedOperations).toHaveLength(1); // conflict surfaced
     expect(result.current.rows?.[0]?.title).toBe("hello"); // reverted
@@ -56,18 +62,24 @@ describe("createTestHarness (public API only)", () => {
     const t = createTestHarness({ modules: todoModules, userId: "u1" });
     const { result } = renderHook(
       () => ({ rows: useQuery(api.todos.list, {}), create: useMutation(api.todos.create) }),
-      { wrapper: t.Provider }
+      { wrapper: t.Provider },
     );
-    await act(async () => { await t.settled(); });
+    await act(async () => {
+      await t.settled();
+    });
 
     t.goOffline();
-    await act(async () => { await result.current.create({ text: "offline note" }).local; });
+    await act(async () => {
+      await result.current.create({ text: "offline note" }).local;
+    });
     // Optimistic locally, nothing on the server yet.
     expect((result.current.rows ?? []).map((r) => r.text)).toContain("offline note");
     expect(t.server.rows("todos")).toHaveLength(0);
 
     t.goOnline();
-    await act(async () => { await t.settled(); });
+    await act(async () => {
+      await t.settled();
+    });
     expect(t.server.rows("todos").map((r) => r.text)).toContain("offline note");
     t.dispose();
   });
@@ -84,15 +96,22 @@ describe("createTestHarness (public API only)", () => {
     const t = createTestHarness({ modules: todoModules, userId: "alice" });
     const { result } = renderHook(
       () => ({ rows: useQuery(api.todos.list, {}), create: useMutation(api.todos.create) }),
-      { wrapper: t.Provider }
+      { wrapper: t.Provider },
     );
-    await act(async () => { await result.current.create({ text: "alice note" }).local; await t.settled(); });
+    await act(async () => {
+      await result.current.create({ text: "alice note" }).local;
+      await t.settled();
+    });
     expect((result.current.rows ?? []).map((r) => r.text)).toContain("alice note");
 
-    await act(async () => { t.setUser("bob"); });
-    await act(async () => { await t.settled(); });
+    await act(async () => {
+      t.setUser("bob");
+    });
+    await act(async () => {
+      await t.settled();
+    });
     // Bob's fresh local store has none of Alice's rows (I9 device isolation).
-    expect((result.current.rows ?? [])).toHaveLength(0);
+    expect(result.current.rows ?? []).toHaveLength(0);
     expect(t.userId()).toBe("bob");
     t.dispose();
   });

@@ -6,8 +6,18 @@ import { useMutation, useQuery } from "../../src/react";
 // (OptionalRestArgs / OptionalRestArgsOrSkip): required args are mandatory, empty
 // args are omittable. vitest typecheck mode type-checks this; it never runs.
 test("useQuery arity: required args mandatory, empty args omittable", () => {
-  type ListWithArgs = FunctionReference<"query", "public", { listId: string }, ReadonlyArray<{ title: string }>>;
-  type ListNoArgs = FunctionReference<"query", "public", Record<string, never>, ReadonlyArray<{ title: string }>>;
+  type ListWithArgs = FunctionReference<
+    "query",
+    "public",
+    { listId: string },
+    ReadonlyArray<{ title: string }>
+  >;
+  type ListNoArgs = FunctionReference<
+    "query",
+    "public",
+    Record<string, never>,
+    ReadonlyArray<{ title: string }>
+  >;
   const listWithArgs = {} as ListWithArgs;
   const listNoArgs = {} as ListNoArgs;
 
@@ -33,7 +43,12 @@ test("useQuery arity: required args mandatory, empty args omittable", () => {
 
 test("useMutation arity: required args mandatory, empty args callable with ()", () => {
   type CreateWithArgs = FunctionReference<"mutation", "public", { title: string }, { id: string }>;
-  type CreateNoArgs = FunctionReference<"mutation", "public", Record<string, never>, { id: string }>;
+  type CreateNoArgs = FunctionReference<
+    "mutation",
+    "public",
+    Record<string, never>,
+    { id: string }
+  >;
   const create = useMutation({} as CreateWithArgs);
   const ping = useMutation({} as CreateNoArgs);
 

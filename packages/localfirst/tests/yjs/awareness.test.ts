@@ -8,7 +8,7 @@ import { createDocAwareness, type AwarenessPeer } from "../../src/yjs/awareness.
 
 const peer = (clientId: string, broadcast: { ac: number; aw: string }): AwarenessPeer => ({
   clientId,
-  data: { doc: "d1", ...broadcast }
+  data: { doc: "d1", ...broadcast },
 });
 
 describe("createDocAwareness", () => {
@@ -21,7 +21,9 @@ describe("createDocAwareness", () => {
     // A broadcasts, B receives.
     b.applyPeers([peer("a", a.localBroadcast())]);
 
-    const remote = [...b.awareness.getStates().entries()].find(([id]) => id !== b.awareness.clientID);
+    const remote = [...b.awareness.getStates().entries()].find(
+      ([id]) => id !== b.awareness.clientID,
+    );
     expect(remote?.[1]).toMatchObject({ user: { name: "Ada", color: "#f00" } });
     a.destroy();
     b.destroy();

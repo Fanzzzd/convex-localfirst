@@ -16,7 +16,7 @@ describe("LocalFirstDevtools", () => {
     render(
       <Provider>
         <LocalFirstDevtools defaultOpen />
-      </Provider>
+      </Provider>,
     );
     expect(screen.getByTestId("lf-devtools")).toBeTruthy();
     expect(screen.getByTestId("lf-devtools-panel-sync")).toBeTruthy();
@@ -33,7 +33,7 @@ describe("LocalFirstDevtools", () => {
     render(
       <Provider>
         <LocalFirstDevtools defaultOpen pollMs={20} />
-      </Provider>
+      </Provider>,
     );
     fireEvent.click(screen.getByTestId("lf-devtools-tab-outbox"));
     const op = await screen.findByTestId("lf-devtools-op");
@@ -47,7 +47,7 @@ describe("LocalFirstDevtools", () => {
     render(
       <Provider>
         <LocalFirstDevtools defaultOpen />
-      </Provider>
+      </Provider>,
     );
     expect(t.engine.getStatus().online).toBe(true);
     fireEvent.click(screen.getByTestId("lf-devtools-offline-toggle"));

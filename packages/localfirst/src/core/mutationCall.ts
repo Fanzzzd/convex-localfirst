@@ -27,28 +27,28 @@ export function createLocalFirstMutationCall<T>(input: {
     opId: {
       enumerable: true,
       configurable: false,
-      value: input.opId
+      value: input.opId,
     },
     id: {
       enumerable: true,
       configurable: false,
-      value: input.id
+      value: input.id,
     },
     local: {
       enumerable: true,
       configurable: false,
-      value: input.local
+      value: input.local,
     },
     server: {
       enumerable: true,
       configurable: false,
-      value: input.server
+      value: input.server,
     },
     status: {
       enumerable: false,
       configurable: false,
-      value: input.status
-    }
+      value: input.status,
+    },
   });
   return promise;
 }
@@ -65,7 +65,7 @@ export function createFallbackMutationCall<T>(promise: Promise<T>): LocalFirstMu
     id: "",
     local: promise.then(() => ({ opId: "convex-fallback", table: "", id: "", committedAt: 0 })),
     server: promise,
-    status: () => ({ opId: "convex-fallback", status: "pushing" })
+    status: () => ({ opId: "convex-fallback", status: "pushing" }),
   });
 }
 
@@ -98,7 +98,7 @@ export function createLocalFirstBatchCall<T = unknown>(input: {
   Object.defineProperties(promise, {
     groupId: { enumerable: true, configurable: false, value: input.groupId },
     local: { enumerable: true, configurable: false, value: input.local },
-    server: { enumerable: true, configurable: false, value: input.server }
+    server: { enumerable: true, configurable: false, value: input.server },
   });
   return promise;
 }

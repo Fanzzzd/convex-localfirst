@@ -29,7 +29,7 @@ export function ensureKeys() {
     const { publicKey, privateKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
-      privateKeyEncoding: { type: "pkcs8", format: "pem" }
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
     });
     writeFileSync(PRIV_PATH, privateKey, { mode: 0o600 });
     writeFileSync(PUB_PATH, publicKey, { mode: 0o600 });
@@ -42,7 +42,7 @@ export function buildJwks() {
   const { publicPem } = ensureKeys();
   const jwk = createPublicKey(publicPem).export({ format: "jwk" });
   return {
-    keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }]
+    keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }],
   };
 }
 
@@ -59,10 +59,13 @@ export function mintToken(subject, extraClaims = {}, { ttlSeconds = 3600 } = {})
     nbf: now,
     exp: now + ttlSeconds,
     jti: randomUUID(),
-    ...extraClaims
+    ...extraClaims,
   };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
-  const signature = createSign("RSA-SHA256").update(signingInput).sign(privatePem).toString("base64url");
+  const signature = createSign("RSA-SHA256")
+    .update(signingInput)
+    .sign(privatePem)
+    .toString("base64url");
   return `${signingInput}.${signature}`;
 }
 

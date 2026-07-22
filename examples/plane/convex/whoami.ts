@@ -14,7 +14,7 @@ export const whoami = query({
       authenticated: true,
       subject: identity.subject,
       issuer: identity.issuer ?? null,
-      tokenIdentifier: identity.tokenIdentifier ?? null
+      tokenIdentifier: identity.tokenIdentifier ?? null,
     };
-  }
+  },
 });

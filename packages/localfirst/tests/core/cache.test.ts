@@ -8,7 +8,7 @@ import {
   many,
   type RowDelta,
   type RowValue,
-  type ServerChange
+  type ServerChange,
 } from "../../src/core";
 import { LocalCache, LocalFirstEngine, SortedIndex } from "../../src/core/internal";
 
@@ -23,17 +23,22 @@ function issuesManifest() {
         scope: ws,
         indexes: {
           byStatusRank: ["workspaceId", "status", "rank"],
-          byRank: ["workspaceId", "rank"]
-        }
+          byRank: ["workspaceId", "rank"],
+        },
       }),
-      comments: localTable({ table: "comments", idField: "localId", scope: ws, indexes: {} })
+      comments: localTable({ table: "comments", idField: "localId", scope: ws, indexes: {} }),
     },
     queries: {},
-    mutations: {}
+    mutations: {},
   });
 }
 
-function seedChange(table: string, id: string, value: Record<string, unknown>, version = 1): ServerChange {
+function seedChange(
+  table: string,
+  id: string,
+  value: Record<string, unknown>,
+  version = 1,
+): ServerChange {
   return {
     changeId: `c-${table}-${id}-${version}`,
     scopeKey: `byWorkspace:${value.workspaceId}`,
@@ -42,7 +47,7 @@ function seedChange(table: string, id: string, value: Record<string, unknown>, v
     kind: "insert",
     value,
     version,
-    serverTime: version
+    serverTime: version,
   };
 }
 
@@ -54,7 +59,7 @@ async function makeEngine(seed: ServerChange[] = []) {
     store,
     clientId: "c",
     userId: "u",
-    nameOf: (r) => String(r)
+    nameOf: (r) => String(r),
   });
   return { engine, store };
 }
@@ -69,7 +74,7 @@ describe("SortedIndex", () => {
       { _id: "a", workspaceId: "w1", rank: "m" },
       { _id: "b", workspaceId: "w1", rank: "a" },
       { _id: "c", workspaceId: "w2", rank: "z" },
-      { _id: "d", workspaceId: "w1", rank: "z" }
+      { _id: "d", workspaceId: "w1", rank: "z" },
     ] as unknown as RowValue[];
     for (const row of rows) index.insert(row);
     // pre-sorted iteration for w1 by rank: b(a) < a(m) < d(z)
@@ -99,7 +104,9 @@ describe("delta bus", () => {
 
     // Apply via the engine's server-change path by pulling — here drive the cache
     // directly through an out-of-band store write + poke (the resync/gap path).
-    await store.applyServerChange(seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "m" }));
+    await store.applyServerChange(
+      seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "m" }),
+    );
     engine.pokeLocalChange();
     await flush();
 
@@ -113,12 +120,12 @@ describe("in-memory cache + incremental views", () => {
   it("hydrates from the store once and serves live rows without re-reading", async () => {
     const { engine } = await makeEngine([
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "m", title: "A" }),
-      seedChange("issues", "i2", { workspaceId: "w1", status: "open", rank: "a", title: "B" })
+      seedChange("issues", "i2", { workspaceId: "w1", status: "open", rank: "a", title: "B" }),
     ]);
     let count = 0;
     const sub = engine.subscribeLiveQuery(
       collection<RowValue>("issues").scope({ workspaceId: "w1" }).order("rank"),
-      () => count++
+      () => count++,
     );
     await flush();
     // Pre-sorted by rank: i2 (a) before i1 (m)
@@ -128,12 +135,12 @@ describe("in-memory cache + incremental views", () => {
 
   it("updates a subscription incrementally on a single delta and keeps stable identity", async () => {
     const { engine } = await makeEngine([
-      seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "m" })
+      seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "m" }),
     ]);
     let changes = 0;
     const sub = engine.subscribeLiveQuery(
       collection<RowValue>("issues").scope({ workspaceId: "w1" }).order("rank"),
-      () => changes++
+      () => changes++,
     );
     await flush();
     const first = sub.current();
@@ -152,11 +159,18 @@ describe("in-memory cache + incremental views", () => {
     const { engine, store } = await makeEngine();
     const sub = engine.subscribeLiveQuery(
       collection<RowValue>("issues").scope({ workspaceId: "w1" }).order("rank"),
-      () => {}
+      () => {},
     );
     await flush();
-    for (const [id, rank] of [["i1", "m"], ["i2", "z"], ["i3", "a"], ["i4", "t"]] as const) {
-      await store.applyServerChange(seedChange("issues", id, { workspaceId: "w1", status: "open", rank }));
+    for (const [id, rank] of [
+      ["i1", "m"],
+      ["i2", "z"],
+      ["i3", "a"],
+      ["i4", "t"],
+    ] as const) {
+      await store.applyServerChange(
+        seedChange("issues", id, { workspaceId: "w1", status: "open", rank }),
+      );
       engine.pokeLocalChange();
       await flush();
     }
@@ -168,17 +182,23 @@ describe("in-memory cache + incremental views", () => {
     const { engine, store } = await makeEngine([
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "a" }),
       seedChange("issues", "i2", { workspaceId: "w1", status: "open", rank: "b" }),
-      seedChange("issues", "i3", { workspaceId: "w1", status: "open", rank: "c" })
+      seedChange("issues", "i3", { workspaceId: "w1", status: "open", rank: "c" }),
     ]);
     const sub = engine.subscribeLiveQuery(
       collection<RowValue>("issues").scope({ workspaceId: "w1" }).order("rank").limit(2),
-      () => {}
+      () => {},
     );
     await flush();
     expect(sub.current()?.map((r) => r._id)).toEqual(["i1", "i2"]);
     // Delete the top row → the 3rd fills in (limit maintained from the full sorted set).
     await store.applyServerChange({
-      changeId: "d1", scopeKey: "byWorkspace:w1", table: "issues", id: "i1", kind: "delete", version: 2, serverTime: 2
+      changeId: "d1",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "delete",
+      version: 2,
+      serverTime: 2,
     });
     engine.pokeLocalChange();
     await flush();
@@ -189,9 +209,12 @@ describe("in-memory cache + incremental views", () => {
   it("does not leak another scope's rows into a scoped subscription", async () => {
     const { engine } = await makeEngine([
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "a" }),
-      seedChange("issues", "i2", { workspaceId: "w2", status: "open", rank: "a" })
+      seedChange("issues", "i2", { workspaceId: "w2", status: "open", rank: "a" }),
     ]);
-    const sub = engine.subscribeLiveQuery(collection<RowValue>("issues").scope({ workspaceId: "w1" }), () => {});
+    const sub = engine.subscribeLiveQuery(
+      collection<RowValue>("issues").scope({ workspaceId: "w1" }),
+      () => {},
+    );
     await flush();
     expect(sub.current()?.map((r) => r._id)).toEqual(["i1"]);
     sub.dispose();
@@ -200,16 +223,20 @@ describe("in-memory cache + incremental views", () => {
   it("updates relations incrementally when the related table changes", async () => {
     const { engine, store } = await makeEngine([
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "a", title: "Bug" }),
-      seedChange("comments", "cm1", { workspaceId: "w1", issueId: "i1", body: "first" })
+      seedChange("comments", "cm1", { workspaceId: "w1", issueId: "i1", body: "first" }),
     ]);
     const sub = engine.subscribeLiveQuery(
-      collection<RowValue>("issues").scope({ workspaceId: "w1" }).related("comments", many<RowValue>("comments", "issueId")),
-      () => {}
+      collection<RowValue>("issues")
+        .scope({ workspaceId: "w1" })
+        .related("comments", many<RowValue>("comments", "issueId")),
+      () => {},
     );
     await flush();
     expect((sub.current()?.[0]?.comments as unknown[])?.length).toBe(1);
     // Add a comment on the related table → the issue query updates.
-    await store.applyServerChange(seedChange("comments", "cm2", { workspaceId: "w1", issueId: "i1", body: "second" }));
+    await store.applyServerChange(
+      seedChange("comments", "cm2", { workspaceId: "w1", issueId: "i1", body: "second" }),
+    );
     engine.pokeLocalChange();
     await flush();
     expect((sub.current()?.[0]?.comments as unknown[])?.length).toBe(2);
@@ -220,13 +247,17 @@ describe("in-memory cache + incremental views", () => {
 describe("query planner (explain)", () => {
   it("chooses a matching index for scope-equality + order, else a full scan", async () => {
     const { engine } = await makeEngine();
-    const indexed = engine.explainQuery(collection("issues").scope({ workspaceId: "w1" }).order("rank"));
+    const indexed = engine.explainQuery(
+      collection("issues").scope({ workspaceId: "w1" }).order("rank"),
+    );
     expect(indexed.strategy).toBe("index");
     expect(indexed.index).toBe("byRank");
     expect(indexed.sortedByIndex).toBe(true);
 
     // Ordering by a non-indexed field → full scan.
-    const scan = engine.explainQuery(collection("issues").scope({ workspaceId: "w1" }).order("title"));
+    const scan = engine.explainQuery(
+      collection("issues").scope({ workspaceId: "w1" }).order("title"),
+    );
     expect(scan.strategy).toBe("scan");
     expect(scan.index).toBe(null);
 
@@ -241,7 +272,7 @@ describe("query planner (explain)", () => {
       collection<RowValue>("issues")
         .scope({ workspaceId: "w1" })
         .filter({ status: "open", rank: { gte: "b", lt: "z" } })
-        .order("rank")
+        .order("rank"),
     );
     expect(eq).toMatchObject({ strategy: "index", index: "byStatusRank", prefix: ["w1", "open"] });
     expect(eq.range).toEqual({ field: "rank", gte: "b", lt: "z" });
@@ -250,16 +281,19 @@ describe("query planner (explain)", () => {
       collection<RowValue>("issues")
         .scope({ workspaceId: "w1" })
         .filter({ status: { in: ["open", "closed"] } })
-        .order("rank")
+        .order("rank"),
     );
     expect(union).toMatchObject({ strategy: "index", index: "byStatusRank", sortedByIndex: false });
-    expect(union.prefixes).toEqual([["w1", "open"], ["w1", "closed"]]);
+    expect(union.prefixes).toEqual([
+      ["w1", "open"],
+      ["w1", "closed"],
+    ]);
 
     const largeIn = engine.explainQuery(
       collection<RowValue>("issues")
         .scope({ workspaceId: "w1" })
         .filter({ status: { in: Array.from({ length: 17 }, (_, index) => `s${index}`) } })
-        .order("rank")
+        .order("rank"),
     );
     expect(largeIn.strategy).toBe("scan");
 
@@ -267,7 +301,7 @@ describe("query planner (explain)", () => {
       collection<RowValue>("issues")
         .scope({ workspaceId: "w1" })
         .where((row) => row.status === "open")
-        .order("rank")
+        .order("rank"),
     );
     expect(opaque.index).toBe("byRank");
     expect(opaque.index).not.toBe("byStatusRank");
@@ -279,11 +313,11 @@ describe("grouped and count-only live views", () => {
     const { engine, store } = await makeEngine([
       seedChange("issues", "i0", { workspaceId: "w1", status: null, rank: "0" }),
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "b" }),
-      seedChange("issues", "i2", { workspaceId: "w1", status: "closed", rank: "a" })
+      seedChange("issues", "i2", { workspaceId: "w1", status: "closed", rank: "a" }),
     ]);
     const sub = engine.subscribeLiveQuery(
       collection<RowValue>("issues").scope({ workspaceId: "w1" }).groupBy("status").order("rank"),
-      () => {}
+      () => {},
     );
     await flush();
     const initial = sub.current()!;
@@ -293,8 +327,14 @@ describe("grouped and count-only live views", () => {
     expect(initial.get("open")?.map((row) => row._id)).toEqual(["i1"]);
 
     await store.applyServerChange({
-      changeId: "move", scopeKey: "byWorkspace:w1", table: "issues", id: "i1",
-      kind: "patch", patch: { status: "closed", rank: "c" }, version: 2, serverTime: 2
+      changeId: "move",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "patch",
+      patch: { status: "closed", rank: "c" },
+      version: 2,
+      serverTime: 2,
     });
     engine.pokeLocalChange();
     await flush();
@@ -306,7 +346,7 @@ describe("grouped and count-only live views", () => {
 
     const movedClosed = moved.get("closed")!;
     await store.applyServerChange(
-      seedChange("issues", "i3", { workspaceId: "w1", status: "backlog", rank: "d" })
+      seedChange("issues", "i3", { workspaceId: "w1", status: "backlog", rank: "d" }),
     );
     engine.pokeLocalChange();
     await flush();
@@ -327,27 +367,46 @@ describe("grouped and count-only live views", () => {
     for (const change of [
       seedChange("issues", "i1", { workspaceId: "w1", status: "open", rank: "a" }),
       seedChange("issues", "i2", { workspaceId: "w1", status: "open", rank: "b" }),
-      seedChange("issues", "i3", { workspaceId: "w1", status: "closed", rank: "c" })
-    ]) await store.applyServerChange(change);
+      seedChange("issues", "i3", { workspaceId: "w1", status: "closed", rank: "c" }),
+    ])
+      await store.applyServerChange(change);
     const host = new LocalFirstEngine({
-      manifest: issuesManifest(), store: new MemoryLocalStore(), clientId: "c", userId: "u", nameOf: String
+      manifest: issuesManifest(),
+      store: new MemoryLocalStore(),
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
     });
     const cache = new LocalCache(host, store);
     await cache.hydrate();
-    const rowPath = vi.spyOn(cache as unknown as { _tableRowsInternal(table: string): readonly RowValue[] }, "_tableRowsInternal");
+    const rowPath = vi.spyOn(
+      cache as unknown as { _tableRowsInternal(table: string): readonly RowValue[] },
+      "_tableRowsInternal",
+    );
     const plan = collection<RowValue>("issues").scope({ workspaceId: "w1" }).groupBy("status");
     const rowRun = vi.spyOn(plan, "run");
     const grouped = cache.subscribeCounts(plan, () => {});
-    const scalar = cache.subscribeCounts(collection<RowValue>("issues").scope({ workspaceId: "w1" }), () => {});
+    const scalar = cache.subscribeCounts(
+      collection<RowValue>("issues").scope({ workspaceId: "w1" }),
+      () => {},
+    );
     expect(grouped.current()).toEqual({ open: 2, closed: 1 });
     expect(scalar.current()).toBe(3);
     expect(rowPath).not.toHaveBeenCalled();
     expect(rowRun).not.toHaveBeenCalled();
 
-    cache.applyServerChanges([{
-      changeId: "move-count", scopeKey: "byWorkspace:w1", table: "issues", id: "i3",
-      kind: "patch", patch: { status: "open" }, version: 2, serverTime: 2
-    }]);
+    cache.applyServerChanges([
+      {
+        changeId: "move-count",
+        scopeKey: "byWorkspace:w1",
+        table: "issues",
+        id: "i3",
+        kind: "patch",
+        patch: { status: "open" },
+        version: 2,
+        serverTime: 2,
+      },
+    ]);
     expect(grouped.current()).toEqual({ open: 3 });
     expect(scalar.current()).toBe(3);
     expect(rowPath).not.toHaveBeenCalled();

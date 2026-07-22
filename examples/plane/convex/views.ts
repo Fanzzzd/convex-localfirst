@@ -18,11 +18,11 @@ export const views = lf.table("views", {
     query_data: v.optional(v.any()),
     logo_props: v.optional(v.any()),
     sort_order: v.optional(v.number()),
-    created_by: v.optional(v.string())
+    created_by: v.optional(v.string()),
   },
   scope: scopeWorkspace,
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace", "created_at"] }
+  indexes: { byWorkspace: ["workspace", "created_at"] },
 });
 
 export const create = views.insert();

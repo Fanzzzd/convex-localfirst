@@ -9,7 +9,7 @@ export {
   base64ToBytes,
   applyUpdateSafe,
   makeSnapshot,
-  REMOTE_ORIGIN
+  REMOTE_ORIGIN,
 } from "./yjsSync.js";
 export {
   createCollaborativeDoc,
@@ -20,11 +20,11 @@ export {
   type DocStatus,
   type DocUpdateRow,
   type MutationLike,
-  type MutationStages
+  type MutationStages,
 } from "./provider.js";
 export {
   useCollaborativeDoc,
   type CollaborativeDocRow,
   type UseCollaborativeDocOptions,
-  type UseCollaborativeDocResult
+  type UseCollaborativeDocResult,
 } from "./useCollaborativeDoc.js";

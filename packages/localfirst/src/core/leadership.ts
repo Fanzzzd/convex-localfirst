@@ -29,7 +29,7 @@ export type LockManagerLike = {
   request(
     name: string,
     options: { mode?: "exclusive" | "shared"; signal?: AbortSignal },
-    callback: () => Promise<unknown>
+    callback: () => Promise<unknown>,
   ): Promise<unknown>;
 };
 

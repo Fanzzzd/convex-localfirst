@@ -17,11 +17,14 @@ export const docUpdates = lf.table("doc_updates", {
   shape: {
     workspaceId: v.string(),
     docId: v.string(), // FK -> documents.localId
-    update: v.string() // base64(Yjs update)
+    update: v.string(), // base64(Yjs update)
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
-  indexes: { byWorkspace: ["workspaceId", "createdAt"], byDoc: ["workspaceId", "docId", "createdAt"] }
+  indexes: {
+    byWorkspace: ["workspaceId", "createdAt"],
+    byDoc: ["workspaceId", "docId", "createdAt"],
+  },
 });
 
 export const append = docUpdates.insert();

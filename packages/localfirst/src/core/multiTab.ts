@@ -57,7 +57,9 @@ export type MultiTabSyncOptions = {
   readonly locks?: LockManagerLike | null;
 };
 
-type PokeMessage = { readonly type: "changed" } | { readonly type: "outcome"; readonly outcome: OperationOutcome };
+type PokeMessage =
+  | { readonly type: "changed" }
+  | { readonly type: "outcome"; readonly outcome: OperationOutcome };
 
 /**
  * The multi-tab coordination key for a store. It MUST equal the shared-data boundary so
@@ -79,10 +81,14 @@ export function coordinationName(store: LocalStore | undefined, userId: string |
  * Wire one engine into multi-tab coordination. Returns a dispose that tears down the
  * channel + leadership and restores the engine to the un-gated (every-tab-sync) default.
  */
-export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSyncOptions): () => void {
+export function createMultiTabSync(
+  engine: MultiTabEngine,
+  options: MultiTabSyncOptions,
+): () => void {
   const channelName = `convex-localfirst:multitab:${options.name}`;
   const channelFactory =
-    options.createChannel ?? ((name) => new BroadcastChannel(name) as unknown as BroadcastChannelLike);
+    options.createChannel ??
+    ((name) => new BroadcastChannel(name) as unknown as BroadcastChannelLike);
   const channel = channelFactory(channelName);
 
   let stopped = false;
@@ -99,7 +105,7 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
         name: channelName,
         id: options.id,
         locks: options.locks,
-        onChange
+        onChange,
       }));
   const leadership = leadershipFactory((isLeader) => {
     if (!stopped) {
@@ -147,11 +153,13 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
     queueMicrotask(() => {
       broadcastQueued = false;
       if (!stopped) {
+        // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel.postMessage takes no targetOrigin
         channel.postMessage({ type: "changed" } satisfies PokeMessage);
       }
     });
   });
   const unsubscribeOutcomes = engine.subscribeOperationOutcomes((outcome) => {
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel.postMessage takes no targetOrigin
     if (!stopped) channel.postMessage({ type: "outcome", outcome } satisfies PokeMessage);
   });
 

@@ -10,11 +10,12 @@ import {
   localQuery,
   localTable,
   type RowValue,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 
 // Minimal convex/react stub (offline; local-first never touches it).
 vi.mock("convex/react", () => ({
+  // oxlint-disable-next-line typescript/no-extraneous-class -- stub for a class the consumer instantiates with `new`
   ConvexReactClient: class {},
   ConvexProvider: ({ children }: { children: React.ReactNode }) => children,
   Authenticated: ({ children }: { children: React.ReactNode }) => children,
@@ -23,17 +24,23 @@ vi.mock("convex/react", () => ({
   useConvex: () => null,
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
   useQuery: () => undefined,
-  useMutation: () => async () => undefined
+  useMutation: () => async () => undefined,
 }));
 
-const { ConvexProvider, ConvexReactClient, useMutation, useQuery, useSyncRecovery } = await import("../../src/react/index");
+const { ConvexProvider, ConvexReactClient, useMutation, useQuery, useSyncRecovery } =
+  await import("../../src/react/index");
 const client = new ConvexReactClient("http://localhost");
 
 function manifest(schemaVersion = 1) {
   return defineLocalFirstManifest({
     schemaVersion,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), indexes: {} })
+      todos: localTable({
+        table: "todos",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly RowValue[]>({
@@ -41,8 +48,8 @@ function manifest(schemaVersion = 1) {
         name: "todos:list",
         table: "todos",
         initial: [],
-        run: (rows, args) => rows.filter((r) => r.listId === args.listId)
-      })
+        run: (rows, args) => rows.filter((r) => r.listId === args.listId),
+      }),
     },
     mutations: {
       "todos:create": localMutation<{ localId: string; listId: string; text: string }>({
@@ -53,24 +60,36 @@ function manifest(schemaVersion = 1) {
           kind: "insert",
           table: "todos",
           id: args.localId,
-          value: { ownerId: "user_a", listId: args.listId, text: args.text, done: false }
-        })
-      })
-    }
+          value: { ownerId: "user_a", listId: args.listId, text: args.text, done: false },
+        }),
+      }),
+    },
   });
 }
 
 // Offline: push never settles (todo stays pending locally).
-const offline: SyncTransport = { push: () => new Promise(() => {}), pull: () => new Promise(() => {}) };
+const offline: SyncTransport = {
+  push: () => new Promise(() => {}),
+  pull: () => new Promise(() => {}),
+};
 
 function Todos() {
-  const todos = useQuery<{ listId: string }, readonly RowValue[]>("todos:list", { listId: "inbox" }, { initial: [] });
-  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>("todos:create");
+  const todos = useQuery<{ listId: string }, readonly RowValue[]>(
+    "todos:list",
+    { listId: "inbox" },
+    { initial: [] },
+  );
+  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>(
+    "todos:create",
+  );
   return (
     <div>
       <span data-testid="count">{todos?.length ?? -1}</span>
       <span data-testid="first">{todos?.[0]?.text ?? ""}</span>
-      <button type="button" onClick={() => void create({ localId: "t1", listId: "inbox", text: "offline todo" }).local}>
+      <button
+        type="button"
+        onClick={() => void create({ localId: "t1", listId: "inbox", text: "offline todo" }).local}
+      >
         add
       </button>
     </div>
@@ -88,10 +107,16 @@ describe("offline-first persistence (DoD steps 1-3)", () => {
     const { unmount } = render(
       <ConvexProvider
         client={client}
-        localFirst={{ manifest: manifest(), transport: offline, store: store1, userId: "user_a", nameOf: (r) => String(r) }}
+        localFirst={{
+          manifest: manifest(),
+          transport: offline,
+          store: store1,
+          userId: "user_a",
+          nameOf: (r) => String(r),
+        }}
       >
         <Todos />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
     await act(async () => {
       screen.getByText("add").click();
@@ -107,10 +132,16 @@ describe("offline-first persistence (DoD steps 1-3)", () => {
     render(
       <ConvexProvider
         client={client}
-        localFirst={{ manifest: manifest(), transport: offline, store: store2, userId: "user_a", nameOf: (r) => String(r) }}
+        localFirst={{
+          manifest: manifest(),
+          transport: offline,
+          store: store2,
+          userId: "user_a",
+          nameOf: (r) => String(r),
+        }}
       >
         <Todos />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
 
     // The todo is still there after reload, even though it was never pushed.
@@ -134,7 +165,7 @@ describe("offline-first persistence (DoD steps 1-3)", () => {
       args: {},
       value: { ownerId: "user_a", listId: "inbox", text: "offline v1" },
       createdAt: 1,
-      status: "pending"
+      status: "pending",
     });
     (await legacy._database()).close();
 
@@ -150,12 +181,20 @@ describe("offline-first persistence (DoD steps 1-3)", () => {
     render(
       <ConvexProvider
         client={client}
-        localFirst={{ manifest: manifest(2), transport: offline, databaseName, userId: "user_a", nameOf: String }}
+        localFirst={{
+          manifest: manifest(2),
+          transport: offline,
+          databaseName,
+          userId: "user_a",
+          nameOf: String,
+        }}
       >
         <Recovery />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
 
-    await waitFor(() => expect(screen.getByTestId("legacy-recovery").textContent).toBe("user_a:legacy-op"));
+    await waitFor(() =>
+      expect(screen.getByTestId("legacy-recovery").textContent).toBe("user_a:legacy-op"),
+    );
   });
 });

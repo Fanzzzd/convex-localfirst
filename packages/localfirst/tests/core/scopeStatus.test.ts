@@ -8,7 +8,7 @@ import {
   type PullResponse,
   type PushResponse,
   type SyncScope,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 import { LocalFirstEngine } from "../../src/core/internal.js";
 
@@ -21,16 +21,21 @@ function manifest() {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), indexes: {} }),
+      todos: localTable({
+        table: "todos",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
       docs: localTable({
         table: "docs",
         idField: "localId",
         scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "members" }),
-        indexes: {}
-      })
+        indexes: {},
+      }),
     },
     queries: {},
-    mutations: {}
+    mutations: {},
   });
 }
 
@@ -39,7 +44,7 @@ const emptyPush = async (): Promise<PushResponse> => ({
   rejected: [],
   idMaps: [],
   changes: [],
-  serverTime: 1
+  serverTime: 1,
 });
 
 function makeEngine(pull: SyncTransport["pull"]): LocalFirstEngine {
@@ -50,7 +55,7 @@ function makeEngine(pull: SyncTransport["pull"]): LocalFirstEngine {
     userId: USER,
     transport: { push: emptyPush, pull },
     nameOf: (r) => String(r),
-    sleep: async () => {}
+    sleep: async () => {},
   });
 }
 
@@ -60,9 +65,18 @@ const wsScope: SyncScope = { kind: "byWorkspace", key: "byWorkspace:w1" };
 describe("§10 per-scope status", () => {
   it("hydrating → hydrated once the first pull delivers a cursor", async () => {
     const engine = makeEngine(
-      async (): Promise<PullResponse> => ({ changes: [], cursors: { [`u:${USER}`]: "1" }, serverTime: 1 })
+      async (): Promise<PullResponse> => ({
+        changes: [],
+        cursors: { [`u:${USER}`]: "1" },
+        serverTime: 1,
+      }),
     );
-    expect(engine.getScopeStatus({})).toEqual({ hydrated: false, partial: false, syncing: false, denied: false });
+    expect(engine.getScopeStatus({})).toEqual({
+      hydrated: false,
+      partial: false,
+      syncing: false,
+      denied: false,
+    });
     await engine.syncOnce([userScope]);
     const status = engine.getScopeStatus({});
     expect(status.hydrated).toBe(true);
@@ -79,8 +93,8 @@ describe("§10 per-scope status", () => {
         changes: [],
         cursors: { [`u:${USER}`]: "0" },
         hasMore: { [`u:${USER}`]: true },
-        serverTime: 1
-      })
+        serverTime: 1,
+      }),
     );
     await engine.syncOnce([userScope]);
     const status = engine.getScopeStatus({});
@@ -94,7 +108,12 @@ describe("§10 per-scope status", () => {
       if (revoked) {
         return { changes: [], cursors: {}, serverTime: 1, deniedScopes: ["byWorkspace:w1"] };
       }
-      return { changes: [], cursors: { "byWorkspace:w1": "1" }, serverTime: 1, roles: { "byWorkspace:w1": "admin" } };
+      return {
+        changes: [],
+        cursors: { "byWorkspace:w1": "1" },
+        serverTime: 1,
+        roles: { "byWorkspace:w1": "admin" },
+      };
     });
 
     await engine.syncOnce([wsScope]);
@@ -112,7 +131,11 @@ describe("§10 per-scope status", () => {
   it("notifies subscribers on scope-status transitions", async () => {
     let notified = 0;
     const engine = makeEngine(
-      async (): Promise<PullResponse> => ({ changes: [], cursors: { [`u:${USER}`]: "1" }, serverTime: 1 })
+      async (): Promise<PullResponse> => ({
+        changes: [],
+        cursors: { [`u:${USER}`]: "1" },
+        serverTime: 1,
+      }),
     );
     const unsub = engine.subscribeScopeStatus(() => notified++);
     await engine.syncOnce([userScope]);

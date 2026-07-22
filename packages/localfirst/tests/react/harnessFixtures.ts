@@ -13,17 +13,23 @@ const todosTable = lf.table("todos", {
   shape: { ownerId: v.string(), text: v.string(), done: v.boolean() },
   scope: lf.byUser("ownerId"),
   timestamps: true,
-  indexes: { byOwner: ["ownerId", "createdAt"] }
+  indexes: { byOwner: ["ownerId", "createdAt"] },
 });
 export const todos = {
   todos: todosTable,
   create: todosTable.insert({
     args: { text: v.string() },
-    value: ({ auth, args }) => ({ ownerId: auth.userId, text: args.text, done: false })
+    value: ({ auth, args }) => ({ ownerId: auth.userId, text: args.text, done: false }),
   }),
   toggle: todosTable.patch({ args: { id: v.string(), done: v.boolean() } }),
   remove: todosTable.remove(),
-  list: todosTable.query({ args: {}, index: "byOwner", key: ({ auth }) => [auth.userId], order: "asc", initial: [] })
+  list: todosTable.query({
+    args: {},
+    index: "byOwner",
+    key: ({ auth }) => [auth.userId],
+    order: "asc",
+    initial: [],
+  }),
 };
 export const todoModules = { todos };
 
@@ -31,12 +37,12 @@ export const todoModules = { todos };
 const docsTable = lf.table("docs", {
   shape: { wsId: v.string(), title: v.string() },
   scope: lf.byWorkspace({ workspaceIdField: "wsId", membershipTable: "members" }),
-  indexes: { byWs: ["wsId", "title"] }
+  indexes: { byWs: ["wsId", "title"] },
 });
 export const docs = {
   docs: docsTable,
   create: docsTable.insert(),
   rename: docsTable.patch(),
-  remove: docsTable.remove()
+  remove: docsTable.remove(),
 };
 export const docModules = { docs };

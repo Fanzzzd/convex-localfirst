@@ -4,7 +4,7 @@ import {
   createMultiTabSync,
   type BroadcastChannelLike,
   type LockManagerLike,
-  type TabLeadershipLike
+  type TabLeadershipLike,
 } from "../../src/core/internal";
 import type { OperationOutcome } from "../../src/core/internal";
 import { createHarness, serverChange } from "./helpers";
@@ -41,7 +41,10 @@ function makeChannelHub() {
 
 /** A controllable leadership: start() emits the current leadership; setLeader re-emits. */
 function makeFakeLeadership(initialLeader = false) {
-  const state: { leader: boolean; cb: ((isLeader: boolean) => void) | null } = { leader: initialLeader, cb: null };
+  const state: { leader: boolean; cb: ((isLeader: boolean) => void) | null } = {
+    leader: initialLeader,
+    cb: null,
+  };
   const create = (onChange: (isLeader: boolean) => void): TabLeadershipLike => {
     state.cb = onChange;
     return {
@@ -49,7 +52,7 @@ function makeFakeLeadership(initialLeader = false) {
         state.cb?.(state.leader);
       },
       stop: () => {},
-      isLeader: () => state.leader
+      isLeader: () => state.leader,
     };
   };
   return {
@@ -57,7 +60,7 @@ function makeFakeLeadership(initialLeader = false) {
     setLeader(value: boolean) {
       state.leader = value;
       state.cb?.(value);
-    }
+    },
   };
 }
 
@@ -96,7 +99,7 @@ function makeStubEngine() {
     /** Simulate a genuine local store change (what enqueue/applyServerChanges trigger). */
     fireChange() {
       for (const l of Array.from(listeners)) l();
-    }
+    },
   };
 }
 
@@ -122,13 +125,16 @@ function makeLockManager(): LockManagerLike {
       return;
     }
     held.add(name);
-    void entry.callback().then(
-      (value) => entry.resolve(value),
-      (error) => entry.reject(error)
-    ).finally(() => {
-      held.delete(name);
-      drain(name);
-    });
+    void entry
+      .callback()
+      .then(
+        (value) => entry.resolve(value),
+        (error) => entry.reject(error),
+      )
+      .finally(() => {
+        held.delete(name);
+        drain(name);
+      });
   };
   return {
     request(name, options, callback) {
@@ -140,16 +146,20 @@ function makeLockManager(): LockManagerLike {
           queues.set(name, queue);
         }
         queue.push(entry);
-        options.signal?.addEventListener("abort", () => {
-          const index = queue!.indexOf(entry);
-          if (index >= 0) {
-            queue!.splice(index, 1);
-            reject(new DOMException("aborted", "AbortError"));
-          }
-        }, { once: true });
+        options.signal?.addEventListener(
+          "abort",
+          () => {
+            const index = queue!.indexOf(entry);
+            if (index >= 0) {
+              queue!.splice(index, 1);
+              reject(new DOMException("aborted", "AbortError"));
+            }
+          },
+          { once: true },
+        );
         drain(name);
       });
-    }
+    },
   };
 }
 
@@ -162,7 +172,7 @@ describe("createMultiTabSync — leadership gate", () => {
       name: "u:user_a",
       id: "a",
       createChannel: hub.create,
-      createLeadership: lead.create
+      createLeadership: lead.create,
     });
     expect(engine.enabled).toBe(false); // start() emitted follower
 
@@ -183,13 +193,13 @@ describe("createMultiTabSync — leadership gate", () => {
     const silentLeadership: TabLeadershipLike = {
       start: async () => {}, // never promoted → never calls onChange
       stop: () => {},
-      isLeader: () => false
+      isLeader: () => false,
     };
     const dispose = createMultiTabSync(engine, {
       name: "u:user_a",
       id: "follower",
       createChannel: hub.create,
-      createLeadership: () => silentLeadership
+      createLeadership: () => silentLeadership,
     });
 
     expect(engine.enabled).toBe(false); // gated despite no onChange
@@ -208,13 +218,13 @@ describe("createMultiTabSync — cross-tab poke", () => {
       name: "u:user_a",
       id: "a",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(true).create
+      createLeadership: makeFakeLeadership(true).create,
     });
     const disposeB = createMultiTabSync(b, {
       name: "u:user_a",
       id: "b",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(false).create
+      createLeadership: makeFakeLeadership(false).create,
     });
 
     a.fireChange();
@@ -235,13 +245,13 @@ describe("createMultiTabSync — cross-tab poke", () => {
       name: "u:user_a",
       id: "a",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(true).create
+      createLeadership: makeFakeLeadership(true).create,
     });
     const disposeB = createMultiTabSync(b, {
       name: "u:user_a",
       id: "b",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(false).create
+      createLeadership: makeFakeLeadership(false).create,
     });
 
     a.fireChange();
@@ -263,13 +273,13 @@ describe("createMultiTabSync — cross-tab poke", () => {
       name: "u:user_a",
       id: "a",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(true).create
+      createLeadership: makeFakeLeadership(true).create,
     });
     const disposeFollower = createMultiTabSync(follower, {
       name: "u:user_a",
       id: "b",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(false).create
+      createLeadership: makeFakeLeadership(false).create,
     });
 
     follower.fireChange(); // a write happened in the follower tab
@@ -291,13 +301,13 @@ describe("createMultiTabSync — cross-tab poke", () => {
       name: "u:user_a",
       id: "a",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(true).create
+      createLeadership: makeFakeLeadership(true).create,
     });
     const disposeOther = createMultiTabSync(other, {
       name: "u:user_b",
       id: "x",
       createChannel: hub.create,
-      createLeadership: makeFakeLeadership(true).create
+      createLeadership: makeFakeLeadership(true).create,
     });
 
     a.fireChange();
@@ -328,11 +338,21 @@ describe("createMultiTabSync — real shared outbox", () => {
           if (op.kind === "insert") {
             serverRows.add(op.id);
             accepted.push({ opId: op.opId, serverResult: { ok: true } });
-            changes.push(serverChange({ id: op.id, kind: "insert", version: ++version, value: op.value, opId: op.opId }));
+            changes.push(
+              serverChange({
+                id: op.id,
+                kind: "insert",
+                version: ++version,
+                value: op.value,
+                opId: op.opId,
+              }),
+            );
           } else if (op.kind === "delete" && serverRows.has(op.id)) {
             serverRows.delete(op.id);
             accepted.push({ opId: op.opId, serverResult: { ok: true } });
-            changes.push(serverChange({ id: op.id, kind: "delete", version: ++version, opId: op.opId }));
+            changes.push(
+              serverChange({ id: op.id, kind: "delete", version: ++version, opId: op.opId }),
+            );
           } else {
             rejected.push({ opId: op.opId, message: "delete arrived before insert" });
           }
@@ -341,12 +361,34 @@ describe("createMultiTabSync — real shared outbox", () => {
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: version };
-      }
+      },
     };
-    const leader = createHarness({ store, transport, clientId: "leader", clock: () => 500, syncTimeoutMs: 1000 }).engine;
-    const follower = createHarness({ store, transport, clientId: "follower", clock: () => 1000, syncTimeoutMs: 1000 }).engine;
-    const disposeLeader = createMultiTabSync(leader, { name: "shared", id: "leader", createChannel: hub.create, locks });
-    const disposeFollower = createMultiTabSync(follower, { name: "shared", id: "follower", createChannel: hub.create, locks });
+    const leader = createHarness({
+      store,
+      transport,
+      clientId: "leader",
+      clock: () => 500,
+      syncTimeoutMs: 1000,
+    }).engine;
+    const follower = createHarness({
+      store,
+      transport,
+      clientId: "follower",
+      clock: () => 1000,
+      syncTimeoutMs: 1000,
+    }).engine;
+    const disposeLeader = createMultiTabSync(leader, {
+      name: "shared",
+      id: "leader",
+      createChannel: hub.create,
+      locks,
+    });
+    const disposeFollower = createMultiTabSync(follower, {
+      name: "shared",
+      id: "follower",
+      createChannel: hub.create,
+      locks,
+    });
 
     const insert = follower.mutate("todos:create", { localId: "t1", listId: "i", text: "x" });
     await insert.local;
@@ -372,18 +414,43 @@ describe("createMultiTabSync — real shared outbox", () => {
         if (request.clientId === "leader") return new Promise<PushResponse>(() => {});
         const op = request.mutations[0]!;
         return {
-          accepted: [{ opId: op.opId, serverResult: { ok: true, replayed: true } }], rejected: [], idMaps: [],
-          changes: [serverChange({ id: op.id, kind: "insert", version: 1, value: op.value, opId: op.opId })], serverTime: 1
+          accepted: [{ opId: op.opId, serverResult: { ok: true, replayed: true } }],
+          rejected: [],
+          idMaps: [],
+          changes: [
+            serverChange({ id: op.id, kind: "insert", version: 1, value: op.value, opId: op.opId }),
+          ],
+          serverTime: 1,
         };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
-    const leader = createHarness({ store, transport, clientId: "leader", syncTimeoutMs: 1000 }).engine;
-    const follower = createHarness({ store, transport, clientId: "follower", syncTimeoutMs: 1000 }).engine;
-    const disposeLeader = createMultiTabSync(leader, { name: "death", id: "leader", createChannel: hub.create, locks });
-    const disposeFollower = createMultiTabSync(follower, { name: "death", id: "follower", createChannel: hub.create, locks });
+    const leader = createHarness({
+      store,
+      transport,
+      clientId: "leader",
+      syncTimeoutMs: 1000,
+    }).engine;
+    const follower = createHarness({
+      store,
+      transport,
+      clientId: "follower",
+      syncTimeoutMs: 1000,
+    }).engine;
+    const disposeLeader = createMultiTabSync(leader, {
+      name: "death",
+      id: "leader",
+      createChannel: hub.create,
+      locks,
+    });
+    const disposeFollower = createMultiTabSync(follower, {
+      name: "death",
+      id: "follower",
+      createChannel: hub.create,
+      locks,
+    });
     const call = follower.mutate("todos:create", { localId: "t1", listId: "i", text: "survives" });
     await call.local;
     while (!pushes.includes("leader")) await flush();

@@ -36,7 +36,7 @@ const ENTITIES: Record<string, string> = {
   "&quot;": '"',
   "&#39;": "'",
   "&apos;": "'",
-  "&nbsp;": " "
+  "&nbsp;": " ",
 };
 
 /** Drop HTML tags (and decode a few entities), leaving plain text to tokenize. */
@@ -93,7 +93,10 @@ export class SearchIndex {
   // token for that row, so scoring can pick the highest-weight field in O(#fields).
   private readonly postings = new Map<string, Map<string, number>>();
   // Per row: the token set of each field (for exact removal) + the recency tie-break value.
-  private readonly rows = new Map<string, { readonly fieldTokens: Set<string>[]; readonly recency: number | null }>();
+  private readonly rows = new Map<
+    string,
+    { readonly fieldTokens: Set<string>[]; readonly recency: number | null }
+  >();
   // Sorted distinct vocabulary, rebuilt lazily (dirty flag) for binary-search prefix ranges.
   private vocab: string[] = [];
   private vocabDirty = false;
@@ -290,7 +293,7 @@ export class SearchManager {
 
   constructor(
     private readonly cache: SearchCache,
-    private readonly manifest: LocalFirstManifest
+    private readonly manifest: LocalFirstManifest,
   ) {
     // Subscribe BEFORE building so no live delta can slip through the gap between build
     // completion and the first delta. Pre-build deltas are ignored: the build snapshot
@@ -313,7 +316,11 @@ export class SearchManager {
       if (!fields) continue;
       const index = new SearchIndex(fields);
       for (const row of this.cache.tableRows(table)) {
-        index.add(row._id, fields.map((f) => (row as Record<string, unknown>)[f]), recencyOf(row));
+        index.add(
+          row._id,
+          fields.map((f) => (row as Record<string, unknown>)[f]),
+          recencyOf(row),
+        );
       }
       this.indexes.set(table, index);
     }
@@ -330,7 +337,12 @@ export class SearchManager {
       if (!index) continue;
       const fields = this.searchFieldsOf(delta.table)!; // present iff the index exists
       if (delta.kind === "delete") index.remove(delta.localId);
-      else index.add(delta.localId, fields.map((f) => (delta.row as Record<string, unknown>)[f]), recencyOf(delta.row));
+      else
+        index.add(
+          delta.localId,
+          fields.map((f) => (delta.row as Record<string, unknown>)[f]),
+          recencyOf(delta.row),
+        );
       touched.add(delta.table);
     }
     for (const table of touched) {
@@ -359,7 +371,12 @@ export class SearchManager {
 
   /** Register a live search. `onChange` fires only when the visible result changes;
    *  `current()` returns the maintained result (stable array identity while unchanged). */
-  subscribe(table: TableName, query: string, options: SearchOptions | undefined, onChange: () => void): {
+  subscribe(
+    table: TableName,
+    query: string,
+    options: SearchOptions | undefined,
+    onChange: () => void,
+  ): {
     current(): SearchResult;
     dispose(): void;
   } {
@@ -381,7 +398,7 @@ export class SearchManager {
           bucket.delete(view);
           if (bucket.size === 0) this.viewsByTable.delete(table);
         }
-      }
+      },
     };
   }
 
@@ -411,7 +428,7 @@ class SearchView {
     private readonly table: TableName,
     private readonly query: string,
     private readonly options: SearchOptions | undefined,
-    private readonly onChange: () => void
+    private readonly onChange: () => void,
   ) {}
 
   /** Compute + store WITHOUT notifying (initial read; the hook reads current() itself). */

@@ -16,7 +16,7 @@ const GLOBAL_GC_BATCH = 32;
 /**
  * Append a change and return its assigned monotonic changeId. The id is the
  * per-scope sequence, zero-padded so it sorts lexicographically (cursors compare
- * with `gt`). ponytail: changeId is derived from the current max in this scope
+ * with `gt`). changeId is derived from the current max in this scope
  * (read-max+1) rather than a separate counter table — one fewer table, and the
  * whole append runs in one transaction so OCC retries any racing append. If a
  * single scope ever sustains very high write contention, switch to a counter row.
@@ -147,7 +147,6 @@ export const commitOp = mutation({
         serverTime: change.serverTime,
         ...(change.opId ? { opId: change.opId } : {})
       };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       changesJson = JSON.stringify(convexToJson([payload] as any));
     }
 

@@ -12,16 +12,16 @@ export const states = lf.table("states", {
       v.literal("unstarted"),
       v.literal("started"),
       v.literal("completed"),
-      v.literal("cancelled")
+      v.literal("cancelled"),
     ),
     description: v.optional(v.string()),
     sequence: v.optional(v.number()),
     order: v.number(),
-    default: v.optional(v.boolean())
+    default: v.optional(v.boolean()),
   },
   scope: scopeWorkspaceId,
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace_id", "created_at"] }
+  indexes: { byWorkspace: ["workspace_id", "created_at"] },
 });
 
 export const create = states.insert();

@@ -23,7 +23,14 @@ function op(localId, text) {
     table: "todos",
     kind: "insert",
     localId,
-    value: { ownerId: "CLIENT_LIES", listId: "inbox", text, done: false, createdAt: 1, updatedAt: 1 }
+    value: {
+      ownerId: "CLIENT_LIES",
+      listId: "inbox",
+      text,
+      done: false,
+      createdAt: 1,
+      updatedAt: 1,
+    },
   };
 }
 
@@ -31,7 +38,12 @@ const a = new ConvexHttpClient(url);
 const b = new ConvexHttpClient(url);
 
 // 1. Client A pushes an insert.
-const push1 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op(t1, "hello")] });
+const push1 = await a.mutation(api.sync.push, {
+  clientId: "A",
+  userId: user,
+  schemaVersion: 1,
+  mutations: [op(t1, "hello")],
+});
 assert.equal(push1.accepted.length, 1, "op accepted");
 assert.equal(push1.rejected.length, 0, "nothing rejected");
 assert.equal(push1.changes.length, 1, "one change emitted");
@@ -46,7 +58,7 @@ const pull1 = await b.query(api.sync.pull, {
   userId: user,
   schemaVersion: 1,
   scopes: [{ kind: "byUser" }],
-  cursors: {}
+  cursors: {},
 });
 assert.equal(pull1.changes.length, 1, "client B pulled one change");
 assert.equal(pull1.changes[0].localId, t1, "B sees t1");
@@ -56,7 +68,12 @@ assert.ok(pull1.cursors[cursorKey], "cursor advanced");
 console.log("✓ client B pulled A's change (multi-client sync)");
 
 // 3. Re-push the SAME op — must be idempotent (ledger dedupe), no second change.
-const push2 = await a.mutation(api.sync.push, { clientId: "A", userId: user, schemaVersion: 1, mutations: [op(t1, "hello")] });
+const push2 = await a.mutation(api.sync.push, {
+  clientId: "A",
+  userId: user,
+  schemaVersion: 1,
+  mutations: [op(t1, "hello")],
+});
 assert.equal(push2.accepted.length, 1, "duplicate op still acknowledged");
 
 const pullAll = await b.query(api.sync.pull, {
@@ -64,7 +81,7 @@ const pullAll = await b.query(api.sync.pull, {
   userId: user,
   schemaVersion: 1,
   scopes: [{ kind: "byUser" }],
-  cursors: {}
+  cursors: {},
 });
 assert.equal(pullAll.changes.length, 1, "no duplicate change after re-push (idempotent)");
 console.log("✓ re-push was idempotent (no duplicate row/change)");
@@ -76,7 +93,7 @@ const pullOther = await c.query(api.sync.pull, {
   userId: `other_${run}`,
   schemaVersion: 1,
   scopes: [{ kind: "byUser" }],
-  cursors: {}
+  cursors: {},
 });
 assert.equal(pullOther.changes.length, 0, "another user cannot read user_a's scope");
 console.log("✓ scope isolation: another user sees nothing of user_a");

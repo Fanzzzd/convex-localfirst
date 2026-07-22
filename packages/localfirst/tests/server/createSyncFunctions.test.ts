@@ -9,7 +9,10 @@ function makeCtx() {
   const ops = new Map<string, unknown>();
   const idMaps = new Map<string, string>();
   const changes: any[] = [];
-  const rowVersions = new Map<string, { table: string; localId: string; rowKey: string; scopeKey: string; version: number }>();
+  const rowVersions = new Map<
+    string,
+    { table: string; localId: string; rowKey: string; scopeKey: string; version: number }
+  >();
   let changeSeq = 0;
   let rowSeq = 0;
   const rows = new Map<string, any>();
@@ -26,8 +29,8 @@ function makeCtx() {
       firstId: "changes.firstId",
       lastId: "changes.lastId",
       listVersions: "changes.listVersions",
-      gc: "changes.gc"
-    }
+      gc: "changes.gc",
+    },
   };
 
   const runQuery = async (fn: string, a: any) => {
@@ -42,7 +45,9 @@ function makeCtx() {
         return rowVersions.get(`${a.table}:${a.localId}`)?.scopeKey ?? null;
       case "changes.listAfter": {
         const after = a.cursor ?? "";
-        return changes.filter((c) => c.scopeKey === a.scopeKey && c.changeId > after).slice(0, a.limit);
+        return changes
+          .filter((c) => c.scopeKey === a.scopeKey && c.changeId > after)
+          .slice(0, a.limit);
       }
       case "changes.latestVersion":
         return rowVersions.get(`${a.table}:${a.localId}`)?.version ?? 0;
@@ -80,7 +85,7 @@ function makeCtx() {
             localId: a.change.localId,
             rowKey: `${a.change.table}:${a.change.localId}`,
             scopeKey: a.change.scopeKey,
-            version: a.change.version
+            version: a.change.version,
           });
           changesJson = JSON.stringify([
             {
@@ -93,15 +98,15 @@ function makeCtx() {
               ...(a.change.patchJson ? { patch: JSON.parse(a.change.patchJson) } : {}),
               version: a.change.version,
               serverTime: a.change.serverTime,
-              opId: a.change.opId
-            }
+              opId: a.change.opId,
+            },
           ]);
         }
         ops.set(`${a.userId}:${a.opId}`, {
           schemaVersion: a.schemaVersion,
           status: a.status,
           changesJson,
-          error: a.error
+          error: a.error,
         });
         return { change };
       }
@@ -116,7 +121,7 @@ function makeCtx() {
           localId: a.localId,
           rowKey: `${a.table}:${a.localId}`,
           scopeKey: a.scopeKey,
-          version: a.version
+          version: a.version,
         });
         return changeId;
       }
@@ -141,7 +146,7 @@ function makeCtx() {
     },
     async delete(id: string) {
       rows.delete(id);
-    }
+    },
   };
 
   const ctx = { db, runQuery, runMutation, auth: { getUserIdentity: async () => null } };
@@ -159,10 +164,10 @@ describe("createSyncFunctions", () => {
         todos: {
           scope: { kind: "byUser", field: "ownerId" },
           idField: "localId",
-          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
-        }
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } },
+        },
       },
-      devUnsafeAllowClientUserId: true // local demo ctx has no auth identity
+      devUnsafeAllowClientUserId: true, // local demo ctx has no auth identity
     }) as unknown as { push: any; pull: any };
 
     const op = {
@@ -173,14 +178,20 @@ describe("createSyncFunctions", () => {
       table: "todos",
       kind: "insert" as const,
       localId: "l1",
-      value: { ownerId: "u1", text: "hi" }
+      value: { ownerId: "u1", text: "hi" },
     };
 
     await push.handler(ctx, { clientId: "c1", userId: "u1", schemaVersion: 1, mutations: [op] });
     expect([...rows.values()]).toHaveLength(1);
     expect([...rows.values()][0]).toMatchObject({ ownerId: "u1", text: "hi" });
 
-    const res = await pull.handler(ctx, { clientId: "c2", userId: "u1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {} });
+    const res = await pull.handler(ctx, {
+      clientId: "c2",
+      userId: "u1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
+    });
     expect(res.changes).toHaveLength(1);
     expect((res.changes[0].data as any).text).toBe("hi");
 
@@ -195,7 +206,7 @@ describe("createSyncFunctions", () => {
       clientId: "c2",
       userId: "u1",
       schemaVersion: 1,
-      mutations: [{ ...op, clientId: "c2" }]
+      mutations: [{ ...op, clientId: "c2" }],
     });
     expect([...rows.values()]).toHaveLength(1);
     expect(replay.rejected).toEqual([]);
@@ -210,13 +221,19 @@ describe("createSyncFunctions", () => {
       query: (d) => d,
       tables: {
         issues: {
-          scope: { kind: "byWorkspace", workspaceIdField: "workspaceId", membershipTable: "ws_members" },
+          scope: {
+            kind: "byWorkspace",
+            workspaceIdField: "workspaceId",
+            membershipTable: "ws_members",
+          },
           idField: "localId",
-          mutations: { "issues:create": { kind: "insert", fields: ["workspaceId", "localId", "title"] } }
-        }
+          mutations: {
+            "issues:create": { kind: "insert", fields: ["workspaceId", "localId", "title"] },
+          },
+        },
       },
       access: { member: async () => null },
-      devUnsafeAllowClientUserId: true
+      devUnsafeAllowClientUserId: true,
     }) as unknown as { push: any };
 
     const res = await push.handler(ctx, {
@@ -232,9 +249,9 @@ describe("createSyncFunctions", () => {
           table: "issues",
           kind: "insert" as const,
           localId: "l1",
-          value: { workspaceId: "w1", title: "x" }
-        }
-      ]
+          value: { workspaceId: "w1", title: "x" },
+        },
+      ],
     });
 
     expect(rows.size).toBe(0);
@@ -251,19 +268,22 @@ describe("createSyncFunctions", () => {
         todos: {
           scope: { kind: "byUser", field: "ownerId" },
           idField: "localId",
-          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
-        }
-      }
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } },
+        },
+      },
     }) as unknown as { push: any };
 
     await expect(
-      push.handler(ctx, { clientId: "c1", userId: "u1", schemaVersion: 1, mutations: [] })
+      push.handler(ctx, { clientId: "c1", userId: "u1", schemaVersion: 1, mutations: [] }),
     ).rejects.toThrow(/authenticated identity/);
   });
 
   it("derives userId from identity.tokenIdentifier, ignoring subject and the client value", async () => {
     const { ctx, lf, rows } = makeCtx();
-    (ctx.auth as any).getUserIdentity = async () => ({ subject: "issuer-local", tokenIdentifier: "issuer|real-user" });
+    (ctx.auth as any).getUserIdentity = async () => ({
+      subject: "issuer-local",
+      tokenIdentifier: "issuer|real-user",
+    });
     const { push } = createSyncFunctions({
       component: lf,
       mutation: (d) => d,
@@ -272,9 +292,9 @@ describe("createSyncFunctions", () => {
         todos: {
           scope: { kind: "byUser", field: "ownerId" },
           idField: "localId",
-          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
-        }
-      }
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } },
+        },
+      },
     }) as unknown as { push: any };
 
     await push.handler(ctx, {
@@ -282,8 +302,17 @@ describe("createSyncFunctions", () => {
       userId: "attacker", // client lies; must be ignored in favor of the auth identity
       schemaVersion: 1,
       mutations: [
-        { opId: "op1", clientId: "c1", schemaVersion: 1, functionName: "todos:create", table: "todos", kind: "insert" as const, localId: "l1", value: { ownerId: "attacker", text: "x" } }
-      ]
+        {
+          opId: "op1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "todos:create",
+          table: "todos",
+          kind: "insert" as const,
+          localId: "l1",
+          value: { ownerId: "attacker", text: "x" },
+        },
+      ],
     });
     expect([...rows.values()][0]).toMatchObject({ ownerId: "issuer|real-user" });
   });
@@ -299,18 +328,26 @@ describe("createSyncFunctions", () => {
         todos: {
           scope: { kind: "byUser", field: "ownerId" },
           idField: "localId",
-          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } }
-        }
-      }
+          mutations: { "todos:create": { kind: "insert", fields: ["ownerId", "localId", "text"] } },
+        },
+      },
     }) as unknown as { push: any };
     await push.handler(ctx, {
       clientId: "c1",
       userId: "attacker",
       schemaVersion: 1,
-      mutations: [{
-        opId: "op1", clientId: "c1", schemaVersion: 1, functionName: "todos:create",
-        table: "todos", kind: "insert", localId: "l1", value: { text: "x" }
-      }]
+      mutations: [
+        {
+          opId: "op1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "todos:create",
+          table: "todos",
+          kind: "insert",
+          localId: "l1",
+          value: { text: "x" },
+        },
+      ],
     });
     expect([...rows.values()][0]).toMatchObject({ ownerId: "mapped-user" });
   });

@@ -28,7 +28,7 @@ function user(subject) {
     display_name: subject,
     first_name: subject,
     last_name: "",
-    avatar_url: ""
+    avatar_url: "",
   };
 }
 
@@ -37,11 +37,21 @@ await client.mutation(upsertUser, user("bob"));
 
 // mu-demo: dedicated shared workspace. createWorkspace makes the creator (alice)
 // admin (20); bob is added as a member (15).
-await client.mutation(createWorkspace, { user_id: tokenId("alice"), id: "mu-demo", name: "Multi-User Demo", slug: "mu-demo" });
+await client.mutation(createWorkspace, {
+  user_id: tokenId("alice"),
+  id: "mu-demo",
+  name: "Multi-User Demo",
+  slug: "mu-demo",
+});
 await client.mutation(addMember, { user_id: tokenId("alice"), workspace_id: "mu-demo", role: 20 });
 await client.mutation(addMember, { user_id: tokenId("bob"), workspace_id: "mu-demo", role: 15 });
 
 // alice-only: alice is the sole member; bob must be DENIED.
-await client.mutation(createWorkspace, { user_id: tokenId("alice"), id: "alice-only", name: "Alice Only", slug: "alice-only" });
+await client.mutation(createWorkspace, {
+  user_id: tokenId("alice"),
+  id: "alice-only",
+  name: "Alice Only",
+  slug: "alice-only",
+});
 
 console.log("seed complete: alice+bob in 'mu-demo' (admin/member), alice-only is alice-only");

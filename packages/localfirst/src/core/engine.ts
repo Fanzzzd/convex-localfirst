@@ -5,18 +5,22 @@ import type {
   LocalQueryCountResult,
   LocalQueryGroupKey,
   LocalQueryPlan,
-  LocalQueryResult
+  LocalQueryResult,
 } from "./collection.js";
 import { attachRelations, relationTables } from "./relations.js";
 import { createDefaultIdFactory, createOpId, type IdFactory } from "./id.js";
 import type { FunctionNameResolver } from "./functionName.js";
 import { defaultFunctionName } from "./functionName.js";
-import type { LocalFirstManifest, LocalMutationDefinition, LocalQueryDefinition } from "./manifest.js";
+import type {
+  LocalFirstManifest,
+  LocalMutationDefinition,
+  LocalQueryDefinition,
+} from "./manifest.js";
 import {
   createLocalFirstBatchCall,
   createLocalFirstMutationCall,
   type LocalFirstBatchCall,
-  type LocalFirstMutationCall
+  type LocalFirstMutationCall,
 } from "./mutationCall.js";
 import {
   computeCounterDelta,
@@ -24,7 +28,7 @@ import {
   isCounterDelta,
   isSetDelta,
   type CounterDelta,
-  type SetDelta
+  type SetDelta,
 } from "./setMerge.js";
 import type { LocalStore } from "./storage.js";
 import type { SyncTransport } from "./transport.js";
@@ -46,7 +50,7 @@ import type {
   RowValue,
   ScopeKey,
   SyncScope,
-  SyncStatus
+  SyncStatus,
 } from "./types.js";
 import type { ClientCanWriteInput } from "./manifest.js";
 
@@ -106,7 +110,7 @@ type PlannedBatchOp = {
   readonly id: LocalId;
   readonly buildOperation: (
     createdAt: number,
-    group: { groupId: string; groupSize: number; groupIndex: number }
+    group: { groupId: string; groupSize: number; groupIndex: number },
   ) => LocalOperation;
   readonly resolveLocal: (commit: LocalCommit) => void;
   readonly rejectLocal: (error: Error) => void;
@@ -132,7 +136,7 @@ type BatchContext = {
  */
 function chunkRespectingGroups(
   pending: readonly LocalOperation[],
-  limit: number
+  limit: number,
 ): LocalOperation[][] {
   if (!(limit > 0) || pending.length === 0) return pending.length ? [pending.slice()] : [];
   const chunks: LocalOperation[][] = [];
@@ -162,9 +166,26 @@ function chunkRespectingGroups(
 // engine will push to undo (or redo) an earlier op. insert re-inserts a captured row,
 // patch restores the touched fields, delete removes a row.
 type ResolvedUndoOp =
-  | { readonly kind: "insert"; readonly table: string; readonly id: LocalId; readonly functionName: string; readonly value: Record<string, unknown> }
-  | { readonly kind: "patch"; readonly table: string; readonly id: LocalId; readonly functionName: string; readonly patch: Record<string, unknown> }
-  | { readonly kind: "delete"; readonly table: string; readonly id: LocalId; readonly functionName: string };
+  | {
+      readonly kind: "insert";
+      readonly table: string;
+      readonly id: LocalId;
+      readonly functionName: string;
+      readonly value: Record<string, unknown>;
+    }
+  | {
+      readonly kind: "patch";
+      readonly table: string;
+      readonly id: LocalId;
+      readonly functionName: string;
+      readonly patch: Record<string, unknown>;
+    }
+  | {
+      readonly kind: "delete";
+      readonly table: string;
+      readonly id: LocalId;
+      readonly functionName: string;
+    };
 
 /** One undoable unit: a single user op, or a whole atomic batch group (its members'
  *  inverses in reverse order, replayed as ONE group so the group undoes as a unit). */
@@ -191,7 +212,11 @@ function stripSystemFields(row: Record<string, unknown>): Record<string, unknown
 /** True for the server's idempotent no-op-delete ack ({ noop: true }) — an accepted op
  *  that produced NO canonical change, so it must be dropped from the outbox explicitly. */
 function isNoopAck(serverResult: unknown): boolean {
-  return typeof serverResult === "object" && serverResult !== null && (serverResult as { noop?: unknown }).noop === true;
+  return (
+    typeof serverResult === "object" &&
+    serverResult !== null &&
+    (serverResult as { noop?: unknown }).noop === true
+  );
 }
 
 export class LocalFirstEngine {
@@ -218,7 +243,12 @@ export class LocalFirstEngine {
     lastError: null,
     blockedBySchemaMismatch: false,
     partial: false,
-    recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [], failedGroups: [] }
+    recovery: {
+      rejectedOperations: [],
+      olderSchemaOperations: [],
+      failedAttachments: [],
+      failedGroups: [],
+    },
   };
   private readonly opStatuses = new Map<string, MutationStatus>();
   private readonly dataListeners = new Set<() => void>();
@@ -277,7 +307,11 @@ export class LocalFirstEngine {
   private readonly outcomeListeners = new Set<(outcome: OperationOutcome) => void>();
   private readonly outcomeWaiters = new Map<
     string,
-    Set<{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>
+    Set<{
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }>
   >();
   private readonly observedOutcomes = new Map<string, OperationOutcome>();
   // ---- Permission-aware UI (DX v4 §6) ----------------------------------------
@@ -297,7 +331,10 @@ export class LocalFirstEngine {
   private undoSeq = 0;
   // Table → its insert/patch/delete mutation NAME, so an inverse can name a real declared
   // mutation the server will accept (invert an insert with the table's delete mutation, etc).
-  private readonly tableMutationNames = new Map<string, { insert?: string; patch?: string; delete?: string }>();
+  private readonly tableMutationNames = new Map<
+    string,
+    { insert?: string; patch?: string; delete?: string }
+  >();
   // Logout detection: the store epoch this engine last observed. A bump means clear() ran.
   private knownEpoch = 0;
 
@@ -312,7 +349,8 @@ export class LocalFirstEngine {
     this.clock = options.clock ?? (() => Date.now());
     this.retry = options.retry ?? { retries: 3, baseDelayMs: 100 };
     this.syncTimeoutMs = options.syncTimeoutMs ?? 15000;
-    this.maxPushBatch = options.maxPushBatch && options.maxPushBatch > 0 ? options.maxPushBatch : Infinity;
+    this.maxPushBatch =
+      options.maxPushBatch && options.maxPushBatch > 0 ? options.maxPushBatch : Infinity;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     // Reflect any operations already durable in the store (e.g. after a reload)
     // so getStatus() is accurate without waiting for the first sync.
@@ -323,7 +361,8 @@ export class LocalFirstEngine {
     for (const definition of Object.values(this.manifest.mutations)) {
       if (!definition.operationKind) continue;
       const entry = this.tableMutationNames.get(definition.table) ?? {};
-      if (entry[definition.operationKind] === undefined) entry[definition.operationKind] = definition.name;
+      if (entry[definition.operationKind] === undefined)
+        entry[definition.operationKind] = definition.name;
       this.tableMutationNames.set(definition.table, entry);
     }
     // Seed the durable role cache so useRole/useCan are accurate right after a reload,
@@ -347,9 +386,10 @@ export class LocalFirstEngine {
         isLeader: () => this.syncEnabled,
         newLocalId: (table) => this.idFactory(table),
         resolveInsertTable: (reference) => this.getMutationDefinition(reference)?.table ?? null,
-        mutateInsert: (reference, args, localId) => this.mutateInternal(reference, args, { localId }).local,
+        mutateInsert: (reference, args, localId) =>
+          this.mutateInternal(reference, args, { localId }).local,
         getOperation: (opId) => this.store.getOperation(opId),
-        onRecoveryChange: (list) => this.setFailedAttachments(list)
+        onRecoveryChange: (list) => this.setFailedAttachments(list),
       },
       {
         backend: options.attachments?.backend,
@@ -357,10 +397,12 @@ export class LocalFirstEngine {
         createXhr: options.attachments?.createXhr,
         retry: this.retry,
         sleep: this.sleep,
-        clock: this.clock
-      }
+        clock: this.clock,
+      },
     );
-    this.disposeAttachmentDeltas = this.cache.subscribeDeltas((deltas) => this.attachments.handleDeltas(deltas));
+    this.disposeAttachmentDeltas = this.cache.subscribeDeltas((deltas) =>
+      this.attachments.handleDeltas(deltas),
+    );
     void this.attachments.hydrate();
     this.disposeStoreSubscription = this.store.subscribe(() => this.onStoreNotify());
     // Offline-first connectivity, owned by the engine so EVERY consumer (headless or
@@ -408,7 +450,7 @@ export class LocalFirstEngine {
 
   /**
    * Run a transport call and reflect connectivity in status.online (threw → offline,
-   * returned → online). ponytail: heuristic — a server-side error also reads as offline;
+   * returned → online). Heuristic — a server-side error also reads as offline;
    * the navigator online/offline events give finer detection.
    */
   private async tracked<T>(fn: () => Promise<T>): Promise<T> {
@@ -453,7 +495,11 @@ export class LocalFirstEngine {
    * with an incomplete filter could otherwise observe another scope's rows; enforcing it
    * here mirrors the server's I7. `custom` scopes have no client-known field → server-only.
    */
-  private filterToScope(table: string, rows: readonly RowValue[], scopeArgs: unknown): readonly RowValue[] {
+  private filterToScope(
+    table: string,
+    rows: readonly RowValue[],
+    scopeArgs: unknown,
+  ): readonly RowValue[] {
     const scope = this.manifest.tables[table]?.scope;
     if (!scope || (scope.kind === "byUser" && this.userId == null)) return rows;
     return rows.filter((row) => this.rowMatchesScope(table, row, scopeArgs));
@@ -473,11 +519,16 @@ export class LocalFirstEngine {
   /** True when `table` is workspace/project-scoped but `args` carry no scope value. */
   private scopedQueryMissingScope(table: string, args: unknown): boolean {
     const definition = this.manifest.tables[table];
-    if (!definition || (definition.scope.kind !== "byWorkspace" && definition.scope.kind !== "byProject")) {
+    if (
+      !definition ||
+      (definition.scope.kind !== "byWorkspace" && definition.scope.kind !== "byProject")
+    ) {
       return false;
     }
     const field =
-      definition.scope.kind === "byWorkspace" ? definition.scope.workspaceIdField : definition.scope.projectIdField;
+      definition.scope.kind === "byWorkspace"
+        ? definition.scope.workspaceIdField
+        : definition.scope.projectIdField;
     return (args as Record<string, unknown> | null)?.[field] == null;
   }
 
@@ -504,12 +555,16 @@ export class LocalFirstEngine {
    */
   applyLocalQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
     plan: LocalQueryPlan<Row, Rel, Group>,
-    rowsByTable: Record<string, readonly RowValue[]>
+    rowsByTable: Record<string, readonly RowValue[]>,
   ): LocalQueryResult<Row, Rel, Group> {
     if (this.scopedQueryMissingScope(plan.table, plan.scopeValues)) {
       // Fail closed: a workspace/project query with no scope value must not return
       // the whole local cache (which can span scopes). Empty .scope({}) lands here.
-      return (plan.groupField === undefined ? [] : new Map()) as unknown as LocalQueryResult<Row, Rel, Group>;
+      return (plan.groupField === undefined ? [] : new Map()) as unknown as LocalQueryResult<
+        Row,
+        Rel,
+        Group
+      >;
     }
     const scoped = this.filterToScope(plan.table, rowsByTable[plan.table] ?? [], plan.scopeValues);
     const base = plan.run(scoped);
@@ -527,7 +582,7 @@ export class LocalFirstEngine {
   }
 
   async runLocalQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
-    plan: LocalQueryPlan<Row, Rel, Group>
+    plan: LocalQueryPlan<Row, Rel, Group>,
   ): Promise<LocalQueryResult<Row, Rel, Group>> {
     const rowsByTable: Record<string, readonly RowValue[]> = {};
     for (const table of this.tablesForPlan(plan)) {
@@ -543,7 +598,7 @@ export class LocalFirstEngine {
    * use useLiveQuery instead.
    */
   async read<Row extends Record<string, unknown>, Rel, Group extends string = never>(
-    plan: LocalQueryPlan<Row, Rel, Group>
+    plan: LocalQueryPlan<Row, Rel, Group>,
   ): Promise<LocalQueryResult<Row, Rel, Group>> {
     await this.refreshPlan(plan);
     return this.runLocalQuery(plan);
@@ -555,7 +610,10 @@ export class LocalFirstEngine {
    * via its own .server push). Includes pending optimistic state. For a possibly-cold row
    * (e.g. a deep link), use a scoped query so refreshPlan can pull it first.
    */
-  async getRow<Row extends Record<string, unknown>>(table: string, id: string): Promise<Row | undefined> {
+  async getRow<Row extends Record<string, unknown>>(
+    table: string,
+    id: string,
+  ): Promise<Row | undefined> {
     const rows = await this.tableRows(table);
     return rows.find((row) => row._id === id) as Row | undefined;
   }
@@ -576,11 +634,15 @@ export class LocalFirstEngine {
     }
     if (scope.kind === "byWorkspace") {
       const value = plan.scopeValues?.[scope.workspaceIdField];
-      return value == null ? null : { kind: "byWorkspace", key: `byWorkspace:${String(value)}`, table: plan.table };
+      return value == null
+        ? null
+        : { kind: "byWorkspace", key: `byWorkspace:${String(value)}`, table: plan.table };
     }
     if (scope.kind === "byProject") {
       const value = plan.scopeValues?.[scope.projectIdField];
-      return value == null ? null : { kind: "byProject", key: `byProject:${String(value)}`, table: plan.table };
+      return value == null
+        ? null
+        : { kind: "byProject", key: `byProject:${String(value)}`, table: plan.table };
     }
     return null;
   }
@@ -595,7 +657,7 @@ export class LocalFirstEngine {
       const kind = this.manifest.tables[plan.table]?.scope.kind;
       if ((kind === "byWorkspace" || kind === "byProject") && !plan.scopeValues) {
         console.warn(
-          `[convex-localfirst] useLiveQuery on "${plan.table}" is missing .scope({...}); it will not sync from the server.`
+          `[convex-localfirst] useLiveQuery on "${plan.table}" is missing .scope({...}); it will not sync from the server.`,
         );
       }
     }
@@ -656,7 +718,10 @@ export class LocalFirstEngine {
    * Refcounted entry point: many hooks watching the SAME scope share ONE watch + drain
    * loop (started on the first watcher, torn down on the last). Returns an idempotent unwatch.
    */
-  private watchScope(scope: SyncScope, subscribe: NonNullable<SyncTransport["subscribe"]>): () => void {
+  private watchScope(
+    scope: SyncScope,
+    subscribe: NonNullable<SyncTransport["subscribe"]>,
+  ): () => void {
     const key = scope.key;
     let entry = this.scopeWatchers.get(key);
     if (!entry) {
@@ -684,7 +749,10 @@ export class LocalFirstEngine {
    * watch grows until it saturates the page limit and goes deaf, so re-pinning keeps the
    * window small. Only resubscribing when the cursor moved avoids an empty-fire loop.
    */
-  private startScopeWatch(scope: SyncScope, subscribe: NonNullable<SyncTransport["subscribe"]>): () => void {
+  private startScopeWatch(
+    scope: SyncScope,
+    subscribe: NonNullable<SyncTransport["subscribe"]>,
+  ): () => void {
     let disposed = false;
     let unsubscribe: () => void = () => {};
     let draining = false;
@@ -701,9 +769,9 @@ export class LocalFirstEngine {
           userId: this.userId,
           schemaVersion: this.manifest.schemaVersion,
           scopes: [scope],
-          cursors: { [scope.key]: at }
+          cursors: { [scope.key]: at },
         },
-        onDoorbell
+        onDoorbell,
       );
     };
 
@@ -832,8 +900,12 @@ export class LocalFirstEngine {
    */
   subscribeLiveQuery<Row extends Record<string, unknown>, Rel, Group extends string = never>(
     plan: LocalQueryPlan<Row, Rel, Group>,
-    onChange: () => void
-  ): { current(): LocalQueryResult<Row, Rel, Group> | undefined; explain(): QueryExplain | null; dispose(): void } {
+    onChange: () => void,
+  ): {
+    current(): LocalQueryResult<Row, Rel, Group> | undefined;
+    explain(): QueryExplain | null;
+    dispose(): void;
+  } {
     let sub: {
       current(): LocalQueryResult<Row, Rel, Group>;
       explain(): QueryExplain;
@@ -853,7 +925,7 @@ export class LocalFirstEngine {
       dispose: () => {
         disposed = true;
         sub?.dispose();
-      }
+      },
     };
   }
 
@@ -861,8 +933,12 @@ export class LocalFirstEngine {
    * ungrouped plans return one number. No row result arrays are built. */
   subscribeLiveCounts<Row extends Record<string, unknown>, Rel, Group extends string = never>(
     plan: LocalQueryPlan<Row, Rel, Group>,
-    onChange: () => void
-  ): { current(): LocalQueryCountResult<Group> | undefined; explain(): QueryExplain | null; dispose(): void } {
+    onChange: () => void,
+  ): {
+    current(): LocalQueryCountResult<Group> | undefined;
+    explain(): QueryExplain | null;
+    dispose(): void;
+  } {
     let sub: {
       current(): LocalQueryCountResult<Group>;
       explain(): QueryExplain;
@@ -882,7 +958,7 @@ export class LocalFirstEngine {
       dispose: () => {
         disposed = true;
         sub?.dispose();
-      }
+      },
     };
   }
 
@@ -897,7 +973,7 @@ export class LocalFirstEngine {
     table: string,
     query: string,
     options: SearchOptions | undefined,
-    onChange: () => void
+    onChange: () => void,
   ): { current(): SearchResult; dispose(): void } {
     const sub = this.search.subscribe(table, query, options, onChange);
     // Mirror subscribeLiveQuery: notify once so the caller reads the initial result (which
@@ -931,7 +1007,10 @@ export class LocalFirstEngine {
     };
   }
 
-  mutate<TArgs, TResult = unknown>(reference: unknown, args: TArgs): LocalFirstMutationCall<TResult> {
+  mutate<TArgs, TResult = unknown>(
+    reference: unknown,
+    args: TArgs,
+  ): LocalFirstMutationCall<TResult> {
     return this.mutateInternal<TArgs, TResult>(reference, args);
   }
 
@@ -943,11 +1022,13 @@ export class LocalFirstEngine {
   private mutateInternal<TArgs, TResult = unknown>(
     reference: unknown,
     args: TArgs,
-    options?: { readonly localId?: string }
+    options?: { readonly localId?: string },
   ): LocalFirstMutationCall<TResult> {
     const definition = this.getMutationDefinition<TArgs, TResult>(reference);
     if (!definition) {
-      throw new Error("Cannot run local-first mutation because the function is not in the manifest");
+      throw new Error(
+        "Cannot run local-first mutation because the function is not in the manifest",
+      );
     }
 
     const opId = createOpId(this.clientId);
@@ -955,10 +1036,12 @@ export class LocalFirstEngine {
       now: this.clock(),
       clientId: this.clientId,
       userId: this.userId,
-      localId: (table) => options?.localId ?? this.idFactory(table)
+      localId: (table) => options?.localId ?? this.idFactory(table),
     });
     const id =
-      planned.kind === "insert" ? planned.id ?? options?.localId ?? this.idFactory(planned.table) : planned.id;
+      planned.kind === "insert"
+        ? (planned.id ?? options?.localId ?? this.idFactory(planned.table))
+        : planned.id;
     // Stamp the table's idField onto the inserted value so an OPTIMISTIC row carries
     // its id field exactly like a server-synced one (createSyncFunctions sets
     // value[idField] = localId on the server). Without this, row[idField] is undefined
@@ -978,7 +1061,7 @@ export class LocalFirstEngine {
     // byte-identical to an ungrouped one except for the group fields.
     const buildOperation = (
       createdAt: number,
-      group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number }
+      group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number },
     ): LocalOperation => ({
       opId,
       clientId: this.clientId,
@@ -993,7 +1076,7 @@ export class LocalFirstEngine {
       patch: planned.kind === "patch" ? planned.patch : undefined,
       createdAt,
       status: "pending",
-      ...(group ?? {})
+      ...group,
     });
 
     // Inside engine.batch(fn): defer commit+push and collect this op into the group. The
@@ -1020,11 +1103,11 @@ export class LocalFirstEngine {
       if (inverse) this.pushUndoEntry(this.scopeKeyForOp(operation, before ?? null), [inverse]);
       return { operation, local };
     });
-    const local = prepared.then(({ local }) => local);
+    const local = prepared.then((r) => r.local);
     const server = prepared.then(({ operation }) =>
       this.multiTabEnabled
         ? this.pushCoordinatedOperation<TResult>(operation)
-        : this.pushSingleOperation<TResult>(operation)
+        : this.pushSingleOperation<TResult>(operation),
     );
     // The optimistic caller usually awaits only `.local`, so without this nothing handles a
     // failed background push and it becomes an unhandled rejection. The failure is already in
@@ -1037,7 +1120,7 @@ export class LocalFirstEngine {
       id,
       local,
       server,
-      status: () => this.operationStatus(opId)
+      status: () => this.operationStatus(opId),
     });
   }
 
@@ -1088,7 +1171,7 @@ export class LocalFirstEngine {
           op.rejectServer(err);
         }
         throw err;
-      }
+      },
     );
 
     const local = dispatched.then((r) => r.commits);
@@ -1101,7 +1184,7 @@ export class LocalFirstEngine {
     return createLocalFirstBatchCall<T>({
       groupId,
       local,
-      server: server as Promise<readonly T[]>
+      server: server as Promise<readonly T[]>,
     });
   }
 
@@ -1113,8 +1196,8 @@ export class LocalFirstEngine {
     id: LocalId,
     buildOperation: (
       createdAt: number,
-      group: { groupId: string; groupSize: number; groupIndex: number }
-    ) => LocalOperation
+      group: { groupId: string; groupSize: number; groupIndex: number },
+    ) => LocalOperation,
   ): LocalFirstMutationCall<TResult> {
     let resolveLocal!: (commit: LocalCommit) => void;
     let rejectLocal!: (error: Error) => void;
@@ -1131,12 +1214,20 @@ export class LocalFirstEngine {
     // Never lets a deferred rejection escape as "unhandled" if the caller ignores it.
     localPromise.catch(() => {});
     serverPromise.catch(() => {});
-    ctx.planned.push({ opId, id, buildOperation, resolveLocal, rejectLocal, resolveServer, rejectServer });
+    ctx.planned.push({
+      opId,
+      id,
+      buildOperation,
+      resolveLocal,
+      rejectLocal,
+      resolveServer,
+      rejectServer,
+    });
 
     const guard = () => {
       if (ctx.active) {
         throw new Error(
-          "convex-localfirst: do not await a batched mutation's .server (or the call itself) inside batch(fn) — the group has not been dispatched yet. Await the handle returned by batch() after fn returns."
+          "convex-localfirst: do not await a batched mutation's .server (or the call itself) inside batch(fn) — the group has not been dispatched yet. Await the handle returned by batch() after fn returns.",
         );
       }
     };
@@ -1151,21 +1242,24 @@ export class LocalFirstEngine {
         return serverPromise;
       },
       status: () => this.operationStatus(opId),
+      // oxlint-disable-next-line unicorn/no-thenable -- the mutation handle is awaitable by design
       then<A = TResult, B = never>(
         onF?: ((value: TResult) => A | PromiseLike<A>) | null,
-        onR?: ((reason: unknown) => B | PromiseLike<B>) | null
+        onR?: ((reason: unknown) => B | PromiseLike<B>) | null,
       ): Promise<A | B> {
         guard();
         return serverPromise.then(onF, onR);
       },
-      catch<B = never>(onR?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<TResult | B> {
+      catch<B = never>(
+        onR?: ((reason: unknown) => B | PromiseLike<B>) | null,
+      ): Promise<TResult | B> {
         guard();
         return serverPromise.catch(onR);
       },
       finally(onFinally?: (() => void) | null): Promise<TResult> {
         guard();
         return serverPromise.finally(onFinally);
-      }
+      },
     };
     return handle as unknown as LocalFirstMutationCall<TResult>;
   }
@@ -1173,7 +1267,7 @@ export class LocalFirstEngine {
   /** Commit the collected group locally (in order) then push it as one contiguous
    *  request. Returns the local commits and a promise for the group's server outcome. */
   private async finalizeBatch(
-    ctx: BatchContext
+    ctx: BatchContext,
   ): Promise<{ commits: readonly LocalCommit[]; server: Promise<readonly unknown[]> }> {
     const planned = ctx.planned;
     const groupSize = planned.length;
@@ -1187,7 +1281,7 @@ export class LocalFirstEngine {
     // stays contiguous in the outbox and is never split across a push request.
     const createdAts = planned.map(() => this.monotonicNow());
     const operations: LocalOperation[] = planned.map((p, index) =>
-      p.buildOperation(createdAts[index]!, { groupId: ctx.groupId, groupSize, groupIndex: index })
+      p.buildOperation(createdAts[index]!, { groupId: ctx.groupId, groupSize, groupIndex: index }),
     );
     // Register outcome waiters BEFORE pushing so the single-writer push (or a leader
     // broadcast) settles each op's .server. observedOutcomes buffers any that resolve
@@ -1218,13 +1312,20 @@ export class LocalFirstEngine {
     // with the group reason when any rejects (each op already reverted via its rejected
     // status). Per-op .server promises settle from the same outcomes.
     const server = Promise.allSettled(serverPerOp).then((settled) => {
-      const rejection = settled.find((s) => s.status === "rejected") as PromiseRejectedResult | undefined;
+      const rejection = settled.find((s) => s.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
       settled.forEach((s, index) => {
         if (s.status === "fulfilled") planned[index]!.resolveServer(s.value);
-        else planned[index]!.rejectServer(s.reason instanceof Error ? s.reason : new Error(String(s.reason)));
+        else
+          planned[index]!.rejectServer(
+            s.reason instanceof Error ? s.reason : new Error(String(s.reason)),
+          );
       });
       if (rejection) {
-        throw rejection.reason instanceof Error ? rejection.reason : new Error(String(rejection.reason));
+        throw rejection.reason instanceof Error
+          ? rejection.reason
+          : new Error(String(rejection.reason));
       }
       return settled.map((s) => (s as PromiseFulfilledResult<unknown>).value);
     });
@@ -1321,7 +1422,9 @@ export class LocalFirstEngine {
     this.disposeConnectivity();
     this.disposeConnectivity = this.wireConnectivity();
     this.disposeStoreSubscription ??= this.store.subscribe(() => this.onStoreNotify());
-    this.disposeAttachmentDeltas ??= this.cache.subscribeDeltas((deltas) => this.attachments.handleDeltas(deltas));
+    this.disposeAttachmentDeltas ??= this.cache.subscribeDeltas((deltas) =>
+      this.attachments.handleDeltas(deltas),
+    );
     // Re-scan the durable blob outbox and resume any owed uploads after a remount.
     void this.attachments.wake();
   }
@@ -1441,7 +1544,8 @@ export class LocalFirstEngine {
   private async seedRoles(): Promise<void> {
     try {
       const stored = await this.store.getRoles?.();
-      if (stored) for (const [scopeKey, role] of Object.entries(stored)) this.roles.set(scopeKey, role);
+      if (stored)
+        for (const [scopeKey, role] of Object.entries(stored)) this.roles.set(scopeKey, role);
       if (stored && Object.keys(stored).length > 0) this.notifyRoleListeners();
     } catch {
       // In-memory roles still fill in from the next pull; only the reload seed is lost.
@@ -1519,7 +1623,7 @@ export class LocalFirstEngine {
       hydrated: this.hydratedScopes.has(key),
       partial: this.partialScopes.has(key),
       syncing: (this.pullingScopes.get(key) ?? 0) > 0,
-      denied: this.roles.has(key) && this.roles.get(key) === null
+      denied: this.roles.has(key) && this.roles.get(key) === null,
     };
   }
 
@@ -1528,7 +1632,9 @@ export class LocalFirstEngine {
   async syncScope(scope: Record<string, unknown> | null | undefined): Promise<void> {
     const key = this.scopeStatusKey(scope);
     if (!key) return;
-    const kind: SyncScope["kind"] = key.startsWith("u:") ? "byUser" : (key.slice(0, key.indexOf(":")) as SyncScope["kind"]);
+    const kind: SyncScope["kind"] = key.startsWith("u:")
+      ? "byUser"
+      : (key.slice(0, key.indexOf(":")) as SyncScope["kind"]);
     await this.refreshPlanScope({ kind, key });
   }
 
@@ -1557,7 +1663,7 @@ export class LocalFirstEngine {
       ...this.hydratedScopes,
       ...this.partialScopes,
       ...this.pullingScopes.keys(),
-      ...this.roles.keys()
+      ...this.roles.keys(),
     ]);
     const out: Array<{
       scopeKey: string;
@@ -1576,7 +1682,7 @@ export class LocalFirstEngine {
         partial: this.partialScopes.has(scopeKey),
         syncing: (this.pullingScopes.get(scopeKey) ?? 0) > 0,
         denied: this.roles.has(scopeKey) && this.roles.get(scopeKey) === null,
-        role: this.roles.has(scopeKey) ? (this.roles.get(scopeKey) ?? null) : undefined
+        role: this.roles.has(scopeKey) ? (this.roles.get(scopeKey) ?? null) : undefined,
       });
     }
     return out.sort((a, b) => (a.scopeKey < b.scopeKey ? -1 : 1));
@@ -1606,7 +1712,7 @@ export class LocalFirstEngine {
       status: op.status,
       createdAt: op.createdAt,
       groupId: op.groupId,
-      error: op.error
+      error: op.error,
     }));
   }
 
@@ -1618,7 +1724,10 @@ export class LocalFirstEngine {
     search: Array<{ table: string; indexed: boolean }>;
   }> {
     const counts = this.cache.debugTableCounts();
-    const tables = Object.keys(this.manifest.tables).map((table) => ({ table, rows: counts[table] ?? 0 }));
+    const tables = Object.keys(this.manifest.tables).map((table) => ({
+      table,
+      rows: counts[table] ?? 0,
+    }));
     let count = 0;
     let bytes = 0;
     try {
@@ -1631,7 +1740,7 @@ export class LocalFirstEngine {
     }
     const search = Object.entries(this.manifest.tables).map(([table, def]) => ({
       table,
-      indexed: (def.searchFields?.length ?? 0) > 0
+      indexed: (def.searchFields?.length ?? 0) > 0,
     }));
     return { tables, attachments: { count, bytes }, search };
   }
@@ -1661,7 +1770,10 @@ export class LocalFirstEngine {
   }
 
   /** The membership scope key a row lives in, or null for a byUser/unscoped table. */
-  private membershipScopeKeyForRow(table: string, row: Record<string, unknown> | null): ScopeKey | null {
+  private membershipScopeKeyForRow(
+    table: string,
+    row: Record<string, unknown> | null,
+  ): ScopeKey | null {
     if (!row) return null;
     const scope = this.manifest.tables[table]?.scope;
     if (!scope || scope.kind === "byUser") return null;
@@ -1679,7 +1791,11 @@ export class LocalFirstEngine {
   can(
     table: string,
     action: OperationKind,
-    input: { before?: Record<string, unknown> | null; patch?: Record<string, unknown>; proposed?: Record<string, unknown> | null }
+    input: {
+      before?: Record<string, unknown> | null;
+      patch?: Record<string, unknown>;
+      proposed?: Record<string, unknown> | null;
+    },
   ): boolean {
     const mirror = this.manifest.tables[table]?.clientCan?.write;
     if (!mirror) return true;
@@ -1691,7 +1807,15 @@ export class LocalFirstEngine {
     if (!this.roles.has(scopeKey)) return true; // not synced yet — advisory, don't block
     const role = this.roles.get(scopeKey) ?? null;
     if (role === null) return false; // denied
-    const args: ClientCanWriteInput = { userId: this.userId, role, table, action, before, patch: input.patch, proposed };
+    const args: ClientCanWriteInput = {
+      userId: this.userId,
+      role,
+      table,
+      action,
+      before,
+      patch: input.patch,
+      proposed,
+    };
     return mirror(args);
   }
 
@@ -1717,7 +1841,10 @@ export class LocalFirstEngine {
     return this.hasEntry(this.redoStacks, scope);
   }
 
-  private hasEntry(stacks: Map<ScopeKey, UndoEntry[]>, scope?: Record<string, unknown> | null): boolean {
+  private hasEntry(
+    stacks: Map<ScopeKey, UndoEntry[]>,
+    scope?: Record<string, unknown> | null,
+  ): boolean {
     if (scope) {
       const key = this.scopeKeyForScopeArgs(scope);
       return key ? (stacks.get(key)?.length ?? 0) > 0 : false;
@@ -1740,7 +1867,10 @@ export class LocalFirstEngine {
     if (entry) await this.emitInverse(entry, this.undoStacks);
   }
 
-  private popEntry(stacks: Map<ScopeKey, UndoEntry[]>, scope?: Record<string, unknown> | null): UndoEntry | null {
+  private popEntry(
+    stacks: Map<ScopeKey, UndoEntry[]>,
+    scope?: Record<string, unknown> | null,
+  ): UndoEntry | null {
     if (scope) {
       const key = this.scopeKeyForScopeArgs(scope);
       const stack = key ? stacks.get(key) : undefined;
@@ -1776,7 +1906,10 @@ export class LocalFirstEngine {
    * (its entry is dropped, never resurrected). Counter ops are computed from before-images
    * captured HERE, so redo is the inverse of the undo.
    */
-  private async emitInverse(entry: UndoEntry, counterStacks: Map<ScopeKey, UndoEntry[]>): Promise<void> {
+  private async emitInverse(
+    entry: UndoEntry,
+    counterStacks: Map<ScopeKey, UndoEntry[]>,
+  ): Promise<void> {
     const applicable: Array<{ op: ResolvedUndoOp; before: Record<string, unknown> | null }> = [];
     for (const op of entry.ops) {
       const before = (await this.getRow(op.table, op.id)) ?? null;
@@ -1801,8 +1934,10 @@ export class LocalFirstEngine {
         this.buildUndoOperation(
           op,
           createdAts[index]!,
-          isGroup ? { groupId: groupId!, groupSize: applicable.length, groupIndex: index } : undefined
-        )
+          isGroup
+            ? { groupId: groupId!, groupSize: applicable.length, groupIndex: index }
+            : undefined,
+        ),
       );
       const counter = this.inverseOf(op, before);
       if (counter) counterOps.push(counter);
@@ -1822,7 +1957,10 @@ export class LocalFirstEngine {
   /** Drop the table's server-minted fields (manifest `serverFields`) from a value, so an
    *  undo-of-delete re-insert carries only client-writable fields (the server re-mints the
    *  rest). No-op for a table that declares none. */
-  private stripServerFields(table: string, value: Record<string, unknown>): Record<string, unknown> {
+  private stripServerFields(
+    table: string,
+    value: Record<string, unknown>,
+  ): Record<string, unknown> {
     const serverFields = this.manifest.tables[table]?.serverFields;
     if (!serverFields || serverFields.length === 0) return value;
     const drop = new Set(serverFields);
@@ -1834,12 +1972,29 @@ export class LocalFirstEngine {
   /** A concrete op the engine committed/will commit, in the shape the inverter needs. */
   private toResolvedUndoOp(operation: LocalOperation): ResolvedUndoOp {
     if (operation.kind === "insert") {
-      return { kind: "insert", table: operation.table, id: operation.id, functionName: operation.functionName, value: operation.value ?? {} };
+      return {
+        kind: "insert",
+        table: operation.table,
+        id: operation.id,
+        functionName: operation.functionName,
+        value: operation.value ?? {},
+      };
     }
     if (operation.kind === "patch") {
-      return { kind: "patch", table: operation.table, id: operation.id, functionName: operation.functionName, patch: operation.patch ?? {} };
+      return {
+        kind: "patch",
+        table: operation.table,
+        id: operation.id,
+        functionName: operation.functionName,
+        patch: operation.patch ?? {},
+      };
     }
-    return { kind: "delete", table: operation.table, id: operation.id, functionName: operation.functionName };
+    return {
+      kind: "delete",
+      table: operation.table,
+      id: operation.id,
+      functionName: operation.functionName,
+    };
   }
 
   /**
@@ -1849,7 +2004,10 @@ export class LocalFirstEngine {
    *  - delete → insert of the captured before-row (needs the table's insert mutation)
    *  - patch  → patch restoring the touched fields to their before values (same mutation)
    */
-  private inverseOf(op: ResolvedUndoOp, before: Record<string, unknown> | null): ResolvedUndoOp | null {
+  private inverseOf(
+    op: ResolvedUndoOp,
+    before: Record<string, unknown> | null,
+  ): ResolvedUndoOp | null {
     const names = this.tableMutationNames.get(op.table);
     if (op.kind === "insert") {
       const functionName = names?.delete;
@@ -1862,7 +2020,13 @@ export class LocalFirstEngine {
       // resurrected row is a NEW server row that re-mints those fresh, and re-sending the
       // captured stale value would be rejected as a serverOnlyField (§0). A sequence_id-style
       // field therefore CHANGES on undo-of-delete — documented, and correct (it is a fresh row).
-      return { kind: "insert", table: op.table, id: op.id, functionName, value: this.stripServerFields(op.table, stripSystemFields(before)) };
+      return {
+        kind: "insert",
+        table: op.table,
+        id: op.id,
+        functionName,
+        value: this.stripServerFields(op.table, stripSystemFields(before)),
+      };
     }
     // patch: restore each touched field to its prior value. A field absent before the
     // patch has no clean "unset" via a field-LWW patch, so it's restored to null.
@@ -1870,14 +2034,20 @@ export class LocalFirstEngine {
     for (const field of Object.keys(op.patch)) {
       inversePatch[field] = before && field in before ? before[field] : null;
     }
-    return { kind: "patch", table: op.table, id: op.id, functionName: op.functionName, patch: inversePatch };
+    return {
+      kind: "patch",
+      table: op.table,
+      id: op.id,
+      functionName: op.functionName,
+      patch: inversePatch,
+    };
   }
 
   /** Build a durable LocalOperation for an inverse op (an undo/redo emission). */
   private buildUndoOperation(
     op: ResolvedUndoOp,
     createdAt: number,
-    group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number }
+    group?: { readonly groupId: string; readonly groupSize: number; readonly groupIndex: number },
   ): LocalOperation {
     const opId = createOpId(this.clientId);
     this.opStatuses.set(opId, { opId, status: "pending" });
@@ -1895,16 +2065,19 @@ export class LocalFirstEngine {
       patch: op.kind === "patch" ? op.patch : undefined,
       createdAt,
       status: "pending",
-      ...(group ?? {})
+      ...group,
     };
   }
 
   /** The scope key an op's undo entry belongs to: byUser → the user scope; membership →
    *  the row's partition (from the inserted value, or the before-image for patch/delete). */
-  private scopeKeyForOp(operation: LocalOperation, before: Record<string, unknown> | null): ScopeKey {
+  private scopeKeyForOp(
+    operation: LocalOperation,
+    before: Record<string, unknown> | null,
+  ): ScopeKey {
     const scope = this.manifest.tables[operation.table]?.scope;
     if (!scope || scope.kind === "byUser") return `u:${this.userId ?? "anon"}`;
-    const row = operation.kind === "insert" ? operation.value ?? null : before;
+    const row = operation.kind === "insert" ? (operation.value ?? null) : before;
     return this.membershipScopeKeyForRow(operation.table, row) ?? `u:${this.userId ?? "anon"}`;
   }
 
@@ -1946,20 +2119,28 @@ export class LocalFirstEngine {
     return null;
   }
 
-  private getQueryDefinition<TArgs, TResult>(reference: unknown): LocalQueryDefinition<TArgs, TResult> | null {
+  private getQueryDefinition<TArgs, TResult>(
+    reference: unknown,
+  ): LocalQueryDefinition<TArgs, TResult> | null {
     const name = this.safeName(reference);
     if (!name) {
       return null;
     }
-    return (this.manifest.queries[name] as LocalQueryDefinition<TArgs, TResult> | undefined) ?? null;
+    return (
+      (this.manifest.queries[name] as LocalQueryDefinition<TArgs, TResult> | undefined) ?? null
+    );
   }
 
-  private getMutationDefinition<TArgs, TResult>(reference: unknown): LocalMutationDefinition<TArgs, TResult> | null {
+  private getMutationDefinition<TArgs, TResult>(
+    reference: unknown,
+  ): LocalMutationDefinition<TArgs, TResult> | null {
     const name = this.safeName(reference);
     if (!name) {
       return null;
     }
-    return (this.manifest.mutations[name] as LocalMutationDefinition<TArgs, TResult> | undefined) ?? null;
+    return (
+      (this.manifest.mutations[name] as LocalMutationDefinition<TArgs, TResult> | undefined) ?? null
+    );
   }
 
   private safeName(reference: unknown): FunctionName | null {
@@ -1987,8 +2168,12 @@ export class LocalFirstEngine {
       return;
     }
     const patch = operation.patch; // the Record is mutable (only the property binding is readonly)
-    const touchedSets = setFields.filter((field) => Object.prototype.hasOwnProperty.call(patch, field));
-    const touchedCounters = counterFields.filter((field) => Object.prototype.hasOwnProperty.call(patch, field));
+    const touchedSets = setFields.filter((field) =>
+      Object.prototype.hasOwnProperty.call(patch, field),
+    );
+    const touchedCounters = counterFields.filter((field) =>
+      Object.prototype.hasOwnProperty.call(patch, field),
+    );
     if (touchedSets.length === 0 && touchedCounters.length === 0) {
       return;
     }
@@ -2005,7 +2190,9 @@ export class LocalFirstEngine {
       if (isCounterDelta(value) || typeof value !== "number") {
         continue; // already a delta, or a non-number on a counter field → leave as plain LWW
       }
-      patch[field] = { __lfCounter: computeCounterDelta(current?.[field], value) } satisfies CounterDelta;
+      patch[field] = {
+        __lfCounter: computeCounterDelta(current?.[field], value),
+      } satisfies CounterDelta;
     }
   }
 
@@ -2030,11 +2217,15 @@ export class LocalFirstEngine {
           ? operation.value
           : operation.kind === "patch"
             ? await this.getRow(operation.table, operation.id)
-            : undefined
+            : undefined,
     };
   }
 
-  private async markStatus(opId: string, status: MutationStatus["status"], error?: string): Promise<void> {
+  private async markStatus(
+    opId: string,
+    status: MutationStatus["status"],
+    error?: string,
+  ): Promise<void> {
     this.opStatuses.set(opId, { opId, status, error });
     await this.cacheWrite(() => this.store.updateOperationStatus(opId, status, error));
     this.cache.updateOperationStatus(opId, status, error);
@@ -2065,17 +2256,23 @@ export class LocalFirstEngine {
                 clientId: this.clientId,
                 userId: this.userId,
                 schemaVersion: this.manifest.schemaVersion,
-                mutations: [operation]
-              })
+                mutations: [operation],
+              }),
             ),
-          "push"
-        )
+          "push",
+        ),
       );
     } catch (error) {
       const durable = await this.store.getOperation(operation.opId);
       if ((await this.store.getEpoch()) !== epoch || !durable) {
-        const cancelled = new Error(`Local-first operation ${operation.opId} was cancelled because its local data was cleared.`);
-        this.opStatuses.set(operation.opId, { opId: operation.opId, status: "rejected", error: cancelled.message });
+        const cancelled = new Error(
+          `Local-first operation ${operation.opId} was cancelled because its local data was cleared.`,
+        );
+        this.opStatuses.set(operation.opId, {
+          opId: operation.opId,
+          status: "rejected",
+          error: cancelled.message,
+        });
         throw cancelled;
       }
       await this.markStatus(operation.opId, "pending");
@@ -2083,8 +2280,14 @@ export class LocalFirstEngine {
     }
 
     if ((await this.store.getEpoch()) !== epoch) {
-      const cancelled = new Error(`Local-first operation ${operation.opId} was cancelled because its local data was cleared.`);
-      this.opStatuses.set(operation.opId, { opId: operation.opId, status: "rejected", error: cancelled.message });
+      const cancelled = new Error(
+        `Local-first operation ${operation.opId} was cancelled because its local data was cleared.`,
+      );
+      this.opStatuses.set(operation.opId, {
+        opId: operation.opId,
+        status: "rejected",
+        error: cancelled.message,
+      });
       throw cancelled;
     }
 
@@ -2102,13 +2305,20 @@ export class LocalFirstEngine {
       await this.cacheWrite(() => this.store.applyServerChanges(response.changes, epoch));
       this.cache.applyServerChanges(response.changes);
     } catch (error) {
-      if (await this.store.getOperation(operation.opId)) await this.markStatus(operation.opId, "pending");
+      if (await this.store.getOperation(operation.opId))
+        await this.markStatus(operation.opId, "pending");
       throw error;
     }
 
     if ((await this.store.getEpoch()) !== epoch) {
-      const cancelled = new Error(`Local-first operation ${operation.opId} was cancelled because its local data was cleared.`);
-      this.opStatuses.set(operation.opId, { opId: operation.opId, status: "rejected", error: cancelled.message });
+      const cancelled = new Error(
+        `Local-first operation ${operation.opId} was cancelled because its local data was cleared.`,
+      );
+      this.opStatuses.set(operation.opId, {
+        opId: operation.opId,
+        status: "rejected",
+        error: cancelled.message,
+      });
       throw cancelled;
     }
 
@@ -2128,7 +2338,7 @@ export class LocalFirstEngine {
       await this.markStatus(operation.opId, "pending");
       await this.refreshPendingCount();
       throw new Error(
-        `Local-first push: server response did not cover operation ${operation.opId} (neither accepted nor rejected).`
+        `Local-first push: server response did not cover operation ${operation.opId} (neither accepted nor rejected).`,
       );
     }
     await this.markStatus(operation.opId, "acked");
@@ -2185,11 +2395,11 @@ export class LocalFirstEngine {
                 clientId: this.clientId,
                 userId: this.userId,
                 schemaVersion: this.manifest.schemaVersion,
-                mutations: pending
-              })
+                mutations: pending,
+              }),
             ),
-          "push"
-        )
+          "push",
+        ),
       );
     } catch (error) {
       for (const op of pending) {
@@ -2199,7 +2409,11 @@ export class LocalFirstEngine {
     }
     if ((await this.store.getEpoch()) !== epoch) {
       for (const op of pending) {
-        this.opStatuses.set(op.opId, { opId: op.opId, status: "rejected", error: "Local data was cleared during push." });
+        this.opStatuses.set(op.opId, {
+          opId: op.opId,
+          status: "rejected",
+          error: "Local data was cleared during push.",
+        });
       }
       throw new Error("Local-first push was cancelled because local data was cleared.");
     }
@@ -2222,7 +2436,11 @@ export class LocalFirstEngine {
     }
     if ((await this.store.getEpoch()) !== epoch) {
       for (const op of pending) {
-        this.opStatuses.set(op.opId, { opId: op.opId, status: "rejected", error: "Local data was cleared during push." });
+        this.opStatuses.set(op.opId, {
+          opId: op.opId,
+          status: "rejected",
+          error: "Local data was cleared during push.",
+        });
       }
       throw new Error("Local-first push was cancelled because local data was cleared.");
     }
@@ -2242,9 +2460,13 @@ export class LocalFirstEngine {
       await this.markStatus(rejected.opId, "rejected", rejected.message);
       this.recordOutcome({ opId: rejected.opId, status: "rejected", error: rejected.message });
     }
-    const covered = new Set([...response.accepted.map((x) => x.opId), ...response.rejected.map((x) => x.opId)]);
+    const covered = new Set([
+      ...response.accepted.map((x) => x.opId),
+      ...response.rejected.map((x) => x.opId),
+    ]);
     for (const op of pending) {
-      if (!covered.has(op.opId) && (await this.store.getOperation(op.opId))) await this.markStatus(op.opId, "pending");
+      if (!covered.has(op.opId) && (await this.store.getOperation(op.opId)))
+        await this.markStatus(op.opId, "pending");
     }
     this.setStatus({ lastPushAt: response.serverTime });
     await this.refreshPendingCount();
@@ -2255,7 +2477,7 @@ export class LocalFirstEngine {
     const run = this.pushChain.then(fn, fn);
     this.pushChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return run;
   }
@@ -2275,17 +2497,24 @@ export class LocalFirstEngine {
         : Promise.reject(new Error(observed.error));
     }
     return new Promise<TResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const waiters = this.outcomeWaiters.get(opId);
-        waiters?.delete(waiter);
-        if (waiters?.size === 0) this.outcomeWaiters.delete(opId);
-        void this.store.getOperation(opId).then(async (operation) => {
-          if (operation && (operation.status === "pending" || operation.status === "pushing")) {
-            await this.markStatus(opId, "pending");
-          }
-          reject(new Error(`Timed out waiting for the leader to acknowledge local-first operation ${opId}; it remains pending.`));
-        });
-      }, this.syncTimeoutMs > 0 ? this.syncTimeoutMs : 15000);
+      const timer = setTimeout(
+        () => {
+          const waiters = this.outcomeWaiters.get(opId);
+          waiters?.delete(waiter);
+          if (waiters?.size === 0) this.outcomeWaiters.delete(opId);
+          void this.store.getOperation(opId).then(async (operation) => {
+            if (operation && (operation.status === "pending" || operation.status === "pushing")) {
+              await this.markStatus(opId, "pending");
+            }
+            reject(
+              new Error(
+                `Timed out waiting for the leader to acknowledge local-first operation ${opId}; it remains pending.`,
+              ),
+            );
+          });
+        },
+        this.syncTimeoutMs > 0 ? this.syncTimeoutMs : 15000,
+      );
       (timer as { unref?: () => void }).unref?.();
       const waiter = { resolve: resolve as (value: unknown) => void, reject, timer };
       let waiters = this.outcomeWaiters.get(opId);
@@ -2301,7 +2530,7 @@ export class LocalFirstEngine {
     this.opStatuses.set(outcome.opId, {
       opId: outcome.opId,
       status: outcome.status,
-      error: outcome.status === "rejected" ? outcome.error : undefined
+      error: outcome.status === "rejected" ? outcome.error : undefined,
     });
     const waiters = this.outcomeWaiters.get(outcome.opId);
     if (waiters?.size) {
@@ -2313,7 +2542,8 @@ export class LocalFirstEngine {
       }
     } else {
       this.observedOutcomes.set(outcome.opId, outcome);
-      if (this.observedOutcomes.size > 100) this.observedOutcomes.delete(this.observedOutcomes.keys().next().value!);
+      if (this.observedOutcomes.size > 100)
+        this.observedOutcomes.delete(this.observedOutcomes.keys().next().value!);
     }
     if (broadcast) for (const listener of Array.from(this.outcomeListeners)) listener(outcome);
     // A newly-acked metadata insert may unblock an attachment whose upload was gated
@@ -2321,13 +2551,19 @@ export class LocalFirstEngine {
     if (outcome.status === "acked") void this.attachments.wake();
   }
 
-  private async applyNoopDelete(operation: LocalOperation, serverTime: number, expectedEpoch: number): Promise<void> {
+  private async applyNoopDelete(
+    operation: LocalOperation,
+    serverTime: number,
+    expectedEpoch: number,
+  ): Promise<void> {
     if (operation.kind !== "delete") {
       await this.cacheWrite(() => this.store.dropOperation(operation.opId));
       this.cache.dropOperation(operation.opId);
       return;
     }
-    const current = (await this.store.getCanonicalRows(operation.table)).find((row) => row._id === operation.id);
+    const current = (await this.store.getCanonicalRows(operation.table)).find(
+      (row) => row._id === operation.id,
+    );
     if (!current) {
       await this.cacheWrite(() => this.store.dropOperation(operation.opId));
       this.cache.dropOperation(operation.opId);
@@ -2343,7 +2579,7 @@ export class LocalFirstEngine {
       kind: "delete" as const,
       version: (typeof current._version === "number" ? current._version : 0) + 1,
       serverTime,
-      opId: operation.opId
+      opId: operation.opId,
     };
     await this.cacheWrite(() => this.store.applyServerChange(change, expectedEpoch));
     this.cache.applyServerChanges([change]);
@@ -2354,9 +2590,17 @@ export class LocalFirstEngine {
     if (!table) return null;
     const scope = table.scope;
     const field =
-      scope.kind === "byUser" ? scope.field : scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
+      scope.kind === "byUser"
+        ? scope.field
+        : scope.kind === "byWorkspace"
+          ? scope.workspaceIdField
+          : scope.projectIdField;
     const value = row[field];
-    return typeof value !== "string" ? null : scope.kind === "byUser" ? `u:${value}` : `${scope.kind}:${value}`;
+    return typeof value !== "string"
+      ? null
+      : scope.kind === "byUser"
+        ? `u:${value}`
+        : `${scope.kind}:${value}`;
   }
 
   /** Evict canonical rows of every table living in `scopeKey`. With `keep`
@@ -2367,7 +2611,7 @@ export class LocalFirstEngine {
   private async evictScope(
     scopeKey: string,
     keep: ReadonlyMap<string, ReadonlySet<string>> | null,
-    expectedEpoch?: number
+    expectedEpoch?: number,
   ): Promise<void> {
     const sep = scopeKey.indexOf(":");
     if (sep === -1) {
@@ -2382,9 +2626,15 @@ export class LocalFirstEngine {
         continue;
       }
       const field =
-        scope.kind === "byUser" ? scope.field : scope.kind === "byWorkspace" ? scope.workspaceIdField : scope.projectIdField;
-      const keepIds = keep ? keep.get(table.table) ?? new Set<string>() : undefined;
-      await this.cacheWrite(() => this.store.removeCanonicalRows(table.table, field, value, keepIds, expectedEpoch));
+        scope.kind === "byUser"
+          ? scope.field
+          : scope.kind === "byWorkspace"
+            ? scope.workspaceIdField
+            : scope.projectIdField;
+      const keepIds = keep ? (keep.get(table.table) ?? new Set<string>()) : undefined;
+      await this.cacheWrite(() =>
+        this.store.removeCanonicalRows(table.table, field, value, keepIds, expectedEpoch),
+      );
       this.cache.removeCanonicalRows(table.table, field, value, keepIds);
     }
   }
@@ -2400,7 +2650,8 @@ export class LocalFirstEngine {
       return;
     }
     // Mark these scopes as pulling (useScopeStatus → syncing) for the duration of the drain.
-    for (const scope of scopes) this.pullingScopes.set(scope.key, (this.pullingScopes.get(scope.key) ?? 0) + 1);
+    for (const scope of scopes)
+      this.pullingScopes.set(scope.key, (this.pullingScopes.get(scope.key) ?? 0) + 1);
     this.notifyScopeStatusListeners();
     try {
       await this.pullScopesInner(scopes);
@@ -2436,7 +2687,9 @@ export class LocalFirstEngine {
     let shouldUpdatePartial = true;
     for (let round = 0; round < MAX_PULL_ROUNDS; round++) {
       const storeEpoch = await this.store.getEpoch();
-      const responseEpochs = new Map(scopes.map((scope) => [scope.key, this.scopeEpochs.get(scope.key) ?? 0]));
+      const responseEpochs = new Map(
+        scopes.map((scope) => [scope.key, this.scopeEpochs.get(scope.key) ?? 0]),
+      );
       const response = await this.tracked(() =>
         this.withTimeout(
           () =>
@@ -2447,24 +2700,31 @@ export class LocalFirstEngine {
                 schemaVersion: this.manifest.schemaVersion,
                 scopes,
                 cursors,
-                bootstrapCursors
-              })
+                bootstrapCursors,
+              }),
             ),
-          "pull"
-        )
+          "pull",
+        ),
       );
       const applied = await this.serializePullApply(async () => {
         // A denied-scope response or clear that won while this request was in flight
         // invalidates the WHOLE response — changes, cursors, and bootstrap state.
         if (
           (await this.store.getEpoch()) !== storeEpoch ||
-          scopes.some((scope) => (this.scopeEpochs.get(scope.key) ?? 0) !== responseEpochs.get(scope.key))
+          scopes.some(
+            (scope) => (this.scopeEpochs.get(scope.key) ?? 0) !== responseEpochs.get(scope.key),
+          )
         ) {
           return null;
         }
         if (response.schemaMismatch) {
           this.blockForSchemaMismatch();
-          return { schemaMismatch: true, advanced: false, more: false, nextBootstrap: {} as Record<string, string> };
+          return {
+            schemaMismatch: true,
+            advanced: false,
+            more: false,
+            nextBootstrap: {} as Record<string, string>,
+          };
         }
 
         const denied = new Set(response.deniedScopes ?? []);
@@ -2501,7 +2761,8 @@ export class LocalFirstEngine {
         if (rolesChanged) this.notifyRoleListeners();
 
         for (const scopeKey of response.snapshotScopes ?? []) {
-          if (!denied.has(scopeKey) && !snapshotSeen.has(scopeKey)) snapshotSeen.set(scopeKey, new Map());
+          if (!denied.has(scopeKey) && !snapshotSeen.has(scopeKey))
+            snapshotSeen.set(scopeKey, new Map());
         }
         const changes = response.changes.filter((change) => !denied.has(change.scopeKey));
         for (const change of changes) {
@@ -2518,10 +2779,13 @@ export class LocalFirstEngine {
         this.cache.applyServerChanges(changes);
 
         const nextBootstrap = Object.fromEntries(
-          Object.entries(response.bootstrapCursors ?? {}).filter(([scopeKey]) => !denied.has(scopeKey))
+          Object.entries(response.bootstrapCursors ?? {}).filter(
+            ([scopeKey]) => !denied.has(scopeKey),
+          ),
         );
         let advanced =
-          JSON.stringify(nextBootstrap) !== JSON.stringify(bootstrapCursors) && Object.keys(nextBootstrap).length > 0;
+          JSON.stringify(nextBootstrap) !== JSON.stringify(bootstrapCursors) &&
+          Object.keys(nextBootstrap).length > 0;
 
         // Ghost eviction MUST commit before the tail cursor. A crash after eviction
         // merely re-bootstraps; a cursor-first crash would strand ghosts forever.
@@ -2545,8 +2809,10 @@ export class LocalFirstEngine {
         return {
           schemaMismatch: false,
           advanced,
-          more: response.hasMore ? Object.values(response.hasMore).some(Boolean) : changes.length > 0,
-          nextBootstrap
+          more: response.hasMore
+            ? Object.values(response.hasMore).some(Boolean)
+            : changes.length > 0,
+          nextBootstrap,
         };
       });
       if (!applied) {
@@ -2563,7 +2829,9 @@ export class LocalFirstEngine {
         // More remains but the cursor didn't move (or we hit the backstop): stop and
         // surface that the cache is not fully caught up rather than spin.
         const serverIncomplete = response.hasMore
-          ? Object.entries(response.hasMore).filter(([, value]) => value).map(([key]) => key)
+          ? Object.entries(response.hasMore)
+              .filter(([, value]) => value)
+              .map(([key]) => key)
           : scopes.map((scope) => scope.key);
         for (const key of serverIncomplete) incompleteScopes.add(key);
         break;
@@ -2583,7 +2851,7 @@ export class LocalFirstEngine {
     const run = this.pullApplyChain.then(fn, fn);
     this.pullApplyChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return run;
   }
@@ -2591,7 +2859,7 @@ export class LocalFirstEngine {
   private blockForSchemaMismatch(): void {
     this.setStatus({
       blockedBySchemaMismatch: true,
-      lastError: "Schema version mismatch; client must upgrade before syncing"
+      lastError: "Schema version mismatch; client must upgrade before syncing",
     });
   }
 
@@ -2606,7 +2874,11 @@ export class LocalFirstEngine {
     }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`local-first sync ${label} timed out after ${this.syncTimeoutMs}ms (server unreachable)`));
+        reject(
+          new Error(
+            `local-first sync ${label} timed out after ${this.syncTimeoutMs}ms (server unreachable)`,
+          ),
+        );
       }, this.syncTimeoutMs);
       (timer as { unref?: () => void }).unref?.();
       fn().then(
@@ -2617,7 +2889,7 @@ export class LocalFirstEngine {
         (error) => {
           clearTimeout(timer);
           reject(error);
-        }
+        },
       );
     });
   }
@@ -2645,7 +2917,9 @@ export class LocalFirstEngine {
 
   private async refreshPendingCount(): Promise<void> {
     const operations = await this.store.getAllOperations();
-    const pending = operations.filter((operation) => operation.status === "pending" || operation.status === "pushing");
+    const pending = operations.filter(
+      (operation) => operation.status === "pending" || operation.status === "pushing",
+    );
     const rejected = operations.filter((operation) => operation.status === "rejected");
     // Ungrouped rejected ops keep the exact per-op shape every prior release produced.
     const rejectedOperations: RecoveryOperation[] = rejected
@@ -2657,7 +2931,7 @@ export class LocalFirstEngine {
         kind,
         schemaVersion,
         createdAt,
-        error
+        error,
       }));
     // A rejected atomic group surfaces ONCE — fold every member op into one entry keyed
     // by groupId (ordered by groupIndex), not N per-op rejections.
@@ -2676,12 +2950,12 @@ export class LocalFirstEngine {
         tables: Array.from(new Set(ordered.map((operation) => operation.table))),
         schemaVersion: ordered[0]!.schemaVersion,
         createdAt: Math.min(...ordered.map((operation) => operation.createdAt)),
-        error: ordered.find((operation) => operation.error)?.error
+        error: ordered.find((operation) => operation.error)?.error,
       };
     });
     this.setStatus({
       pendingMutations: pending.length,
-      recovery: { ...this.status.recovery, rejectedOperations, failedGroups }
+      recovery: { ...this.status.recovery, rejectedOperations, failedGroups },
     });
   }
 }

@@ -2,7 +2,7 @@ import type {
   LedgerEntry,
   ServerOperation,
   ServerStore,
-  StoredChange
+  StoredChange,
 } from "../server/serverSync.js";
 
 /**
@@ -27,7 +27,10 @@ export class MemoryServerStore implements ServerStore {
   members = new Set<string>();
   /** Denylist of `${table}:${localId}` an access.write hook may reject (authz tests). */
   denyWrite = new Set<string>();
-  rowVersions = new Map<string, { table: string; localId: string; rowKey: string; scopeKey: string; version: number }>();
+  rowVersions = new Map<
+    string,
+    { table: string; localId: string; rowKey: string; scopeKey: string; version: number }
+  >();
   private seq = 0;
   private serverIdSeq = 0;
 
@@ -67,7 +70,7 @@ export class MemoryServerStore implements ServerStore {
     userId: string,
     op: ServerOperation,
     entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
-    change?: Omit<StoredChange, "changeId">
+    change?: Omit<StoredChange, "changeId">,
   ) {
     let stored: StoredChange | null = null;
     if (change) {
@@ -77,7 +80,7 @@ export class MemoryServerStore implements ServerStore {
     this.ledger.set(`${userId}:${op.opId}`, {
       ...entry,
       schemaVersion: op.schemaVersion,
-      changes: stored ? [stored] : undefined
+      changes: stored ? [stored] : undefined,
     });
     return stored;
   }
@@ -99,7 +102,7 @@ export class MemoryServerStore implements ServerStore {
       localId: change.localId,
       rowKey: `${change.table}:${change.localId}`,
       scopeKey: change.scopeKey,
-      version: change.version
+      version: change.version,
     });
     return changeId;
   }

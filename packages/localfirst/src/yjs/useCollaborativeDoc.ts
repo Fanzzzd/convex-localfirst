@@ -5,7 +5,7 @@ import {
   type CompactionOptions,
   type DocStatus,
   type DocUpdateRow,
-  type MutationLike
+  type MutationLike,
 } from "./provider.js";
 
 /** One persisted Yjs update row, as YOUR backend stores it. The hook reads the fields
@@ -71,7 +71,9 @@ export interface UseCollaborativeDocResult {
  * });
  * ```
  */
-export function useCollaborativeDoc(options: UseCollaborativeDocOptions): UseCollaborativeDocResult {
+export function useCollaborativeDoc(
+  options: UseCollaborativeDocOptions,
+): UseCollaborativeDocResult {
   const {
     docId,
     updates,
@@ -81,7 +83,7 @@ export function useCollaborativeDoc(options: UseCollaborativeDocOptions): UseCol
     compaction,
     compactThreshold,
     flushDebounceMs,
-    backoffMs
+    backoffMs,
   } = options;
 
   // Latest callbacks via a ref so the provider (built once per docId) always calls the
@@ -92,7 +94,10 @@ export function useCollaborativeDoc(options: UseCollaborativeDocOptions): UseCol
   const resolvedCompaction = useMemo<CompactionOptions | false | undefined>(() => {
     if (compaction === false) return false;
     if (compaction || compactThreshold !== undefined) {
-      return { ...(compaction ?? {}), ...(compactThreshold !== undefined ? { everyUpdates: compactThreshold } : {}) };
+      return {
+        ...compaction,
+        ...(compactThreshold !== undefined ? { everyUpdates: compactThreshold } : {}),
+      };
     }
     return undefined;
   }, [compaction, compactThreshold]);
@@ -103,14 +108,13 @@ export function useCollaborativeDoc(options: UseCollaborativeDocOptions): UseCol
       createCollaborativeDoc(
         {
           append: (update) => cbs.current.append(update),
-          prune: cbs.current.prune ? (id) => cbs.current.prune!(id) : undefined
+          prune: cbs.current.prune ? (id) => cbs.current.prune!(id) : undefined,
         },
-        { docId, compaction: resolvedCompaction, flushDebounceMs, backoffMs }
+        { docId, compaction: resolvedCompaction, flushDebounceMs, backoffMs },
       ),
     // docId identifies the document; callbacks flow through the ref. resolvedCompaction /
     // flushDebounceMs are construction-time config, captured once per doc.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [docId]
+    [docId],
   );
   useEffect(() => () => provider.destroy(), [provider]);
 

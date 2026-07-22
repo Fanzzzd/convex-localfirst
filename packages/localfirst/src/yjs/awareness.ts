@@ -4,7 +4,7 @@ import {
   Awareness,
   applyAwarenessUpdate,
   encodeAwarenessUpdate,
-  removeAwarenessStates
+  removeAwarenessStates,
 } from "y-protocols/awareness";
 import { usePresence } from "../react/index.js";
 import { base64ToBytes, bytesToBase64 } from "./yjsSync.js";
@@ -63,13 +63,16 @@ export interface DocAwareness {
  * React or Convex, so it is fully unit-testable by exchanging payloads between two
  * instances.
  */
-export function createDocAwareness(doc: Y.Doc, options: CreateDocAwarenessOptions = {}): DocAwareness {
+export function createDocAwareness(
+  doc: Y.Doc,
+  options: CreateDocAwarenessOptions = {},
+): DocAwareness {
   const awareness = new Awareness(doc);
   if (options.state !== undefined) awareness.setLocalState(options.state);
 
   const localBroadcast = (): AwarenessBroadcast => ({
     ac: awareness.clientID,
-    aw: bytesToBase64(encodeAwarenessUpdate(awareness, [awareness.clientID]))
+    aw: bytesToBase64(encodeAwarenessUpdate(awareness, [awareness.clientID])),
   });
 
   // Broadcast on every LOCAL change; remote-applied changes carry REMOTE_AWARENESS origin
@@ -116,7 +119,7 @@ export function createDocAwareness(doc: Y.Doc, options: CreateDocAwarenessOption
       awareness.off("update", onUpdate);
       removeAwarenessStates(awareness, [awareness.clientID], REMOTE_AWARENESS);
       awareness.destroy();
-    }
+    },
   };
 }
 
@@ -153,7 +156,10 @@ export interface UseDocAwarenessResult {
  * Latency note: `usePresence` broadcasts on its heartbeat, so cursor updates lag up to
  * `heartbeatMs`. See the report's core-API gap on a push-granularity presence channel.
  */
-export function useDocAwareness(doc: Y.Doc, options: UseDocAwarenessOptions): UseDocAwarenessResult {
+export function useDocAwareness(
+  doc: Y.Doc,
+  options: UseDocAwarenessOptions,
+): UseDocAwarenessResult {
   const { docId, scope, state, heartbeatMs = 250 } = options;
 
   // One DocAwareness per Y.Doc. `onBroadcast` pushes the latest payload into React state,
@@ -162,8 +168,7 @@ export function useDocAwareness(doc: Y.Doc, options: UseDocAwarenessOptions): Us
   const docAwareness = useMemo(
     () => createDocAwareness(doc, { state: state ?? null, onBroadcast: setPayload }),
     // state is read once at creation; changes flow through setLocalState below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [doc]
+    [doc],
   );
   useEffect(() => () => docAwareness.destroy(), [docAwareness]);
   useEffect(() => {
@@ -177,14 +182,14 @@ export function useDocAwareness(doc: Y.Doc, options: UseDocAwarenessOptions): Us
   }, [docAwareness, state]);
 
   // Broadcast our payload + docId, and receive peers, over the presence transport.
-  const data = useMemo(() => ({ doc: docId, ...(payload ?? {}) }), [docId, payload]);
+  const data = useMemo(() => ({ doc: docId, ...payload }), [docId, payload]);
   const { others } = usePresence(scope, data, { heartbeatMs });
 
   useEffect(() => {
     docAwareness.applyPeers(
       others
         .filter((peer) => (peer.data as { doc?: unknown }).doc === docId)
-        .map((peer) => ({ clientId: peer.clientId, data: peer.data }))
+        .map((peer) => ({ clientId: peer.clientId, data: peer.data })),
     );
   }, [docAwareness, others, docId]);
 

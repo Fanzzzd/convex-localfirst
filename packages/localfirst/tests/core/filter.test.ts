@@ -4,7 +4,7 @@ import {
   matchesFilter,
   parseFilter,
   serializeFilter,
-  type FilterSpec
+  type FilterSpec,
 } from "../../src/core";
 
 type TestRow = {
@@ -39,7 +39,11 @@ function referenceCondition(value: unknown, condition: unknown): boolean {
     if (operator === "gt" && compare(value, operand) <= 0) return false;
     if (operator === "gte" && compare(value, operand) < 0) return false;
     if (operator === "contains" && !values.some((item) => Object.is(item, operand))) return false;
-    if (operator === "overlaps" && !list.some((needle) => values.some((item) => Object.is(item, needle)))) return false;
+    if (
+      operator === "overlaps" &&
+      !list.some((needle) => values.some((item) => Object.is(item, needle)))
+    )
+      return false;
   }
   return true;
 }
@@ -47,9 +51,11 @@ function referenceCondition(value: unknown, condition: unknown): boolean {
 function reference(row: TestRow, filter: FilterSpec<TestRow>): boolean {
   for (const [field, condition] of Object.entries(filter)) {
     if (field === "OR") {
-      if (!(condition as FilterSpec<TestRow>[]).some((child) => reference(row, child))) return false;
+      if (!(condition as FilterSpec<TestRow>[]).some((child) => reference(row, child)))
+        return false;
     } else if (field === "AND") {
-      if (!(condition as FilterSpec<TestRow>[]).every((child) => reference(row, child))) return false;
+      if (!(condition as FilterSpec<TestRow>[]).every((child) => reference(row, child)))
+        return false;
     } else if (field === "NOT") {
       if (reference(row, condition as FilterSpec<TestRow>)) return false;
     } else if (!referenceCondition(row[field as keyof TestRow], condition)) return false;
@@ -67,22 +73,25 @@ function random(seed = 0x5eed): () => number {
 
 describe("serializable filter AST", () => {
   it("supports contains/overlaps on array and Set fields", () => {
-    expect(matchesFilter(
-      { tags: new Set(["bug", "urgent"]) },
-      { tags: { contains: "bug", overlaps: ["later", "urgent"] } }
-    )).toBe(true);
+    expect(
+      matchesFilter(
+        { tags: new Set(["bug", "urgent"]) },
+        { tags: { contains: "bug", overlaps: ["later", "urgent"] } },
+      ),
+    ).toBe(true);
   });
 
   it("matches an independent .where-style reference across random rows and filters", () => {
     const next = random();
-    const pick = <Value>(values: readonly Value[]): Value => values[Math.floor(next() * values.length)]!;
+    const pick = <Value>(values: readonly Value[]): Value =>
+      values[Math.floor(next() * values.length)]!;
     const texts = ["alpha", "beta", "urgent"] as const;
     const tags = ["bug", "ui", "p1"] as const;
     const rows: TestRow[] = Array.from({ length: 160 }, () => ({
       n: pick([null, -2, 0, 1, 5]),
       text: pick(texts),
       flag: next() < 0.5,
-      tags: tags.filter(() => next() < 0.45)
+      tags: tags.filter(() => next() < 0.45),
     }));
 
     const leaf = (): FilterSpec<TestRow> => {
@@ -94,7 +103,9 @@ describe("serializable filter AST", () => {
       }
       if (kind === 1) {
         const values = texts.filter(() => next() < 0.55);
-        return next() < 0.5 ? { text: pick(texts) } : { text: { [pick(["in", "nin"] as const)]: values } };
+        return next() < 0.5
+          ? { text: pick(texts) }
+          : { text: { [pick(["in", "nin"] as const)]: values } };
       }
       if (kind === 2) return next() < 0.5 ? { flag: next() < 0.5 } : { flag: { ne: next() < 0.5 } };
       return next() < 0.5
@@ -129,14 +140,18 @@ describe("serializable filter AST", () => {
       AND: [
         { n: { gt: null, lte: 5, ne: 0 } },
         { OR: [{ text: { in: ["alpha", "urgent"] } }, { tags: { contains: "bug" } }] },
-        { NOT: { flag: true } }
-      ]
+        { NOT: { flag: true } },
+      ],
     };
     const parsed = parseFilter<TestRow>(serializeFilter(filter));
     expect(parsed).toEqual({ ok: true, value: filter });
     if (parsed.ok) {
-      expect(matchesFilter({ n: null, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(false);
-      expect(matchesFilter({ n: 1, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(true);
+      expect(matchesFilter({ n: null, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(
+        false,
+      );
+      expect(matchesFilter({ n: 1, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(
+        true,
+      );
     }
   });
 
@@ -146,7 +161,7 @@ describe("serializable filter AST", () => {
     ['{"status":{"wat":1}}', "invalid_operator"],
     ['{"status":{"in":"open"}}', "invalid_operand"],
     ['{"OR":{"status":"open"}}', "invalid_operand"],
-    ['{"NOT":[]}', "invalid_filter"]
+    ['{"NOT":[]}', "invalid_filter"],
   ] as const)("rejects malformed input: %s", (json, code) => {
     const parsed = parseFilter(json);
     expect(parsed.ok).toBe(false);

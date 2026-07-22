@@ -74,7 +74,10 @@ test("an issue survives a page reload (IndexedDB persistence)", async ({ page })
   await expect(page.locator(card(title))).toBeVisible();
 });
 
-test("offline create is optimistic, marks offline, and flushes on reconnect", async ({ page, context }) => {
+test("offline create is optimistic, marks offline, and flushes on reconnect", async ({
+  page,
+  context,
+}) => {
   await load(page);
 
   await context.setOffline(true);
@@ -92,7 +95,9 @@ test("offline create is optimistic, marks offline, and flushes on reconnect", as
   await expect(page.getByTestId("pending")).toHaveText("0");
 });
 
-test("an idle client sees another client's create in real time (reactive push, no poll/reload)", async ({ browser }) => {
+test("an idle client sees another client's create in real time (reactive push, no poll/reload)", async ({
+  browser,
+}) => {
   // B loads and goes idle FIRST. Then A creates. The board query carries no
   // pollMs, so the ONLY way B learns of the new issue without acting/reloading is
   // the reactive transport subscription (server push). This fails on the old
@@ -116,7 +121,9 @@ test("an idle client sees another client's create in real time (reactive push, n
   await ctxB.close();
 });
 
-test("reactive sync survives a disconnect: an offline idle client catches up on reconnect", async ({ browser }) => {
+test("reactive sync survives a disconnect: an offline idle client catches up on reconnect", async ({
+  browser,
+}) => {
   // Maturity check for the live subscription: B is idle and goes OFFLINE, A creates
   // while B is disconnected, then B reconnects. B must catch up via the watch
   // re-firing on reconnect — no reload, no manual refetch.

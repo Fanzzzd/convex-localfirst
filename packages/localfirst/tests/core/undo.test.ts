@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { MemoryLocalStore, type PushResponse, type ServerChange, type SyncTransport } from "../../src/core";
+import { describe, expect, it } from "vitest";
+import {
+  MemoryLocalStore,
+  type PushResponse,
+  type ServerChange,
+  type SyncTransport,
+} from "../../src/core";
 import { createHarness } from "./helpers";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -25,7 +30,7 @@ function echoTransport(): SyncTransport & { received: string[] } {
           patch: op.patch,
           version,
           serverTime: version,
-          opId: op.opId
+          opId: op.opId,
         };
       });
       return {
@@ -33,12 +38,12 @@ function echoTransport(): SyncTransport & { received: string[] } {
         rejected: [],
         idMaps: [],
         changes,
-        serverTime: version
+        serverTime: version,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: version };
-    }
+    },
   };
 }
 
@@ -99,14 +104,12 @@ describe("undo/redo (DX v4 §7)", () => {
     const { engine } = createHarness({ transport: echoTransport() });
     let idA = "";
     let idB = "";
-    await engine
-      .batch(() => {
-        const a = engine.mutate("todos:create", { listId: "l1", text: "A" });
-        const b = engine.mutate("todos:create", { listId: "l1", text: "B" });
-        idA = a.id;
-        idB = b.id;
-      })
-      .local;
+    await engine.batch(() => {
+      const a = engine.mutate("todos:create", { listId: "l1", text: "A" });
+      const b = engine.mutate("todos:create", { listId: "l1", text: "B" });
+      idA = a.id;
+      idB = b.id;
+    }).local;
     expect(await engine.getRow("todos", idA)).toBeTruthy();
     expect(await engine.getRow("todos", idB)).toBeTruthy();
 
@@ -142,7 +145,15 @@ describe("undo/redo (DX v4 §7)", () => {
 
     // A remote delete removes the row (higher version), with no pending local ops left.
     await store.applyServerChanges([
-      { changeId: "rd", scopeKey: "u:user_a", table: "todos", id, kind: "delete", version: 9999, serverTime: 9999 }
+      {
+        changeId: "rd",
+        scopeKey: "u:user_a",
+        table: "todos",
+        id,
+        kind: "delete",
+        version: 9999,
+        serverTime: 9999,
+      },
     ]);
     expect(await engine.getRow("todos", id)).toBeUndefined();
     expect(engine.canUndo()).toBe(true);

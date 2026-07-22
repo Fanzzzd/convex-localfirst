@@ -8,11 +8,11 @@ export const labels = lf.table("labels", {
     name: v.string(),
     color: v.string(),
     parent: v.optional(v.union(v.string(), v.null())),
-    sort_order: v.optional(v.number())
+    sort_order: v.optional(v.number()),
   },
   scope: scopeWorkspaceId,
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace_id", "created_at"] }
+  indexes: { byWorkspace: ["workspace_id", "created_at"] },
 });
 
 export const create = labels.insert();

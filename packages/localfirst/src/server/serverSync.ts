@@ -87,14 +87,25 @@ export type LedgerEntry = {
   readonly changes?: readonly StoredChange[];
 };
 
-type BoundAccessConfig<Role = unknown, Row extends Record<string, unknown> = Record<string, unknown>> = {
-  readonly member: (input: {
+type BoundAccessConfig<
+  Role = unknown,
+  Row extends Record<string, unknown> = Record<string, unknown>,
+> = {
+  readonly member: (
+    input: {
+      userId: string;
+      scopeValue: string;
+      table: string;
+      membershipTable?: string;
+    },
+    store?: ServerStore,
+  ) => Role | null | undefined | Promise<Role | null | undefined>;
+  readonly read?: (input: {
     userId: string;
-    scopeValue: string;
+    role: Role;
     table: string;
-    membershipTable?: string;
-  }, store?: ServerStore) => Role | null | undefined | Promise<Role | null | undefined>;
-  readonly read?: (input: { userId: string; role: Role; table: string; row: Row }) => boolean | Promise<boolean>;
+    row: Row;
+  }) => boolean | Promise<boolean>;
   readonly write?: (input: {
     userId: string;
     role: Role;
@@ -140,7 +151,7 @@ export type ServerStore = {
     op: ServerOperation,
     entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
     change?: Omit<StoredChange, "changeId">,
-    serverId?: string
+    serverId?: string,
   ): Promise<StoredChange | null>;
 
   // Local id -> server id, keyed by (table, localId) — NOT by user. A
@@ -154,7 +165,11 @@ export type ServerStore = {
   // (when known) is denormalized onto the row-version entry so snapshot bootstrap
   // can load app rows without a per-row id-map lookup.
   appendChange(change: Omit<StoredChange, "changeId">, serverId?: string): Promise<string>;
-  changesAfter(scopeKey: string, cursor: string | null, limit: number): Promise<readonly StoredChange[]>;
+  changesAfter(
+    scopeKey: string,
+    cursor: string | null,
+    limit: number,
+  ): Promise<readonly StoredChange[]>;
   /** Highest change version recorded for a row (0 if none). Row versions live in
    *  the change log, never on the user row, so user schemas stay clean.
    *
@@ -182,9 +197,16 @@ export type ServerStore = {
   rowVersionsByScope?(
     scopeKey: string,
     afterRowKey: string | null,
-    limit: number
-  ): Promise<ReadonlyArray<{ table: string; localId: string; version: number; rowKey: string; serverId?: string | null }>>;
-
+    limit: number,
+  ): Promise<
+    ReadonlyArray<{
+      table: string;
+      localId: string;
+      version: number;
+      rowKey: string;
+      serverId?: string | null;
+    }>
+  >;
 };
 
 export type PushOp = ServerOperation;
@@ -261,7 +283,7 @@ export type ValueCodec = {
 
 export const JSON_VALUE_CODEC: ValueCodec = {
   encode: (value) => JSON.stringify(value ?? null),
-  decode: (json) => JSON.parse(json)
+  decode: (json) => JSON.parse(json),
 };
 
 export type SyncConfig = {
@@ -282,7 +304,7 @@ const MAX_ON_WRITE_DEPTH = 8;
 async function runOnWrite(
   config: SyncConfig,
   table: string,
-  input: Parameters<BoundOnWrite>[0]
+  input: Parameters<BoundOnWrite>[0],
 ): Promise<void> {
   if (!config.onWrite) return;
   // configFor creates a fresh config/server store when onWrite calls serverWriter,
@@ -292,7 +314,7 @@ async function runOnWrite(
   const depth = onWriteDepth.get(key) ?? 0;
   if (depth >= MAX_ON_WRITE_DEPTH) {
     throw new Error(
-      `convex-localfirst: onWrite recursion exceeded ${MAX_ON_WRITE_DEPTH} nested writes for table "${table}". Do not write back to the same local-first table unconditionally from onWrite.`
+      `convex-localfirst: onWrite recursion exceeded ${MAX_ON_WRITE_DEPTH} nested writes for table "${table}". Do not write back to the same local-first table unconditionally from onWrite.`,
     );
   }
   onWriteDepth.set(key, depth + 1);
@@ -331,7 +353,7 @@ async function memberRole(
   kind: "byWorkspace" | "byProject",
   scopeValue: string,
   table: string,
-  membershipTable: string
+  membershipTable: string,
 ): Promise<unknown | null> {
   if (!config.access) {
     throw new Error("serverSync: membership scopes require access.member");
@@ -340,7 +362,7 @@ async function memberRole(
   let pending = cache.get(key);
   if (!pending) {
     pending = Promise.resolve(
-      config.access.member({ userId, scopeValue, table, membershipTable }, store)
+      config.access.member({ userId, scopeValue, table, membershipTable }, store),
     ).then((role) => role ?? null);
     cache.set(key, pending);
   }
@@ -361,7 +383,7 @@ async function resolveScopeForWrite(
   tableConfig: ServerTableConfig,
   memberCache: MemberCache,
   userId: string,
-  op: ServerOperation
+  op: ServerOperation,
 ): Promise<{
   scopeKey: string;
   value: Record<string, unknown>;
@@ -369,7 +391,7 @@ async function resolveScopeForWrite(
   role: unknown | null;
 }> {
   const scope = tableConfig.scope;
-  const value = { ...(op.value ?? {}) };
+  const value = { ...op.value };
 
   if (scope.kind === "byUser") {
     if (op.kind === "insert") {
@@ -402,7 +424,16 @@ async function resolveScopeForWrite(
     if (!scopeValue) {
       throw new RejectOp(`Missing ${field} for scoped write`);
     }
-    const role = await memberRole(store, syncConfig, memberCache, userId, scope.kind, scopeValue, op.table, scope.membershipTable);
+    const role = await memberRole(
+      store,
+      syncConfig,
+      memberCache,
+      userId,
+      scope.kind,
+      scopeValue,
+      op.table,
+      scope.membershipTable,
+    );
     if (role === null) {
       throw new RejectOp("Not a member of the target scope");
     }
@@ -423,7 +454,7 @@ async function isAuthorizedForScope(
   table: string,
   tableConfig: ServerTableConfig,
   userId: string,
-  scopeKey: string
+  scopeKey: string,
 ): Promise<{ authorized: boolean; role: unknown | null }> {
   const scope = tableConfig.scope;
   if (scope.kind === "byUser") {
@@ -431,7 +462,16 @@ async function isAuthorizedForScope(
   }
   if (scope.kind === "byWorkspace" || scope.kind === "byProject") {
     const value = scopeKey.slice(scopeKey.indexOf(":") + 1);
-    const role = await memberRole(store, syncConfig, memberCache, userId, scope.kind, value, table, scope.membershipTable);
+    const role = await memberRole(
+      store,
+      syncConfig,
+      memberCache,
+      userId,
+      scope.kind,
+      value,
+      table,
+      scope.membershipTable,
+    );
     return { authorized: role !== null, role };
   }
   return { authorized: false, role: null }; // defensive: fail closed
@@ -466,7 +506,7 @@ export async function authorizeRowWrite(
   userId: string,
   table: string,
   localId: string,
-  patch: Record<string, unknown>
+  patch: Record<string, unknown>,
 ): Promise<boolean> {
   const tableConfig = config.tables[table];
   if (!tableConfig) return false;
@@ -478,7 +518,7 @@ export async function authorizeRowWrite(
     table,
     kind: "patch",
     localId,
-    patch
+    patch,
   };
   let resolved: { before: Record<string, unknown> | null; role: unknown | null };
   try {
@@ -497,7 +537,7 @@ export async function authorizeRowWrite(
     action: "patch",
     before: resolved.before,
     patch,
-    proposed: { ...(resolved.before ?? {}), ...patch }
+    proposed: { ...resolved.before, ...patch },
   });
 }
 
@@ -511,7 +551,11 @@ async function loadRow(store: ServerStore, op: ServerOperation): Promise<Record<
   return row;
 }
 
-export async function handlePush(store: ServerStore, config: SyncConfig, input: PushInput): Promise<PushResult> {
+export async function handlePush(
+  store: ServerStore,
+  config: SyncConfig,
+  input: PushInput,
+): Promise<PushResult> {
   const now = config.now ?? (() => Date.now());
   const serverTime = now();
   const result: PushResult = { accepted: [], rejected: [], idMaps: [], changes: [], serverTime };
@@ -524,7 +568,9 @@ export async function handlePush(store: ServerStore, config: SyncConfig, input: 
   // Partition into ordered segments: each ungrouped op is its own segment; ops sharing a
   // groupId form one group segment (gathered in first-appearance order — the client sends
   // them contiguously anyway). Ungrouped ops process exactly as every prior release did.
-  const segments: Array<{ kind: "single"; op: ServerOperation } | { kind: "group"; ops: ServerOperation[] }> = [];
+  const segments: Array<
+    { kind: "single"; op: ServerOperation } | { kind: "group"; ops: ServerOperation[] }
+  > = [];
   const groupIndex = new Map<string, number>();
   for (const op of input.mutations) {
     if (op.groupId === undefined) {
@@ -558,7 +604,7 @@ async function replayFromLedger(
   input: PushInput,
   op: ServerOperation,
   prior: LedgerEntry,
-  result: PushResult
+  result: PushResult,
 ): Promise<void> {
   if (prior.schemaVersion !== input.schemaVersion) {
     result.rejected.push({ opId: op.opId, message: "schemaMismatch" });
@@ -584,7 +630,7 @@ async function processPushOp(
   input: PushInput,
   op: ServerOperation,
   serverTime: number,
-  result: PushResult
+  result: PushResult,
 ): Promise<void> {
   // I2: idempotency — a known opId is never re-applied (keyed by (userId, opId) so a
   // reload/new-tab replay under a different envelope clientId is still deduped).
@@ -616,14 +662,22 @@ async function processPushOp(
 
   try {
     validateDeclaredMutation(tableConfig, op);
-    const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
+    const applied = await applyOp(
+      store,
+      config,
+      tableConfig,
+      memberCache,
+      input.userId,
+      op,
+      serverTime,
+    );
     await runOnWrite(config, op.table, {
       table: op.table,
       action: op.kind,
       before: applied.before,
       after: applied.after,
       userId: input.userId,
-      functionName: op.functionName
+      functionName: op.functionName,
     });
     // change === null is an idempotent no-op delete (row already gone): still ack it
     // so the client stops retrying, and ledger it for opId idempotency. Do NOT echo
@@ -637,7 +691,7 @@ async function processPushOp(
       op,
       { status: "accepted" },
       applied.change ?? undefined,
-      applied.serverId
+      applied.serverId,
     );
     if (change) result.changes.push(change);
     if (op.kind === "insert" && applied.serverId) {
@@ -669,7 +723,7 @@ async function processPushGroup(
   input: PushInput,
   ops: readonly ServerOperation[],
   serverTime: number,
-  result: PushResult
+  result: PushResult,
 ): Promise<void> {
   // Idempotency: a decided group has a ledger entry for EVERY member (commitOp per op
   // shares one transaction, so it is all-committed or none). Replaying any subset re-emits
@@ -706,7 +760,7 @@ async function processPushGroup(
   for (const op of ops) {
     if (op.schemaVersion !== input.schemaVersion) {
       await rejectWholeGroup(
-        `groupRejected: Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`
+        `groupRejected: Operation ${op.opId} was created under schema v${op.schemaVersion} but the client now declares v${input.schemaVersion}; migrate queued operations before pushing.`,
       );
       return;
     }
@@ -727,7 +781,15 @@ async function processPushGroup(
     const tableConfig = config.tables[op.table]!;
     try {
       validateDeclaredMutation(tableConfig, op);
-      await applyOp(overlay, config, { ...tableConfig, serverStamp: undefined }, memberCache, input.userId, op, serverTime);
+      await applyOp(
+        overlay,
+        config,
+        { ...tableConfig, serverStamp: undefined },
+        memberCache,
+        input.userId,
+        op,
+        serverTime,
+      );
     } catch (error) {
       if (!(error instanceof RejectOp)) throw error; // a real error aborts the whole push
       failReason = error instanceof Error ? error.message : String(error);
@@ -743,20 +805,34 @@ async function processPushGroup(
   // members' real writes (they are committed before it runs), so no overlay is needed.
   for (const op of ops) {
     const tableConfig = config.tables[op.table]!;
-    const applied = await applyOp(store, config, tableConfig, memberCache, input.userId, op, serverTime);
+    const applied = await applyOp(
+      store,
+      config,
+      tableConfig,
+      memberCache,
+      input.userId,
+      op,
+      serverTime,
+    );
     await runOnWrite(config, op.table, {
       table: op.table,
       action: op.kind,
       before: applied.before,
       after: applied.after,
       userId: input.userId,
-      functionName: op.functionName
+      functionName: op.functionName,
     });
     const serverResult =
       applied.change === null
         ? { ok: true, localId: op.localId, noop: true }
         : { ok: true, localId: op.localId, serverId: applied.serverId };
-    const change = await store.commitOp(input.userId, op, { status: "accepted" }, applied.change ?? undefined, applied.serverId);
+    const change = await store.commitOp(
+      input.userId,
+      op,
+      { status: "accepted" },
+      applied.change ?? undefined,
+      applied.serverId,
+    );
     if (change) result.changes.push(change);
     if (op.kind === "insert" && applied.serverId) {
       result.idMaps.push({ table: op.table, localId: op.localId, serverId: applied.serverId });
@@ -792,7 +868,7 @@ function createOverlayStore(real: ServerStore): ServerStore {
     async patchRow(table, serverId, patch) {
       const key = rowKey(table, serverId);
       const current = rows.has(key) ? rows.get(key) : await real.getRow(table, serverId);
-      rows.set(key, { ...(current ?? {}), ...patch });
+      rows.set(key, { ...current, ...patch });
     },
     async deleteRow(table, serverId) {
       rows.set(rowKey(table, serverId), null);
@@ -804,7 +880,7 @@ function createOverlayStore(real: ServerStore): ServerStore {
     },
     async putIdMap(_userId, table, localId, serverId) {
       ids.set(idKey(table, localId), serverId);
-    }
+    },
   };
   // Every other member (versions/scope, and any extra field an access.member hook reads
   // off a custom store) falls through to the REAL store, so authorization sees real data.
@@ -815,7 +891,7 @@ function createOverlayStore(real: ServerStore): ServerStore {
       }
       const value = Reflect.get(target, prop, receiver);
       return typeof value === "function" ? value.bind(target) : value;
-    }
+    },
   }) as ServerStore;
 }
 
@@ -826,13 +902,18 @@ function validateDeclaredMutation(table: ServerTableConfig, op: ServerOperation)
   }
   if (op.kind === "delete") return;
   const payload = op.kind === "insert" ? op.value : op.patch;
-  if (payload !== undefined && (typeof payload !== "object" || payload === null || Array.isArray(payload))) {
+  if (
+    payload !== undefined &&
+    (typeof payload !== "object" || payload === null || Array.isArray(payload))
+  ) {
     throw new RejectOp("invalidPayload");
   }
   if (op.kind === "patch") {
     for (const field of [partitionFieldOf(table.scope), table.idField]) {
       if (field && Object.prototype.hasOwnProperty.call(payload ?? {}, field)) {
-        throw new RejectOp(`Cannot patch the ${field === table.idField ? "id" : "scope"} field "${field}"`);
+        throw new RejectOp(
+          `Cannot patch the ${field === table.idField ? "id" : "scope"} field "${field}"`,
+        );
       }
     }
   }
@@ -858,7 +939,7 @@ async function applyOp(
   memberCache: MemberCache,
   userId: string,
   op: ServerOperation,
-  serverTime: number
+  serverTime: number,
 ): Promise<AppliedOp> {
   // Delete is fully handled here so EVERY denial — never-seen localId, foreign live
   // row, foreign already-deleted row — rejects with ONE generic message. Splitting
@@ -874,7 +955,15 @@ async function applyOp(
     if (scopeKey === null) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
     }
-    const access = await isAuthorizedForScope(store, syncConfig, memberCache, op.table, tableConfig, userId, scopeKey);
+    const access = await isAuthorizedForScope(
+      store,
+      syncConfig,
+      memberCache,
+      op.table,
+      tableConfig,
+      userId,
+      scopeKey,
+    );
     if (!access.authorized) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
     }
@@ -887,7 +976,7 @@ async function applyOp(
         table: op.table,
         action: "delete",
         before: existingRow,
-        proposed: null
+        proposed: null,
       }))
     ) {
       throw new RejectOp(`Cannot delete ${op.table}:${op.localId}`);
@@ -901,10 +990,18 @@ async function applyOp(
     const version = (await store.latestChangeVersion(op.table, op.localId)) + 1;
     await store.deleteRow(op.table, existingId as string);
     return {
-      change: { scopeKey, table: op.table, localId: op.localId, kind: "delete", version, serverTime, opId: op.opId },
+      change: {
+        scopeKey,
+        table: op.table,
+        localId: op.localId,
+        kind: "delete",
+        version,
+        serverTime,
+        opId: op.opId,
+      },
       serverId: existingId as string,
       before: existingRow,
-      after: null
+      after: null,
     };
   }
 
@@ -919,7 +1016,7 @@ async function applyOp(
       tableConfig,
       memberCache,
       userId,
-      op
+      op,
     ));
   } catch (error) {
     // A patch's denials (never-seen "No server row", foreign owner/member) would be
@@ -957,7 +1054,7 @@ async function applyOp(
         table: op.table,
         action: "insert",
         before: null,
-        proposed: value
+        proposed: value,
       }))
     ) {
       throw new RejectOp(`Cannot insert ${op.table}:${op.localId}`);
@@ -977,11 +1074,11 @@ async function applyOp(
         data: projectSyncedFields(value, tableConfig),
         version,
         serverTime,
-        opId: op.opId
+        opId: op.opId,
       },
       serverId,
       before: null,
-      after: value
+      after: value,
     };
   }
 
@@ -1004,7 +1101,9 @@ async function applyOp(
     const guarded = partitionFieldOf(tableConfig.scope);
     for (const field of [guarded, tableConfig.idField]) {
       if (field && Object.prototype.hasOwnProperty.call(patch, field)) {
-        throw new RejectOp(`Cannot patch the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
+        throw new RejectOp(
+          `Cannot patch the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`,
+        );
       }
     }
     // Set/counter-field merge: a patch field carrying a SetDelta or CounterDelta is
@@ -1014,27 +1113,31 @@ async function applyOp(
     // so no per-table server config; only loads the row when a delta is actually present
     // (zero overhead otherwise). A delta over a wrong-typed field is a client bug/forge — reject.
     const deltaFields = new Set(
-      Object.keys(patch).filter((f) => isSetDelta(patch[f]) || isCounterDelta(patch[f]))
+      Object.keys(patch).filter((f) => isSetDelta(patch[f]) || isCounterDelta(patch[f])),
     );
     if (deltaFields.size > 0) {
       const current = before ?? (await loadRow(store, op));
       const materialized: Record<string, unknown> = { ...patch };
-      for (const [field, value] of Object.entries(patch)) {
-        if (isSetDelta(value)) {
+      for (const [field, fieldValue] of Object.entries(patch)) {
+        if (isSetDelta(fieldValue)) {
           if (current[field] !== undefined && !Array.isArray(current[field])) {
-            throw new RejectOp(`Set delta on non-array field "${field}" of ${op.table}:${op.localId}`);
+            throw new RejectOp(
+              `Set delta on non-array field "${field}" of ${op.table}:${op.localId}`,
+            );
           }
-          materialized[field] = applySetDelta(current[field], value.__lfSet);
-        } else if (isCounterDelta(value)) {
+          materialized[field] = applySetDelta(current[field], fieldValue.__lfSet);
+        } else if (isCounterDelta(fieldValue)) {
           if (current[field] !== undefined && typeof current[field] !== "number") {
-            throw new RejectOp(`Counter delta on non-number field "${field}" of ${op.table}:${op.localId}`);
+            throw new RejectOp(
+              `Counter delta on non-number field "${field}" of ${op.table}:${op.localId}`,
+            );
           }
-          materialized[field] = applyCounterDelta(current[field], value.__lfCounter);
+          materialized[field] = applyCounterDelta(current[field], fieldValue.__lfCounter);
         }
       }
       patch = materialized;
     }
-    const proposed = { ...(before ?? {}), ...patch };
+    const proposed = { ...before, ...patch };
     if (
       tableConfig.scope.kind !== "byUser" &&
       syncConfig.access?.write &&
@@ -1045,7 +1148,7 @@ async function applyOp(
         action: "patch",
         before,
         patch,
-        proposed
+        proposed,
       }))
     ) {
       throw new RejectOp(`Cannot patch ${op.table}:${op.localId}`);
@@ -1066,11 +1169,11 @@ async function applyOp(
         patch: projectSyncedFields(patch, tableConfig),
         version,
         serverTime,
-        opId: op.opId
+        opId: op.opId,
       },
       serverId,
       before,
-      after: proposed
+      after: proposed,
     };
   }
 
@@ -1084,7 +1187,7 @@ async function applyOp(
 function mergeServerStamp(
   value: Record<string, unknown>,
   stamped: Record<string, unknown> | undefined,
-  tableConfig: ServerTableConfig
+  tableConfig: ServerTableConfig,
 ): void {
   if (!stamped) return;
   const declared = new Set(tableConfig.serverOnlyFields ?? []);
@@ -1095,7 +1198,9 @@ function mergeServerStamp(
   }
   for (const field of [partitionFieldOf(tableConfig.scope), tableConfig.idField]) {
     if (field && Object.prototype.hasOwnProperty.call(stamped, field)) {
-      throw new Error(`serverStamp must not set the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
+      throw new Error(
+        `serverStamp must not set the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`,
+      );
     }
   }
   Object.assign(value, stamped);
@@ -1111,8 +1216,18 @@ function mergeServerStamp(
 // server code is not a flaky network client; Convex OCC retries keep it atomic.
 
 export type ServerWrite =
-  | { readonly kind: "insert"; readonly table: string; readonly localId?: string; readonly value: Record<string, unknown> }
-  | { readonly kind: "patch"; readonly table: string; readonly localId: string; readonly patch: Record<string, unknown> }
+  | {
+      readonly kind: "insert";
+      readonly table: string;
+      readonly localId?: string;
+      readonly value: Record<string, unknown>;
+    }
+  | {
+      readonly kind: "patch";
+      readonly table: string;
+      readonly localId: string;
+      readonly patch: Record<string, unknown>;
+    }
   | { readonly kind: "delete"; readonly table: string; readonly localId: string };
 
 export type ServerWriteResult = { readonly localId: string; readonly serverId?: string };
@@ -1122,7 +1237,7 @@ export async function applyServerWrite(
   config: SyncConfig,
   write: ServerWrite,
   newLocalId: () => string,
-  actingUserId = "server"
+  actingUserId = "server",
 ): Promise<ServerWriteResult> {
   const tableConfig = config.tables[write.table];
   if (!tableConfig) {
@@ -1140,13 +1255,21 @@ export async function applyServerWrite(
       value[ts.createdAt] ??= serverTime;
       value[ts.updatedAt] ??= serverTime;
     }
-    mergeServerStamp(value, await tableConfig.serverStamp?.({ userId: actingUserId, value }), tableConfig);
+    mergeServerStamp(
+      value,
+      await tableConfig.serverStamp?.({ userId: actingUserId, value }),
+      tableConfig,
+    );
     const scopeValue = partition ? value[partition] : null;
     if (typeof scopeValue !== "string") {
-      throw new Error(`serverWriter: insert into "${write.table}" is missing its scope field "${partition}"`);
+      throw new Error(
+        `serverWriter: insert into "${write.table}" is missing its scope field "${partition}"`,
+      );
     }
     const scopeKey =
-      tableConfig.scope.kind === "byUser" ? scopeKeyForUser(scopeValue) : scopeKeyForValue(tableConfig.scope.kind, scopeValue);
+      tableConfig.scope.kind === "byUser"
+        ? scopeKeyForUser(scopeValue)
+        : scopeKeyForValue(tableConfig.scope.kind, scopeValue);
     // Symmetric with the push path: a LIVE row is a duplicate; an id-map entry whose row
     // was deleted is a resurrection (re-insert the same localId), so a fresh row is minted
     // and the id map repointed. The change version continues from latestChangeVersion.
@@ -1163,11 +1286,19 @@ export async function applyServerWrite(
       before: null,
       after: value,
       userId: actingUserId,
-      functionName: "serverWriter"
+      functionName: "serverWriter",
     });
     await store.appendChange(
-      { scopeKey, table: write.table, localId, kind: "insert", data: projectSyncedFields(value, tableConfig), version, serverTime },
-      serverId
+      {
+        scopeKey,
+        table: write.table,
+        localId,
+        kind: "insert",
+        data: projectSyncedFields(value, tableConfig),
+        version,
+        serverTime,
+      },
+      serverId,
     );
     return { localId, serverId };
   }
@@ -1182,7 +1313,9 @@ export async function applyServerWrite(
     }
     const scopeKey = scopeKeyForRow(tableConfig, row);
     if (!scopeKey) {
-      throw new Error(`serverWriter: row ${write.table}:${write.localId} has no usable scope field`);
+      throw new Error(
+        `serverWriter: row ${write.table}:${write.localId} has no usable scope field`,
+      );
     }
     const version = (await store.latestChangeVersion(write.table, write.localId)) + 1;
     await store.deleteRow(write.table, serverId);
@@ -1192,9 +1325,12 @@ export async function applyServerWrite(
       before: row,
       after: null,
       userId: actingUserId,
-      functionName: "serverWriter"
+      functionName: "serverWriter",
     });
-    await store.appendChange({ scopeKey, table: write.table, localId: write.localId, kind: "delete", version, serverTime }, serverId);
+    await store.appendChange(
+      { scopeKey, table: write.table, localId: write.localId, kind: "delete", version, serverTime },
+      serverId,
+    );
     return { localId: write.localId, serverId };
   }
 
@@ -1205,7 +1341,9 @@ export async function applyServerWrite(
   // Same defense as push: a patch never moves a row across scopes or rewrites its id.
   for (const field of [partition, tableConfig.idField]) {
     if (field && Object.prototype.hasOwnProperty.call(patch, field)) {
-      throw new Error(`serverWriter: cannot patch the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`);
+      throw new Error(
+        `serverWriter: cannot patch the ${field === tableConfig.idField ? "id" : "scope"} field "${field}"`,
+      );
     }
   }
   if (ts && Object.keys(patch).length > 0) {
@@ -1227,11 +1365,19 @@ export async function applyServerWrite(
     before: row,
     after,
     userId: actingUserId,
-    functionName: "serverWriter"
+    functionName: "serverWriter",
   });
   await store.appendChange(
-    { scopeKey, table: write.table, localId: write.localId, kind: "patch", patch: projectSyncedFields(patch, tableConfig), version, serverTime },
-    serverId
+    {
+      scopeKey,
+      table: write.table,
+      localId: write.localId,
+      kind: "patch",
+      patch: projectSyncedFields(patch, tableConfig),
+      version,
+      serverTime,
+    },
+    serverId,
   );
   return { localId: write.localId, serverId };
 }
@@ -1245,13 +1391,15 @@ export async function applyServerWrite(
  */
 function tableForScope(
   config: SyncConfig,
-  kind: "byWorkspace" | "byProject"
+  kind: "byWorkspace" | "byProject",
 ): { table: string; membershipTable: string } | null {
   const tables = Object.entries(config.tables).filter(([, value]) => value.scope.kind === kind);
-  const memberships = new Set(tables.map(([, value]) => (value.scope as { membershipTable: string }).membershipTable));
+  const memberships = new Set(
+    tables.map(([, value]) => (value.scope as { membershipTable: string }).membershipTable),
+  );
   if (memberships.size > 1) {
     throw new Error(
-      `serverSync: all ${kind} tables must share one membershipTable (found: ${[...memberships].join(", ")}). Mixed membership tables would cross-authorize reads.`
+      `serverSync: all ${kind} tables must share one membershipTable (found: ${[...memberships].join(", ")}). Mixed membership tables would cross-authorize reads.`,
     );
   }
   const first = tables[0];
@@ -1265,11 +1413,15 @@ const ZERO_CURSOR = "000000000000";
 // appear in a changeId (digits only), so the split is unambiguous.
 const BOOT_SEP = "\u0001";
 
-export async function handlePull(store: ServerStore, config: SyncConfig, input: PullInput): Promise<PullResult> {
+export async function handlePull(
+  store: ServerStore,
+  config: SyncConfig,
+  input: PullInput,
+): Promise<PullResult> {
   const now = config.now ?? (() => Date.now());
   // A doorbell (the reactive watch) only needs its read-set to cover "new changes
   // past the cursors" — one row per scope, and never the expensive bootstrap path.
-  const limit = input.doorbell ? 1 : config.pullLimit ?? 500;
+  const limit = input.doorbell ? 1 : (config.pullLimit ?? 500);
   const out: PullResult = {
     changes: [],
     cursors: {},
@@ -1278,7 +1430,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     bootstrapCursors: {},
     deniedScopes: [],
     roles: {},
-    serverTime: now()
+    serverTime: now(),
   };
 
   if (input.schemaVersion !== config.schemaVersion) {
@@ -1325,7 +1477,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
         scope.kind,
         scope.value,
         scopeTable.table,
-        scopeTable.membershipTable
+        scopeTable.membershipTable,
       );
       if (role === null) {
         // Revoked (or never granted): tell the client so it evicts the scope's
@@ -1413,7 +1565,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
             kind: "insert",
             data: projectSyncedFields(row as Record<string, unknown>, table),
             version: rv.version,
-            serverTime: out.serverTime
+            serverTime: out.serverTime,
           });
           remaining--;
         }
@@ -1427,7 +1579,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
           out.cursors[scopeKey] = endCursor || ZERO_CURSOR;
           // Changes appended DURING the bootstrap (changeId > endCursor) still owe
           // an incremental pass — report them so the drain loop keeps going.
-          out.hasMore[scopeKey] = (((await store.lastChangeId(scopeKey)) ?? "") > endCursor);
+          out.hasMore[scopeKey] = ((await store.lastChangeId(scopeKey)) ?? "") > endCursor;
         }
         continue;
       }
@@ -1455,7 +1607,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
           ...change,
           kind: "insert",
           patch: undefined,
-          data: projectSyncedFields(row, table)
+          data: projectSyncedFields(row, table),
         });
       } else {
         // Judge every historical change against CURRENT state. Missing/invisible
@@ -1468,7 +1620,7 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
     // The cursor advances past everything PROCESSED (retired rows included), not
     // past rows deferred by the global response budget.
     const last = processed > 0 ? changes[processed - 1] : undefined;
-    out.cursors[scopeKey] = last ? last.changeId : cursor ?? "";
+    out.cursors[scopeKey] = last ? last.changeId : (cursor ?? "");
     out.hasMore[scopeKey] = processed < changes.length || changes.length >= limit;
   }
 
@@ -1477,7 +1629,10 @@ export async function handlePull(store: ServerStore, config: SyncConfig, input: 
 
 /** Project an app row to the table's declared local-first surface. Server-only
  *  `extra` columns never ride snapshots or the change log. */
-function projectSyncedFields(row: Record<string, unknown>, table: ServerTableConfig | undefined): Record<string, unknown> {
+function projectSyncedFields(
+  row: Record<string, unknown>,
+  table: ServerTableConfig | undefined,
+): Record<string, unknown> {
   if (table?.syncedFields) {
     const out: Record<string, unknown> = {};
     for (const field of table.syncedFields) {
@@ -1487,6 +1642,9 @@ function projectSyncedFields(row: Record<string, unknown>, table: ServerTableCon
     }
     return out;
   }
-  const { _id, _creationTime, ...data } = row as Record<string, unknown> & { _id?: unknown; _creationTime?: unknown };
+  const { _id, _creationTime, ...data } = row as Record<string, unknown> & {
+    _id?: unknown;
+    _creationTime?: unknown;
+  };
   return data;
 }

@@ -20,11 +20,15 @@ describe("useCollaborativeDoc (React wiring)", () => {
   it("hydrates the Y.Doc from rows scoped to its docId, ignoring other docs", () => {
     const append = vi.fn();
     const { result, rerender } = renderHook((props) => useCollaborativeDoc(props), {
-      initialProps: { docId: "d1", updates: [] as Row[], append }
+      initialProps: { docId: "d1", updates: [] as Row[], append },
     });
     expect(result.current.doc.getText("t").toString()).toBe("");
     act(() =>
-      rerender({ docId: "d1", updates: [remoteRow("r1", "d1", "hello"), remoteRow("r2", "d2", "OTHER")], append })
+      rerender({
+        docId: "d1",
+        updates: [remoteRow("r1", "d1", "hello"), remoteRow("r2", "d2", "OTHER")],
+        append,
+      }),
     );
     expect(result.current.doc.getText("t").toString()).toBe("hello"); // d2 row filtered out
     // Applying remote rows must NOT echo back as appends (REMOTE_ORIGIN guard).
@@ -33,7 +37,9 @@ describe("useCollaborativeDoc (React wiring)", () => {
 
   it("persists a local edit through `append` as a real base64 update", async () => {
     const append = vi.fn(async () => ({ ok: true }));
-    const { result } = renderHook(() => useCollaborativeDoc({ docId: "d2", updates: [] as Row[], append }));
+    const { result } = renderHook(() =>
+      useCollaborativeDoc({ docId: "d2", updates: [] as Row[], append }),
+    );
     act(() => {
       result.current.doc.getText("t").insert(0, "X");
     });
@@ -47,9 +53,11 @@ describe("useCollaborativeDoc (React wiring)", () => {
 
   it("surfaces append failures through status.lastError, then clears on success", async () => {
     let fail = true;
-    const append = vi.fn(() => (fail ? Promise.reject(new Error("quota")) : Promise.resolve({ ok: true })));
+    const append = vi.fn(() =>
+      fail ? Promise.reject(new Error("quota")) : Promise.resolve({ ok: true }),
+    );
     const { result } = renderHook(() =>
-      useCollaborativeDoc({ docId: "d5", updates: [] as Row[], append, backoffMs: () => 5 })
+      useCollaborativeDoc({ docId: "d5", updates: [] as Row[], append, backoffMs: () => 5 }),
     );
     act(() => {
       result.current.doc.getText("t").insert(0, "Y");
@@ -63,15 +71,19 @@ describe("useCollaborativeDoc (React wiring)", () => {
   it("compacts once the threshold is crossed: snapshot appended + subsumed rows pruned", async () => {
     const append = vi.fn(async () => ({ ok: true }));
     const prune = vi.fn(async () => ({ ok: true }));
-    const rows = [remoteRow("r1", "d3", "a"), remoteRow("r2", "d3", "b"), remoteRow("r3", "d3", "c")];
+    const rows = [
+      remoteRow("r1", "d3", "a"),
+      remoteRow("r2", "d3", "b"),
+      remoteRow("r3", "d3", "c"),
+    ];
     renderHook(() =>
       useCollaborativeDoc({
         docId: "d3",
         updates: rows,
         append,
         prune,
-        compaction: { everyUpdates: 2, debounceMs: 0 }
-      })
+        compaction: { everyUpdates: 2, debounceMs: 0 },
+      }),
     );
     await waitFor(() => expect(append).toHaveBeenCalledTimes(1)); // the snapshot row
     await waitFor(() => expect(prune).toHaveBeenCalledTimes(3)); // every subsumed row removed
@@ -80,9 +92,18 @@ describe("useCollaborativeDoc (React wiring)", () => {
 
   it("does not compact without a prune callback (log grows unbounded by choice)", async () => {
     const append = vi.fn(async () => ({ ok: true }));
-    const rows = [remoteRow("r1", "d4", "a"), remoteRow("r2", "d4", "b"), remoteRow("r3", "d4", "c")];
+    const rows = [
+      remoteRow("r1", "d4", "a"),
+      remoteRow("r2", "d4", "b"),
+      remoteRow("r3", "d4", "c"),
+    ];
     renderHook(() =>
-      useCollaborativeDoc({ docId: "d4", updates: rows, append, compaction: { everyUpdates: 2, debounceMs: 0 } })
+      useCollaborativeDoc({
+        docId: "d4",
+        updates: rows,
+        append,
+        compaction: { everyUpdates: 2, debounceMs: 0 },
+      }),
     );
     await new Promise((r) => setTimeout(r, 20));
     expect(append).not.toHaveBeenCalled();

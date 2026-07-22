@@ -6,7 +6,7 @@ import {
   defineLocalFirstManifest,
   localMutation,
   localQuery,
-  localTable
+  localTable,
 } from "../../src/core/index.js";
 import { convexFunctionName, createConvexLocalFirst } from "../../src/react";
 
@@ -18,7 +18,7 @@ function manifest() {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId") })
+      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId") }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly unknown[]>({
@@ -26,8 +26,8 @@ function manifest() {
         name: "todos:list",
         table: "todos",
         initial: [],
-        run: (rows, args) => rows.filter((r: any) => r.listId === args.listId)
-      })
+        run: (rows, args) => rows.filter((r: any) => r.listId === args.listId),
+      }),
     },
     mutations: {
       "todos:create": localMutation<{ listId: string; text: string }>({
@@ -38,10 +38,15 @@ function manifest() {
           kind: "insert",
           table: "todos",
           id: ctx.localId("todos"),
-          value: { ownerId: ctx.userId ?? "anon", listId: args.listId, text: args.text, createdAt: ctx.now }
-        })
-      })
-    }
+          value: {
+            ownerId: ctx.userId ?? "anon",
+            listId: args.listId,
+            text: args.text,
+            createdAt: ctx.now,
+          },
+        }),
+      }),
+    },
   });
 }
 
@@ -53,9 +58,9 @@ const fakeClient = {
     rejected: [],
     idMaps: [],
     changes: [],
-    serverTime: 1
+    serverTime: 1,
   }),
-  query: async () => ({ changes: [], cursors: {}, serverTime: 1 })
+  query: async () => ({ changes: [], cursors: {}, serverTime: 1 }),
 };
 
 describe("createConvexLocalFirst (headless factory)", () => {
@@ -66,16 +71,17 @@ describe("createConvexLocalFirst (headless factory)", () => {
       manifest: manifest(),
       client: fakeClient as never,
       store: new MemoryLocalStore(),
-      userId: "u"
+      userId: "u",
     });
     expect(client).toBe(fakeClient);
 
     // api-style refs (NOT strings) — these would throw "Unable to resolve Convex
     // function name" if the factory hadn't wired convexFunctionName.
-    await engine.mutate(makeFunctionReference("todos:create"), { listId: "inbox", text: "hi" }).local;
+    await engine.mutate(makeFunctionReference("todos:create"), { listId: "inbox", text: "hi" })
+      .local;
     const rows = await engine.query<{ listId: string }, readonly { text?: string }[]>(
       makeFunctionReference("todos:list"),
-      { listId: "inbox" }
+      { listId: "inbox" },
     );
     expect(rows?.[0]?.text).toBe("hi");
     engine.dispose();

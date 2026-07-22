@@ -35,13 +35,15 @@ function clientFor(subject) {
           opId: m.opId ?? randomUUID(),
           clientId,
           schemaVersion: SCHEMA_VERSION,
-          functionName: m.functionName ?? `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
+          functionName:
+            m.functionName ??
+            `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
           table: m.table,
           kind: m.kind,
           localId: m.localId,
           value: m.value,
-          patch: m.patch
-        }))
+          patch: m.patch,
+        })),
       });
     },
     async pull(scopes, cursors = {}) {
@@ -49,14 +51,20 @@ function clientFor(subject) {
       const all = [];
       let last = null;
       for (let i = 0; i < 50; i++) {
-        const r = await c.query(pullRef, { clientId, userId: subject, schemaVersion: SCHEMA_VERSION, scopes, cursors: merged });
+        const r = await c.query(pullRef, {
+          clientId,
+          userId: subject,
+          schemaVersion: SCHEMA_VERSION,
+          scopes,
+          cursors: merged,
+        });
         all.push(...r.changes);
-        merged = { ...merged, ...r.cursors };
+        Object.assign(merged, r.cursors);
         last = r;
         if (!Object.values(r.hasMore ?? {}).some(Boolean)) break;
       }
       return { ...last, changes: all, cursors: merged };
-    }
+    },
   };
 }
 
@@ -87,7 +95,13 @@ const seed = await alice.push([
     table: "projects",
     kind: "insert",
     localId: projLocalId,
-    value: { workspace: "mu-demo", name: `SM ${uid}`, identifier: "SM", created_at: ts, updated_at: ts }
+    value: {
+      workspace: "mu-demo",
+      name: `SM ${uid}`,
+      identifier: "SM",
+      created_at: ts,
+      updated_at: ts,
+    },
   },
   {
     table: "issues",
@@ -103,24 +117,37 @@ const seed = await alice.push([
       assignee_ids: [],
       created_at: ts,
       updated_at: ts,
-      created_by: "server-sets-scope"
-    }
-  }
+      created_by: "server-sets-scope",
+    },
+  },
 ]);
 assert(seed.rejected.length === 0, "alice seeded project+issue (label_ids:['base'])");
 
 // CONCURRENT: alice adds "label-A", bob adds "label-B" — each a DELTA vs base ["base"].
 const aAdd = await alice.push([
-  { table: "issues", kind: "patch", localId: issueLocalId, patch: { label_ids: { __lfSet: { add: ["label-A"], remove: [] } } } }
+  {
+    table: "issues",
+    kind: "patch",
+    localId: issueLocalId,
+    patch: { label_ids: { __lfSet: { add: ["label-A"], remove: [] } } },
+  },
 ]);
 const bAdd = await bob.push([
-  { table: "issues", kind: "patch", localId: issueLocalId, patch: { label_ids: { __lfSet: { add: ["label-B"], remove: [] } } } }
+  {
+    table: "issues",
+    kind: "patch",
+    localId: issueLocalId,
+    patch: { label_ids: { __lfSet: { add: ["label-B"], remove: [] } } },
+  },
 ]);
 assert(aAdd.rejected.length === 0, "alice's label-A add-delta accepted");
 assert(bAdd.rejected.length === 0, "bob's label-B add-delta accepted (member, shared write)");
 
 // Each accepted patch logs a MATERIALIZED array (pull stays delta-free).
-assert(Array.isArray(aAdd.changes[0]?.patch?.label_ids), "server logged a materialized array (not a delta) for alice's push");
+assert(
+  Array.isArray(aAdd.changes[0]?.patch?.label_ids),
+  "server logged a materialized array (not a delta) for alice's push",
+);
 
 // Fresh pull → BOTH labels survive (the data-loss fix, proven end-to-end).
 const after = await bob.pull(wsScope("mu-demo"));
@@ -132,13 +159,23 @@ assert(labels?.includes("label-B"), "bob's concurrent add SURVIVED (no clobber)"
 
 console.log("\n=== set-field merge: remove via delta ===");
 const rm = await alice.push([
-  { table: "issues", kind: "patch", localId: issueLocalId, patch: { label_ids: { __lfSet: { add: [], remove: ["base"] } } } }
+  {
+    table: "issues",
+    kind: "patch",
+    localId: issueLocalId,
+    patch: { label_ids: { __lfSet: { add: [], remove: ["base"] } } },
+  },
 ]);
 assert(rm.rejected.length === 0, "alice's remove-delta accepted");
 const afterRm = await alice.pull(wsScope("mu-demo"));
 const labels2 = labelsOf(afterRm.changes, issueLocalId);
 assert(!labels2?.includes("base"), "removed 'base' is gone");
-assert(labels2?.includes("label-A") && labels2?.includes("label-B"), "concurrent adds still present after the remove");
+assert(
+  labels2?.includes("label-A") && labels2?.includes("label-B"),
+  "concurrent adds still present after the remove",
+);
 
-console.log(failures === 0 ? "\n✅ set-merge converges on the real backend" : `\n❌ ${failures} failure(s)`);
+console.log(
+  failures === 0 ? "\n✅ set-merge converges on the real backend" : `\n❌ ${failures} failure(s)`,
+);
 process.exit(failures === 0 ? 0 : 1);

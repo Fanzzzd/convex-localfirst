@@ -9,11 +9,11 @@ const scope = lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable:
 
 const states = lf.table("states", {
   shape: { workspaceId: v.string(), name: v.string() },
-  scope
+  scope,
 });
 const labels = lf.table("labels", {
   shape: { workspaceId: v.string(), name: v.string() },
-  scope
+  scope,
 });
 const issues = lf.table("issues", {
   shape: {
@@ -21,14 +21,14 @@ const issues = lf.table("issues", {
     title: v.string(),
     priority: v.number(),
     stateId: v.optional(v.string()),
-    labelIds: v.array(v.string())
+    labelIds: v.array(v.string()),
   },
   scope,
   relations: {
     state: lf.one("states", "stateId"),
     labels: lf.many("labels", { via: "labelIds" }),
-    subIssues: lf.backref("issues", "parentId")
-  }
+    subIssues: lf.backref("issues", "parentId"),
+  },
 });
 
 const db = createLocalDb({ issues: { issues }, states: { states }, labels: { labels } });
@@ -84,7 +84,7 @@ test("createLocalDb infers rows, scopes, fields, and declared relation results",
   db.issues.filter({
     priority: { in: [1, 2], gte: 1 },
     labelIds: { contains: "bug", overlaps: ["urgent"] },
-    OR: [{ stateId: { eq: "open" } }, { NOT: { title: "Archived" } }]
+    OR: [{ stateId: { eq: "open" } }, { NOT: { title: "Archived" } }],
   });
   // @ts-expect-error scalar fields do not support array membership operators
   db.issues.filter({ priority: { contains: 1 } });
@@ -98,15 +98,23 @@ test("createLocalDb infers rows, scopes, fields, and declared relation results",
     ReadonlyMap<string | null, IssueRow[]> | undefined
   >();
   expectTypeOf(useLiveCounts(groupedPlan)).toEqualTypeOf<Record<string, number> | undefined>();
-  expectTypeOf(useLiveCounts(db.issues.scope({ workspaceId: "w1" }))).toEqualTypeOf<number | undefined>();
+  expectTypeOf(useLiveCounts(db.issues.scope({ workspaceId: "w1" }))).toEqualTypeOf<
+    number | undefined
+  >();
   // @ts-expect-error grouping is limited to declared shape fields
   db.issues.groupBy("missing");
 
-  const untyped = collection<{ stateId: string | null; priority: number; labelIds: string[] }>("issues")
+  const untyped = collection<{ stateId: string | null; priority: number; labelIds: string[] }>(
+    "issues",
+  )
     .filter({ priority: { gte: 1 }, labelIds: { contains: "bug" } })
     .groupBy("stateId");
   expectTypeOf(useLiveQuery(untyped)).toEqualTypeOf<
-    ReadonlyMap<string | null, Array<{ stateId: string | null; priority: number; labelIds: string[] }>> | undefined
+    | ReadonlyMap<
+        string | null,
+        Array<{ stateId: string | null; priority: number; labelIds: string[] }>
+      >
+    | undefined
   >();
   // @ts-expect-error untyped collection filters still follow their declared Row generic
   collection<{ priority: number }>("issues").filter({ priority: { in: ["high"] } });

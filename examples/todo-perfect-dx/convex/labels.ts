@@ -6,10 +6,10 @@ export const labels = lf.table("labels", {
   shape: {
     workspaceId: v.string(),
     name: v.string(),
-    color: v.string()
+    color: v.string(),
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
-  indexes: { byWorkspace: ["workspaceId", "name"] }
+  indexes: { byWorkspace: ["workspaceId", "name"] },
 });
 
 export const create = labels.insert();
@@ -19,10 +19,10 @@ export const issueLabels = lf.table("issue_labels", {
   shape: {
     workspaceId: v.string(),
     issueId: v.string(),
-    labelId: v.string()
+    labelId: v.string(),
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
-  indexes: { byWorkspace: ["workspaceId", "issueId"] }
+  indexes: { byWorkspace: ["workspaceId", "issueId"] },
 });
 
 export const link = issueLabels.insert();

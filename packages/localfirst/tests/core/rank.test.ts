@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isValidRank,
-  rankBetween,
-  rankCompare,
-  rebalance,
-} from "../../src/core/rank";
+import { isValidRank, rankBetween, rankCompare, rebalance } from "../../src/core/rank";
 
 describe("rankBetween basics", () => {
   it("rankBetween(null, null) is a valid rank", () => {
@@ -51,12 +46,8 @@ describe("rankBetween basics", () => {
   it("throws when a >= b", () => {
     const a = rankBetween(null, null);
     const b = rankBetween(a, null);
-    expect(() => rankBetween(b, a)).toThrow(
-      "rankBetween: a must be strictly less than b",
-    );
-    expect(() => rankBetween(a, a)).toThrow(
-      "rankBetween: a must be strictly less than b",
-    );
+    expect(() => rankBetween(b, a)).toThrow("rankBetween: a must be strictly less than b");
+    expect(() => rankBetween(a, a)).toThrow("rankBetween: a must be strictly less than b");
   });
 });
 
@@ -73,7 +64,6 @@ describe("adversarial sequences", () => {
       maxLen = Math.max(maxLen, first.length);
     }
     expect(first.length).toBeLessThan(500);
-    // eslint-disable-next-line no-console
     console.log("[rank.test] head-insert max length:", maxLen);
   });
 
@@ -97,7 +87,6 @@ describe("adversarial sequences", () => {
     // ~100-105 chars for 500 iterations; 200 is a generous bound that still
     // catches genuinely pathological (e.g. exponential) growth.
     expect(last.length).toBeLessThan(200);
-    // eslint-disable-next-line no-console
     console.log("[rank.test] tail-insert max length:", maxLen);
   });
 
@@ -128,7 +117,6 @@ describe("adversarial sequences", () => {
     }
     expect(rankCompare(lo, list[list.length - 1])).toBeLessThan(0);
 
-    // eslint-disable-next-line no-console
     console.log("[rank.test] mid-insert max length:", maxLen);
   });
 
@@ -149,23 +137,20 @@ describe("adversarial sequences", () => {
 });
 
 describe("rebalance", () => {
-  it.each([0, 1, 2, 5, 50])(
-    "produces %d strictly ascending, valid, short ranks",
-    (n) => {
-      const input = Array.from({ length: n }, (_, i) => `dummy-${i}`);
-      const result = rebalance(input);
-      expect(result.length).toBe(n);
+  it.each([0, 1, 2, 5, 50])("produces %d strictly ascending, valid, short ranks", (n) => {
+    const input = Array.from({ length: n }, (_, i) => `dummy-${i}`);
+    const result = rebalance(input);
+    expect(result.length).toBe(n);
 
-      for (const r of result) {
-        expect(isValidRank(r)).toBe(true);
-        expect(r.length).toBeLessThan(12);
-      }
+    for (const r of result) {
+      expect(isValidRank(r)).toBe(true);
+      expect(r.length).toBeLessThan(12);
+    }
 
-      for (let i = 1; i < result.length; i++) {
-        expect(rankCompare(result[i - 1], result[i])).toBeLessThan(0);
-      }
-    },
-  );
+    for (let i = 1; i < result.length; i++) {
+      expect(rankCompare(result[i - 1], result[i])).toBeLessThan(0);
+    }
+  });
 
   it("returns [] for empty input", () => {
     expect(rebalance([])).toEqual([]);

@@ -7,11 +7,14 @@ import type {
   RowValue,
   ScopeKey,
   ServerChange,
-  TableName
+  TableName,
 } from "./types.js";
 
 export type StoreListener = () => void;
 export type StoreUnsubscribe = () => void;
+
+/** Statuses a local store still owes the server — the filter for getPendingOperations. */
+export const OWED_STATUSES: ReadonlySet<OperationStatus> = new Set(["pending", "pushing"]);
 
 /**
  * A durable attachment blob in the local outbox (see AttachmentManager). Keyed by
@@ -88,7 +91,7 @@ export type LocalStore = {
     field: string,
     value: unknown,
     keepIds?: ReadonlySet<LocalId>,
-    expectedEpoch?: number
+    expectedEpoch?: number,
   ): Promise<void>;
 
   /** Forget a scope's cursor entirely (revocation): a later re-grant must

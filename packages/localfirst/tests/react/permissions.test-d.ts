@@ -19,8 +19,8 @@ const issues = lf.table("issues", {
       expectTypeOf(proposed).toEqualTypeOf<IssueRow | null>();
       expectTypeOf(action).toEqualTypeOf<"insert" | "patch" | "delete">();
       return true;
-    }
-  }
+    },
+  },
 });
 
 const modules = { issues: { issues } };
@@ -56,7 +56,7 @@ test("ClientCanConfig is generic over Row and Role", () => {
       expectTypeOf(before).toEqualTypeOf<IssueRow | null>();
       expectTypeOf(patch).toEqualTypeOf<Record<string, unknown> | undefined>();
       return role >= 15;
-    }
+    },
   };
   void mirror;
 });

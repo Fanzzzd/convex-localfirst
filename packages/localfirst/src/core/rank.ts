@@ -8,8 +8,7 @@
  * No imports, no dependencies — pure functions only.
  */
 
-const ALPHABET =
-  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const N = ALPHABET.length; // 62
 
 function idx(ch: string): number {
@@ -125,14 +124,9 @@ export function rankBetween(a: string | null, b: string | null): string {
 export function rebalance(ranks: readonly string[]): string[] {
   const n = ranks.length;
   if (n === 0) return [];
-  const out = new Array<string>(n);
+  const out = Array.from<string>({ length: n });
 
-  function fill(
-    lo: number,
-    hi: number,
-    low: string | null,
-    high: string | null,
-  ): void {
+  function fill(lo: number, hi: number, low: string | null, high: string | null): void {
     if (lo > hi) return;
     const mid = (lo + hi) >> 1;
     const key = between(low, high);

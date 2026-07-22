@@ -16,7 +16,7 @@ const dataUri = `data:application/json;base64,${Buffer.from(jwks).toString("base
 const src = readFileSync(CONFIG, "utf8");
 const next = src.replace(
   /(JWKS-DATA-URI-START[\s\S]*?JWKS_DATA_URI =\s*")[^"]*(";)/,
-  `$1${dataUri}$2`
+  `$1${dataUri}$2`,
 );
 if (next === src) {
   console.error("FAILED: could not find JWKS_DATA_URI block in auth.config.ts");

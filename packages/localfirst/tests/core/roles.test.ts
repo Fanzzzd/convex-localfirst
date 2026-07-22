@@ -9,7 +9,7 @@ import {
   type LocalFirstManifest,
   type PullResponse,
   type PushResponse,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core";
 import { LocalFirstEngine } from "../../src/core/internal";
 
@@ -19,7 +19,7 @@ type DocRow = { workspace_id: string; title: string; created_by: string } & Reco
 
 // A viewer read-only mirror: members (role >= 15) write; viewers (role 10) are read-only.
 const docsClientCan: ClientCanConfig<DocRow, number> = {
-  write: ({ role }) => (role as number) >= 15
+  write: ({ role }) => (role as number) >= 15,
 };
 
 function docsManifest(): LocalFirstManifest {
@@ -31,8 +31,8 @@ function docsManifest(): LocalFirstManifest {
         idField: "id",
         scope: byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "ws_members" }),
         indexes: { byWorkspace: ["workspace_id"] },
-        clientCan: docsClientCan as ClientCanConfig
-      })
+        clientCan: docsClientCan as ClientCanConfig,
+      }),
     },
     queries: {},
     mutations: {
@@ -45,22 +45,34 @@ function docsManifest(): LocalFirstManifest {
           kind: "insert",
           table: "docs",
           id: ctx.localId("docs"),
-          value: { workspace_id: args.workspace_id, title: args.title, created_by: ctx.userId ?? "anon" }
-        })
+          value: {
+            workspace_id: args.workspace_id,
+            title: args.title,
+            created_by: ctx.userId ?? "anon",
+          },
+        }),
       }),
       "docs:rename": localMutation<{ id: string; title: string }>({
         kind: "mutation",
         name: "docs:rename",
         table: "docs",
         operationKind: "patch",
-        plan: (args) => ({ kind: "patch", table: "docs", id: args.id, patch: { title: args.title } })
-      })
-    }
+        plan: (args) => ({
+          kind: "patch",
+          table: "docs",
+          id: args.id,
+          patch: { title: args.title },
+        }),
+      }),
+    },
   });
 }
 
 /** Pull transport delivering a configurable per-scope role map (and optional denials). */
-function rolePullTransport(state: { roles?: Record<string, unknown>; denied?: string[] }): SyncTransport {
+function rolePullTransport(state: {
+  roles?: Record<string, unknown>;
+  denied?: string[];
+}): SyncTransport {
   return {
     async push(request): Promise<PushResponse> {
       return {
@@ -68,7 +80,7 @@ function rolePullTransport(state: { roles?: Record<string, unknown>; denied?: st
         rejected: [],
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull(): Promise<PullResponse> {
@@ -77,9 +89,9 @@ function rolePullTransport(state: { roles?: Record<string, unknown>; denied?: st
         cursors: { "byWorkspace:w1": "1" },
         serverTime: 1,
         roles: state.roles,
-        deniedScopes: state.denied
+        deniedScopes: state.denied,
       };
-    }
+    },
   };
 }
 
@@ -96,7 +108,7 @@ function makeEngine(store: MemoryLocalStore, transport: SyncTransport): LocalFir
       let now = 1000;
       return () => now++;
     })(),
-    sleep: () => Promise.resolve()
+    sleep: () => Promise.resolve(),
   });
 }
 
@@ -152,20 +164,34 @@ describe("client write mirror — engine.can (DX v4 §6)", () => {
     const store = new MemoryLocalStore();
     const viewer = makeEngine(store, rolePullTransport({ roles: { "byWorkspace:w1": 10 } }));
     await viewer.syncOnce([wsScope]);
-    expect(viewer.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: { ...member, title: "y" } })).toBe(false);
+    expect(
+      viewer.can("docs", "patch", {
+        before: member,
+        patch: { title: "y" },
+        proposed: { ...member, title: "y" },
+      }),
+    ).toBe(false);
     expect(viewer.can("docs", "insert", { proposed: member })).toBe(false);
 
     const store2 = new MemoryLocalStore();
     const admin = makeEngine(store2, rolePullTransport({ roles: { "byWorkspace:w1": 15 } }));
     await admin.syncOnce([wsScope]);
-    expect(admin.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: { ...member, title: "y" } })).toBe(true);
+    expect(
+      admin.can("docs", "patch", {
+        before: member,
+        patch: { title: "y" },
+        proposed: { ...member, title: "y" },
+      }),
+    ).toBe(true);
   });
 
   it("returns true when the role is not synced yet (advisory)", () => {
     const store = new MemoryLocalStore();
     const engine = makeEngine(store, rolePullTransport({}));
     // No pull → role undefined → the mirror is NOT called → advisory true.
-    expect(engine.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: member })).toBe(true);
+    expect(
+      engine.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: member }),
+    ).toBe(true);
   });
 
   it("returns true when the table declares no mirror", async () => {
@@ -173,7 +199,7 @@ describe("client write mirror — engine.can (DX v4 §6)", () => {
     const manifest = docsManifest();
     const noMirror: LocalFirstManifest = {
       ...manifest,
-      tables: { docs: { ...manifest.tables.docs!, clientCan: undefined } }
+      tables: { docs: { ...manifest.tables.docs!, clientCan: undefined } },
     };
     const store = new MemoryLocalStore();
     const engine = new LocalFirstEngine({
@@ -184,10 +210,12 @@ describe("client write mirror — engine.can (DX v4 §6)", () => {
       transport: rolePullTransport({ roles: { "byWorkspace:w1": 10 } }),
       nameOf: (r) => String(r),
       idFactory: () => "docs_x",
-      sleep: () => Promise.resolve()
+      sleep: () => Promise.resolve(),
     });
     await engine.syncOnce([wsScope]);
     // Even a viewer (10) passes: no mirror declared → advisory true.
-    expect(engine.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: member })).toBe(true);
+    expect(
+      engine.can("docs", "patch", { before: member, patch: { title: "y" }, proposed: member }),
+    ).toBe(true);
   });
 });

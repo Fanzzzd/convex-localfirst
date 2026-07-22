@@ -5,5 +5,5 @@ import { loader } from "fumadocs-core/source";
 // bundler also honors). fumadocs-mdx generates `.source/server.ts`.
 export const source = loader({
   baseUrl: "/docs",
-  source: docs.toFumadocsSource()
+  source: docs.toFumadocsSource(),
 });

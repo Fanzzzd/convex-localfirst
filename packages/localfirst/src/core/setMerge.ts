@@ -8,7 +8,9 @@
  */
 
 /** A patch field carrying a set delta instead of a replacement value. */
-export type SetDelta = { readonly __lfSet: { readonly add: readonly unknown[]; readonly remove: readonly unknown[] } };
+export type SetDelta = {
+  readonly __lfSet: { readonly add: readonly unknown[]; readonly remove: readonly unknown[] };
+};
 
 /**
  * Counter-field merge: convergent add/subtract for numeric fields declared as counters
@@ -93,7 +95,10 @@ export function applySetDelta(current: unknown, delta: SetDelta["__lfSet"]): unk
  * to the current field value (set merge); every other field overwrites (field-level LWW).
  * This is the single shared apply rule used by the client view/replay AND the server.
  */
-export function mergePatch<T extends Record<string, unknown>>(current: T, patch: Record<string, unknown>): T {
+export function mergePatch<T extends Record<string, unknown>>(
+  current: T,
+  patch: Record<string, unknown>,
+): T {
   const next = { ...current } as Record<string, unknown>;
   for (const [field, value] of Object.entries(patch)) {
     next[field] = isSetDelta(value)

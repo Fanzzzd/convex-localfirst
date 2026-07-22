@@ -51,13 +51,15 @@ function clientFor(subject, { envelopeUserId } = {}) {
           opId: m.opId ?? randomUUID(),
           clientId,
           schemaVersion: SCHEMA_VERSION,
-          functionName: m.functionName ?? `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
+          functionName:
+            m.functionName ??
+            `${m.table}:${m.kind === "insert" ? "create" : m.kind === "patch" ? "update" : "remove"}`,
           table: m.table,
           kind: m.kind,
           localId: m.localId,
           value: m.value,
-          patch: m.patch
-        }))
+          patch: m.patch,
+        })),
       });
     },
     // Drains ALL pages (follows `hasMore` via the returned cursors) exactly like
@@ -72,15 +74,15 @@ function clientFor(subject, { envelopeUserId } = {}) {
           userId: envUser,
           schemaVersion: SCHEMA_VERSION,
           scopes,
-          cursors: merged
+          cursors: merged,
         });
         all.push(...r.changes);
-        merged = { ...merged, ...r.cursors };
+        Object.assign(merged, r.cursors);
         last = r;
         if (!Object.values(r.hasMore ?? {}).some(Boolean)) break;
       }
       return { ...last, changes: all, cursors: merged };
-    }
+    },
   };
 }
 
@@ -93,7 +95,13 @@ function projectInsert(localId, workspace, name) {
     table: "projects",
     kind: "insert",
     localId,
-    value: { workspace, name, identifier: name.slice(0, 4).toUpperCase(), created_at: ts, updated_at: ts }
+    value: {
+      workspace,
+      name,
+      identifier: name.slice(0, 4).toUpperCase(),
+      created_at: ts,
+      updated_at: ts,
+    },
   };
 }
 function issueInsert(localId, workspace_id, project_id, name) {
@@ -111,8 +119,8 @@ function issueInsert(localId, workspace_id, project_id, name) {
       assignee_ids: [],
       created_at: ts,
       updated_at: ts,
-      created_by: "ignored-server-sets-scope"
-    }
+      created_by: "ignored-server-sets-scope",
+    },
   };
 }
 
@@ -126,32 +134,52 @@ const projLocalId = `proj-${uid}`;
 const issueLocalId = `issue-${uid}`;
 const aliceProjectPush = await alice.push([
   projectInsert(projLocalId, "mu-demo", `Shared ${uid}`),
-  issueInsert(issueLocalId, "mu-demo", projLocalId, `Issue by alice ${uid}`)
+  issueInsert(issueLocalId, "mu-demo", projLocalId, `Issue by alice ${uid}`),
 ]);
-assert(aliceProjectPush.rejected.length === 0, "alice's project+issue inserts in 'mu-demo' accepted");
+assert(
+  aliceProjectPush.rejected.length === 0,
+  "alice's project+issue inserts in 'mu-demo' accepted",
+);
 assert(aliceProjectPush.accepted.length === 2, "two ops accepted for alice");
 
 // bob (member of mu-demo) pulls 'demo' and SEES alice's rows.
 const bobPull1 = await bob.pull(wsScope("mu-demo"));
-const bobSeesProject = bobPull1.changes.some((c) => c.localId === projLocalId && c.table === "projects");
-const bobSeesIssue = bobPull1.changes.some((c) => c.localId === issueLocalId && c.table === "issues");
+const bobSeesProject = bobPull1.changes.some(
+  (c) => c.localId === projLocalId && c.table === "projects",
+);
+const bobSeesIssue = bobPull1.changes.some(
+  (c) => c.localId === issueLocalId && c.table === "issues",
+);
 assert(bobSeesProject, "bob (member) pulled alice's project from 'mu-demo'");
 assert(bobSeesIssue, "bob (member) pulled alice's issue from 'mu-demo'");
 const issueChange = bobPull1.changes.find((c) => c.localId === issueLocalId);
-assert(issueChange?.data?.name === `Issue by alice ${uid}`, "bob sees the issue's name as alice wrote it");
+assert(
+  issueChange?.data?.name === `Issue by alice ${uid}`,
+  "bob sees the issue's name as alice wrote it",
+);
 
 // bob edits the issue (patch). bob is a member -> allowed.
 const bobEdit = await bob.push([
-  { table: "issues", kind: "patch", localId: issueLocalId, patch: { name: `Edited by bob ${uid}`, priority: "high" } }
+  {
+    table: "issues",
+    kind: "patch",
+    localId: issueLocalId,
+    patch: { name: `Edited by bob ${uid}`, priority: "high" },
+  },
 ]);
 assert(bobEdit.rejected.length === 0, "bob's patch of alice's issue accepted (shared write)");
 
 // alice pulls again (from where she left off) and SEES bob's edit.
 const aliceCursor = aliceProjectPush.changes.length
-  ? { [`byWorkspace:mu-demo`]: aliceProjectPush.changes[aliceProjectPush.changes.length - 1].changeId }
+  ? {
+      [`byWorkspace:mu-demo`]:
+        aliceProjectPush.changes[aliceProjectPush.changes.length - 1].changeId,
+    }
   : {};
 const alicePull = await alice.pull(wsScope("mu-demo"), aliceCursor);
-const seesEdit = alicePull.changes.some((c) => c.localId === issueLocalId && c.patch?.name === `Edited by bob ${uid}`);
+const seesEdit = alicePull.changes.some(
+  (c) => c.localId === issueLocalId && c.patch?.name === `Edited by bob ${uid}`,
+);
 assert(seesEdit, "alice pulled bob's edit to the issue (round-trip across two real users)");
 
 // ----------------------------------------------------------------------------
@@ -159,31 +187,39 @@ console.log("\n=== 3b. Scope isolation (I7): 'alice-only' ===");
 // alice CAN read+write alice-only.
 const aliceOnlyProj = `proj-ao-${uid}`;
 const aliceOnlyPush = await alice.push([projectInsert(aliceOnlyProj, "alice-only", `AO ${uid}`)]);
-assert(aliceOnlyPush.rejected.length === 0, "alice's insert into 'alice-only' accepted (she is a member)");
+assert(
+  aliceOnlyPush.rejected.length === 0,
+  "alice's insert into 'alice-only' accepted (she is a member)",
+);
 const alicePullAO = await alice.pull(wsScope("alice-only"));
 assert(
   alicePullAO.changes.some((c) => c.localId === aliceOnlyProj),
-  "alice pulled her own row from 'alice-only'"
+  "alice pulled her own row from 'alice-only'",
 );
 
 // bob CANNOT read alice-only (membership denied -> scope skipped, 0 changes).
 const bobPullAO = await bob.pull(wsScope("alice-only"));
-assert(bobPullAO.changes.length === 0, "bob's pull of 'alice-only' returned ZERO changes (read denied)");
+assert(
+  bobPullAO.changes.length === 0,
+  "bob's pull of 'alice-only' returned ZERO changes (read denied)",
+);
 
 // bob CANNOT write alice-only (insert rejected: "Not a member of the target scope").
-const bobWriteAO = await bob.push([projectInsert(`proj-ao-bob-${uid}`, "alice-only", `Bob AO ${uid}`)]);
+const bobWriteAO = await bob.push([
+  projectInsert(`proj-ao-bob-${uid}`, "alice-only", `Bob AO ${uid}`),
+]);
 assert(bobWriteAO.accepted.length === 0, "bob's insert into 'alice-only' NOT accepted");
 assert(
   bobWriteAO.rejected.length === 1 && /member/i.test(bobWriteAO.rejected[0].message),
-  `bob's write to 'alice-only' rejected as non-member (msg: ${bobWriteAO.rejected[0]?.message})`
+  `bob's write to 'alice-only' rejected as non-member (msg: ${bobWriteAO.rejected[0]?.message})`,
 );
 // bob also cannot reach alice's row by patching it (cross-scope patch is denied).
 const bobPatchAO = await bob.push([
-  { table: "projects", kind: "patch", localId: aliceOnlyProj, patch: { name: "hijacked" } }
+  { table: "projects", kind: "patch", localId: aliceOnlyProj, patch: { name: "hijacked" } },
 ]);
 assert(
   bobPatchAO.accepted.length === 0 && bobPatchAO.rejected.length === 1,
-  `bob's patch of alice-only project rejected (msg: ${bobPatchAO.rejected[0]?.message})`
+  `bob's patch of alice-only project rejected (msg: ${bobPatchAO.rejected[0]?.message})`,
 );
 
 // ----------------------------------------------------------------------------
@@ -197,17 +233,29 @@ console.log("\n=== 3c. Server-authoritative identity (auth token id wins over cl
 //      forged userId:"alice", bob would be let into alice-only. He is NOT ->
 //      proves the JWT subject (bob), not the client userId, decides access.
 const bobForging = clientFor("bob", { envelopeUserId: "alice" });
-const forgeDemo = await bobForging.push([projectInsert(`proj-forge-${uid}`, "mu-demo", `Forge ${uid}`)]);
-assert(forgeDemo.rejected.length === 0, "forging client (auth=bob, envelope userId=alice) can write 'mu-demo' (bob is a member)");
+const forgeDemo = await bobForging.push([
+  projectInsert(`proj-forge-${uid}`, "mu-demo", `Forge ${uid}`),
+]);
+assert(
+  forgeDemo.rejected.length === 0,
+  "forging client (auth=bob, envelope userId=alice) can write 'mu-demo' (bob is a member)",
+);
 
-const forgeAO = await bobForging.push([projectInsert(`proj-forge-ao-${uid}`, "alice-only", `ForgeAO ${uid}`)]);
+const forgeAO = await bobForging.push([
+  projectInsert(`proj-forge-ao-${uid}`, "alice-only", `ForgeAO ${uid}`),
+]);
 assert(
   forgeAO.accepted.length === 0 && /member/i.test(forgeAO.rejected[0]?.message ?? ""),
-  "forging client DENIED 'alice-only' despite envelope userId='alice' -> auth token id (bob) wins, client cannot forge identity (I7)"
+  "forging client DENIED 'alice-only' despite envelope userId='alice' -> auth token id (bob) wins, client cannot forge identity (I7)",
 );
 const forgeAOPull = await bobForging.pull(wsScope("alice-only"));
-assert(forgeAOPull.changes.length === 0, "forging client pulls ZERO from 'alice-only' (read uses auth token id for bob, not forged userId)");
+assert(
+  forgeAOPull.changes.length === 0,
+  "forging client pulls ZERO from 'alice-only' (read uses auth token id for bob, not forged userId)",
+);
 
 // ----------------------------------------------------------------------------
-console.log(`\n${failures === 0 ? "ALL MULTI-USER ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}`);
+console.log(
+  `\n${failures === 0 ? "ALL MULTI-USER ASSERTIONS PASSED" : `${failures} ASSERTION(S) FAILED`}`,
+);
 process.exit(failures === 0 ? 0 : 1);

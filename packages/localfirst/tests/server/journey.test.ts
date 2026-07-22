@@ -8,7 +8,7 @@ import {
   localQuery,
   localTable,
   type RowValue,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 import { LocalFirstEngine } from "../../src/core/internal.js";
 import {
@@ -18,7 +18,7 @@ import {
   type ServerOperation,
   type ServerStore,
   type StoredChange,
-  type SyncConfig
+  type SyncConfig,
 } from "../../src/server/serverSync";
 
 // =============================================================================
@@ -53,7 +53,7 @@ class MemoryServerStore implements ServerStore {
     return serverId;
   }
   async patchRow(table: string, serverId: string, patch: Record<string, unknown>) {
-    this.table(table).set(serverId, { ...(this.table(table).get(serverId) ?? {}), ...patch });
+    this.table(table).set(serverId, { ...this.table(table).get(serverId), ...patch });
   }
   async deleteRow(table: string, serverId: string) {
     this.table(table).delete(serverId);
@@ -65,7 +65,7 @@ class MemoryServerStore implements ServerStore {
     userId: string,
     op: ServerOperation,
     entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
-    change?: Omit<StoredChange, "changeId">
+    change?: Omit<StoredChange, "changeId">,
   ) {
     let stored: StoredChange | null = null;
     if (change) {
@@ -75,7 +75,7 @@ class MemoryServerStore implements ServerStore {
     this.ledger.set(`${userId}:${op.opId}`, {
       ...entry,
       schemaVersion: op.schemaVersion,
-      changes: stored ? [stored] : undefined
+      changes: stored ? [stored] : undefined,
     });
     return stored;
   }
@@ -115,11 +115,14 @@ const config: SyncConfig = {
       scope: byUser("ownerId"),
       idField: "localId",
       mutations: {
-        "todos:create": { kind: "insert", fields: ["ownerId", "localId", "listId", "text", "done"] },
-        "todos:toggle": { kind: "patch", fields: ["done"] }
-      }
-    }
-  }
+        "todos:create": {
+          kind: "insert",
+          fields: ["ownerId", "localId", "listId", "text", "done"],
+        },
+        "todos:toggle": { kind: "patch", fields: ["done"] },
+      },
+    },
+  },
 };
 
 type Todo = { localId: string; listId: string; text: string; done: boolean };
@@ -128,8 +131,18 @@ function manifest() {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      todos: localTable({ table: "todos", idField: "localId", scope: byUser("ownerId"), indexes: {} }),
-      drafts: localTable({ table: "drafts", idField: "localId", scope: byUser("ownerId"), indexes: {} })
+      todos: localTable({
+        table: "todos",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
+      drafts: localTable({
+        table: "drafts",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly RowValue[]>({
@@ -137,29 +150,44 @@ function manifest() {
         name: "todos:list",
         table: "todos",
         initial: [],
-        run: (rows, args) => rows.filter((r) => r.listId === args.listId)
-      })
+        run: (rows, args) => rows.filter((r) => r.listId === args.listId),
+      }),
     },
     mutations: {
       "todos:create": localMutation<Todo>({
         kind: "mutation",
         name: "todos:create",
         table: "todos",
-        plan: (args) => ({ kind: "insert", table: "todos", id: args.localId, value: { ownerId: "u_j", ...args } })
+        plan: (args) => ({
+          kind: "insert",
+          table: "todos",
+          id: args.localId,
+          value: { ownerId: "u_j", ...args },
+        }),
       }),
       "todos:toggle": localMutation<{ localId: string; done: boolean }>({
         kind: "mutation",
         name: "todos:toggle",
         table: "todos",
-        plan: (args) => ({ kind: "patch", table: "todos", id: args.localId, patch: { done: args.done } })
+        plan: (args) => ({
+          kind: "patch",
+          table: "todos",
+          id: args.localId,
+          patch: { done: args.done },
+        }),
       }),
       "drafts:create": localMutation<{ localId: string; text: string }>({
         kind: "mutation",
         name: "drafts:create",
         table: "drafts",
-        plan: (args) => ({ kind: "insert", table: "drafts", id: args.localId, value: { ownerId: "u_j", ...args } })
-      })
-    }
+        plan: (args) => ({
+          kind: "insert",
+          table: "drafts",
+          id: args.localId,
+          value: { ownerId: "u_j", ...args },
+        }),
+      }),
+    },
   });
 }
 
@@ -177,13 +205,19 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
       mutation: async (_ref: unknown, args: Record<string, unknown>) =>
         handlePush(server, config, args as never),
       query: async (_ref: unknown, args: Record<string, unknown>) =>
-        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} })
+        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} }),
     };
     const gate = (clientId: string): SyncTransport => {
-      const real = createConvexTransport({ client, push: "PUSH", pull: "PULL", clientId, userId: USER });
+      const real = createConvexTransport({
+        client,
+        push: "PUSH",
+        pull: "PULL",
+        clientId,
+        userId: USER,
+      });
       return {
         push: (r) => (net.online ? real.push(r) : Promise.reject(new Error("offline"))),
-        pull: (r) => (net.online ? real.pull(r) : Promise.reject(new Error("offline")))
+        pull: (r) => (net.online ? real.pull(r) : Promise.reject(new Error("offline"))),
       };
     };
 
@@ -196,7 +230,7 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
         userId: USER,
         transport: gate("client_a"),
         nameOf: (r) => String(r),
-        sleep: noSleep
+        sleep: noSleep,
       });
     let engineA = newEngineA();
 
@@ -206,17 +240,19 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
       localId: "t1",
       listId: "inbox",
       text: "Write the e2e test",
-      done: false
+      done: false,
     });
     await call.local; // local durable write resolves
     await expect(call.server).rejects.toThrow(/offline/); // server push fails while offline
-    let rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    let rows =
+      (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(rows.map((r) => r.text)).toEqual(["Write the e2e test"]);
     expect(engineA.getStatus().pendingMutations).toBe(1);
 
     // --- Step 2: "reload" → new engine on the SAME store → todo survives, still pending. ---
     engineA = newEngineA();
-    rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    rows =
+      (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(rows).toHaveLength(1);
     // Ground truth: the durable outbox entry survived the reload (I3 durability).
     expect(await engineA.store.getPendingOperations()).toHaveLength(1);
@@ -235,10 +271,11 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
       userId: USER,
       transport: gate("client_b"),
       nameOf: (r) => String(r),
-      sleep: noSleep
+      sleep: noSleep,
     });
     await engineB.syncOnce([SCOPE]);
-    let bRows = (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    let bRows =
+      (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(bRows.map((r) => r.text)).toEqual(["Write the e2e test"]);
 
     // --- Step 5: re-push the SAME op → idempotent (server ledger dedupes, no duplicate). ---
@@ -255,24 +292,32 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
           table: "todos",
           kind: "insert",
           localId: "t1",
-          value: { ownerId: USER, localId: "t1", listId: "inbox", text: "Write the e2e test", done: false }
-        }
-      ]
+          value: {
+            ownerId: USER,
+            localId: "t1",
+            listId: "inbox",
+            text: "Write the e2e test",
+            done: false,
+          },
+        },
+      ],
     });
     await engineB.syncOnce([SCOPE]);
-    bRows = (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    bRows =
+      (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(bRows).toHaveLength(1); // still exactly one — no duplicate
 
     // --- Step 6: force a conflict → queryable rejected status, no crash, todos intact. ---
     const bad = engineA.mutate<{ localId: string; text: string }, unknown>("drafts:create", {
       localId: "d1",
-      text: "into a table the server does not know"
+      text: "into a table the server does not know",
     });
     await bad.local;
     await expect(bad.server).rejects.toThrow(/unknownFunction/);
     expect(bad.status().status).toBe("rejected");
     // The rest of the app is unaffected — todos still query cleanly.
-    rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    rows =
+      (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(rows).toHaveLength(1);
 
     // --- Step 7: an ordinary (non-local-first) function is NOT local → React falls through to Convex. ---
@@ -281,7 +326,8 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
 
     // --- Step 8: logout → local namespace cleared. ---
     await engineA.store.clear();
-    rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    rows =
+      (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(rows).toHaveLength(0);
     expect(await engineA.store.getPendingOperations()).toHaveLength(0);
   });
@@ -290,15 +336,22 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
     const server = new MemoryServerStore();
     const net = { online: true };
     const client = {
-      mutation: async (_ref: unknown, args: Record<string, unknown>) => handlePush(server, config, args as never),
+      mutation: async (_ref: unknown, args: Record<string, unknown>) =>
+        handlePush(server, config, args as never),
       query: async (_ref: unknown, args: Record<string, unknown>) =>
-        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} })
+        handlePull(server, config, { ...(args as never), cursors: (args.cursors as never) ?? {} }),
     };
     const gate = (clientId: string): SyncTransport => {
-      const real = createConvexTransport({ client, push: "PUSH", pull: "PULL", clientId, userId: USER });
+      const real = createConvexTransport({
+        client,
+        push: "PUSH",
+        pull: "PULL",
+        clientId,
+        userId: USER,
+      });
       return {
         push: (r) => (net.online ? real.push(r) : Promise.reject(new Error("offline"))),
-        pull: (r) => (net.online ? real.pull(r) : Promise.reject(new Error("offline")))
+        pull: (r) => (net.online ? real.pull(r) : Promise.reject(new Error("offline"))),
       };
     };
     const storeA = new MemoryLocalStore();
@@ -310,7 +363,7 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
         userId: USER,
         transport: gate("client_a"),
         nameOf: (r) => String(r),
-        sleep: noSleep
+        sleep: noSleep,
       });
     let engineA = newEngineA();
 
@@ -318,12 +371,26 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
     // group that must land or reject together.
     net.online = false;
     const batch = engineA.batch(() => {
-      engineA.mutate<Todo, unknown>("todos:create", { localId: "t1", listId: "inbox", text: "one", done: false });
-      engineA.mutate<Todo, unknown>("todos:create", { localId: "t2", listId: "inbox", text: "two", done: false });
-      engineA.mutate<{ localId: string; done: boolean }, unknown>("todos:toggle", { localId: "t1", done: true });
+      engineA.mutate<Todo, unknown>("todos:create", {
+        localId: "t1",
+        listId: "inbox",
+        text: "one",
+        done: false,
+      });
+      engineA.mutate<Todo, unknown>("todos:create", {
+        localId: "t2",
+        listId: "inbox",
+        text: "two",
+        done: false,
+      });
+      engineA.mutate<{ localId: string; done: boolean }, unknown>("todos:toggle", {
+        localId: "t1",
+        done: true,
+      });
     });
     await batch.local;
-    let rows = (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    let rows =
+      (await engineA.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(rows).toHaveLength(2);
     expect(rows.find((r) => r.localId === "t1")?.done).toBe(true);
 
@@ -349,10 +416,11 @@ describe("DoD §2 end-to-end journey (two real engines over the real transport)"
       userId: USER,
       transport: gate("client_b"),
       nameOf: (r) => String(r),
-      sleep: noSleep
+      sleep: noSleep,
     });
     await engineB.syncOnce([SCOPE]);
-    const bRows = (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
+    const bRows =
+      (await engineB.query<{ listId: string }, Todo[]>("todos:list", { listId: "inbox" })) ?? [];
     expect(bRows).toHaveLength(2);
     expect(bRows.find((r) => r.localId === "t1")?.done).toBe(true);
   });

@@ -45,13 +45,17 @@ const palette = {
   accent: "#7c5cff",
   good: "#37b26b",
   warn: "#d8a13a",
-  bad: "#e05563"
+  bad: "#e05563",
 };
 
 const monospace = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
 
-type ScopeRow = Awaited<ReturnType<import("../core/index.js").LocalFirstEngine["debugScopes"]>>[number];
-type OutboxRow = Awaited<ReturnType<import("../core/index.js").LocalFirstEngine["debugOutbox"]>>[number];
+type ScopeRow = Awaited<
+  ReturnType<import("../core/index.js").LocalFirstEngine["debugScopes"]>
+>[number];
+type OutboxRow = Awaited<
+  ReturnType<import("../core/index.js").LocalFirstEngine["debugOutbox"]>
+>[number];
 type StorageData = Awaited<ReturnType<import("../core/index.js").LocalFirstEngine["debugStorage"]>>;
 type QueryRow = ReturnType<import("../core/index.js").LocalFirstEngine["debugQueries"]>[number];
 
@@ -68,7 +72,11 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
   // Live status (push-notified) — re-render on any status/role/undo transition.
   React.useEffect(() => {
     if (!engine) return;
-    const unsubs = [engine.subscribeStatus(forceRender), engine.subscribeRoles(forceRender), engine.subscribeUndo(forceRender)];
+    const unsubs = [
+      engine.subscribeStatus(forceRender),
+      engine.subscribeRoles(forceRender),
+      engine.subscribeUndo(forceRender),
+    ];
     return () => unsubs.forEach((u) => u());
   }, [engine]);
 
@@ -80,7 +88,7 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
       const [nextScopes, nextOutbox, nextStorage] = await Promise.all([
         engine.debugScopes(),
         engine.debugOutbox(),
-        engine.debugStorage()
+        engine.debugStorage(),
       ]);
       if (!alive) return;
       setScopes(nextScopes);
@@ -108,7 +116,7 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
     zIndex: 2147483000,
     fontFamily: monospace,
     fontSize: 12,
-    color: palette.text
+    color: palette.text,
   };
 
   if (!open) {
@@ -124,10 +132,12 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
             border: `1px solid ${palette.border}`,
             display: "flex",
             alignItems: "center",
-            gap: 6
+            gap: 6,
           }}
         >
-          <Dot color={status.online ? (status.syncing ? palette.warn : palette.good) : palette.bad} />
+          <Dot
+            color={status.online ? (status.syncing ? palette.warn : palette.good) : palette.bad}
+          />
           <span>local-first</span>
           {pending > 0 && <Badge>{pending}</Badge>}
         </button>
@@ -147,13 +157,32 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
           border: `1px solid ${palette.border}`,
           borderRadius: 8,
           boxShadow: "0 8px 30px rgba(0,0,0,0.5)",
-          overflow: "hidden"
+          overflow: "hidden",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: `1px solid ${palette.border}`, background: palette.panel }}>
-          <Dot color={status.online ? (status.syncing ? palette.warn : palette.good) : palette.bad} />
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 10px",
+            borderBottom: `1px solid ${palette.border}`,
+            background: palette.panel,
+          }}
+        >
+          <Dot
+            color={status.online ? (status.syncing ? palette.warn : palette.good) : palette.bad}
+          />
           <strong style={{ flex: 1 }}>local-first devtools</strong>
-          <label style={{ display: "flex", alignItems: "center", gap: 4, color: palette.dim, cursor: "pointer" }}>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              color: palette.dim,
+              cursor: "pointer",
+            }}
+          >
             <input
               type="checkbox"
               data-testid="lf-devtools-offline-toggle"
@@ -162,12 +191,24 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
             />
             offline
           </label>
-          <button type="button" data-testid="lf-devtools-close" onClick={() => setOpen(false)} style={{ ...btnBase, background: "transparent", border: "none", color: palette.dim }}>
+          <button
+            type="button"
+            data-testid="lf-devtools-close"
+            onClick={() => setOpen(false)}
+            style={{ ...btnBase, background: "transparent", border: "none", color: palette.dim }}
+          >
             ✕
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 2, padding: "6px 8px", borderBottom: `1px solid ${palette.border}` }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 2,
+            padding: "6px 8px",
+            borderBottom: `1px solid ${palette.border}`,
+          }}
+        >
           {(["sync", "outbox", "queries", "storage"] as const).map((name) => (
             <button
               key={name}
@@ -179,7 +220,7 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
                 flex: 1,
                 background: tab === name ? palette.accent : "transparent",
                 border: `1px solid ${tab === name ? palette.accent : palette.border}`,
-                color: tab === name ? "#fff" : palette.dim
+                color: tab === name ? "#fff" : palette.dim,
               }}
             >
               {name}
@@ -199,7 +240,10 @@ export function LocalFirstDevtools(props: LocalFirstDevtoolsProps = {}): React.R
   );
 }
 
-function SyncTab(props: { status: import("../core/index.js").SyncStatus; scopes: ScopeRow[] }): React.ReactElement {
+function SyncTab(props: {
+  status: import("../core/index.js").SyncStatus;
+  scopes: ScopeRow[];
+}): React.ReactElement {
   const { status, scopes } = props;
   const recovery = status.recovery;
   const recoveryCount =
@@ -211,17 +255,33 @@ function SyncTab(props: { status: import("../core/index.js").SyncStatus; scopes:
     <div>
       <Row label="online" value={String(status.online)} tone={status.online ? "good" : "bad"} />
       <Row label="syncing" value={String(status.syncing)} />
-      <Row label="pending" value={String(status.pendingMutations)} tone={status.pendingMutations > 0 ? "warn" : undefined} />
-      <Row label="partial" value={String(status.partial)} tone={status.partial ? "warn" : undefined} />
-      {status.blockedBySchemaMismatch && <Row label="schema" value="mismatch — client must upgrade" tone="bad" />}
+      <Row
+        label="pending"
+        value={String(status.pendingMutations)}
+        tone={status.pendingMutations > 0 ? "warn" : undefined}
+      />
+      <Row
+        label="partial"
+        value={String(status.partial)}
+        tone={status.partial ? "warn" : undefined}
+      />
+      {status.blockedBySchemaMismatch && (
+        <Row label="schema" value="mismatch — client must upgrade" tone="bad" />
+      )}
       {status.lastError && <Row label="lastError" value={status.lastError} tone="bad" />}
-      <Row label="recovery" value={String(recoveryCount)} tone={recoveryCount > 0 ? "bad" : undefined} />
+      <Row
+        label="recovery"
+        value={String(recoveryCount)}
+        tone={recoveryCount > 0 ? "bad" : undefined}
+      />
       <Section title={`scopes (${scopes.length})`} />
       {scopes.length === 0 && <Empty>no scopes synced yet</Empty>}
       {scopes.map((scope) => (
         <div key={scope.scopeKey} data-testid="lf-devtools-scope" style={cardStyle}>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Dot color={scope.denied ? palette.bad : scope.hydrated ? palette.good : palette.warn} />
+            <Dot
+              color={scope.denied ? palette.bad : scope.hydrated ? palette.good : palette.warn}
+            />
             <span style={{ flex: 1, wordBreak: "break-all" }}>{scope.scopeKey}</span>
           </div>
           <div style={{ color: palette.dim, marginTop: 2 }}>
@@ -231,7 +291,7 @@ function SyncTab(props: { status: import("../core/index.js").SyncStatus; scopes:
               scope.syncing ? "syncing" : null,
               scope.denied ? "denied" : null,
               scope.role !== undefined ? `role=${JSON.stringify(scope.role)}` : null,
-              `cursor=${scope.cursor ?? "∅"}`
+              `cursor=${scope.cursor ?? "∅"}`,
             ])}
           </div>
         </div>
@@ -258,7 +318,9 @@ function OutboxTab(props: { outbox: OutboxRow[] }): React.ReactElement {
           </div>
           <div style={{ color: palette.dim, marginTop: 2 }}>
             {op.functionName} · {op.id}
-            {op.error ? ` · ${op.error}` : ` · ${Math.max(0, Math.round((now - op.createdAt) / 1000))}s`}
+            {op.error
+              ? ` · ${op.error}`
+              : ` · ${Math.max(0, Math.round((now - op.createdAt) / 1000))}s`}
           </div>
         </div>
       ))}
@@ -274,9 +336,21 @@ function QueriesTab(props: { queries: QueryRow[] }): React.ReactElement {
       {queries.map((query, index) => (
         <div key={index} data-testid="lf-devtools-query" style={cardStyle}>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ ...pill, background: query.kind === "counts" ? palette.warn : palette.accent }}>{query.kind}</span>
+            <span
+              style={{
+                ...pill,
+                background: query.kind === "counts" ? palette.warn : palette.accent,
+              }}
+            >
+              {query.kind}
+            </span>
             <span style={{ flex: 1 }}>{query.table}</span>
-            <span style={{ ...pill, background: query.explain.strategy === "index" ? palette.good : palette.border }}>
+            <span
+              style={{
+                ...pill,
+                background: query.explain.strategy === "index" ? palette.good : palette.border,
+              }}
+            >
               {query.explain.strategy === "index" ? `index:${query.explain.index}` : "scan"}
             </span>
           </div>
@@ -284,8 +358,10 @@ function QueriesTab(props: { queries: QueryRow[] }): React.ReactElement {
             {tagList([
               `rows=${query.rows}`,
               query.groups != null ? `groups=${query.groups}` : null,
-              query.explain.order ? `order=${query.explain.order.field} ${query.explain.order.dir}` : null,
-              query.explain.limit != null ? `limit=${query.explain.limit}` : null
+              query.explain.order
+                ? `order=${query.explain.order.field} ${query.explain.order.dir}`
+                : null,
+              query.explain.limit != null ? `limit=${query.explain.limit}` : null,
             ])}
           </div>
         </div>
@@ -304,12 +380,17 @@ function StorageTab(props: { storage: StorageData | null }): React.ReactElement 
         <Row key={table.table} label={table.table} value={`${table.rows} rows`} />
       ))}
       <Section title="attachments" />
-      <Row label="blobs" value={`${storage.attachments.count} · ${formatBytes(storage.attachments.bytes)}`} />
+      <Row
+        label="blobs"
+        value={`${storage.attachments.count} · ${formatBytes(storage.attachments.bytes)}`}
+      />
       <Section title="search indexes" />
       {storage.search.filter((s) => s.indexed).length === 0 && <Empty>none</Empty>}
-      {storage.search.filter((s) => s.indexed).map((s) => (
-        <Row key={s.table} label={s.table} value="indexed" tone="good" />
-      ))}
+      {storage.search
+        .filter((s) => s.indexed)
+        .map((s) => (
+          <Row key={s.table} label={s.table} value="indexed" tone="good" />
+        ))}
     </div>
   );
 }
@@ -321,14 +402,14 @@ const btnBase: React.CSSProperties = {
   borderRadius: 6,
   cursor: "pointer",
   color: palette.text,
-  font: "inherit"
+  font: "inherit",
 };
 const cardStyle: React.CSSProperties = {
   padding: "6px 8px",
   marginBottom: 6,
   background: palette.panel,
   border: `1px solid ${palette.border}`,
-  borderRadius: 6
+  borderRadius: 6,
 };
 const pill: React.CSSProperties = {
   padding: "1px 6px",
@@ -336,40 +417,76 @@ const pill: React.CSSProperties = {
   fontSize: 10,
   color: "#fff",
   textTransform: "uppercase",
-  letterSpacing: 0.3
+  letterSpacing: 0.3,
 };
 
 const toneColor = (tone?: "good" | "warn" | "bad") =>
-  tone === "good" ? palette.good : tone === "warn" ? palette.warn : tone === "bad" ? palette.bad : palette.text;
+  tone === "good"
+    ? palette.good
+    : tone === "warn"
+      ? palette.warn
+      : tone === "bad"
+        ? palette.bad
+        : palette.text;
 
-function Row(props: { label: string; value: string; tone?: "good" | "warn" | "bad" }): React.ReactElement {
+function Row(props: {
+  label: string;
+  value: string;
+  tone?: "good" | "warn" | "bad";
+}): React.ReactElement {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0" }}>
       <span style={{ color: palette.dim }}>{props.label}</span>
-      <span style={{ color: toneColor(props.tone), wordBreak: "break-all", textAlign: "right" }}>{props.value}</span>
+      <span style={{ color: toneColor(props.tone), wordBreak: "break-all", textAlign: "right" }}>
+        {props.value}
+      </span>
     </div>
   );
 }
 
 function Section(props: { title: string }): React.ReactElement {
   return (
-    <div style={{ margin: "8px 0 4px", color: palette.dim, textTransform: "uppercase", fontSize: 10, letterSpacing: 0.5 }}>
+    <div
+      style={{
+        margin: "8px 0 4px",
+        color: palette.dim,
+        textTransform: "uppercase",
+        fontSize: 10,
+        letterSpacing: 0.5,
+      }}
+    >
       {props.title}
     </div>
   );
 }
 
 function Empty(props: { children: React.ReactNode }): React.ReactElement {
-  return <div style={{ color: palette.dim, fontStyle: "italic", padding: "4px 0" }}>{props.children}</div>;
+  return (
+    <div style={{ color: palette.dim, fontStyle: "italic", padding: "4px 0" }}>
+      {props.children}
+    </div>
+  );
 }
 
 function Dot(props: { color: string }): React.ReactElement {
-  return <span style={{ width: 8, height: 8, borderRadius: "50%", background: props.color, display: "inline-block" }} />;
+  return (
+    <span
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: props.color,
+        display: "inline-block",
+      }}
+    />
+  );
 }
 
 function Badge(props: { children: React.ReactNode }): React.ReactElement {
   return (
-    <span style={{ ...pill, background: palette.warn, minWidth: 16, textAlign: "center" }}>{props.children}</span>
+    <span style={{ ...pill, background: palette.warn, minWidth: 16, textAlign: "center" }}>
+      {props.children}
+    </span>
   );
 }
 
@@ -382,7 +499,13 @@ function kindColor(kind: string): string {
 }
 
 function statusColor(status: string): string {
-  return status === "rejected" ? palette.bad : status === "pushing" ? palette.warn : status === "acked" ? palette.accent : palette.border;
+  return status === "rejected"
+    ? palette.bad
+    : status === "pushing"
+      ? palette.warn
+      : status === "acked"
+        ? palette.accent
+        : palette.border;
 }
 
 function formatBytes(bytes: number): string {

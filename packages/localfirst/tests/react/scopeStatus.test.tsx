@@ -20,7 +20,11 @@ describe("useScopeStatus (React)", () => {
   });
 
   it("reports denied when membership is refused", async () => {
-    const t = createTestHarness({ modules: docModules, userId: "u1", access: { member: () => null } });
+    const t = createTestHarness({
+      modules: docModules,
+      userId: "u1",
+      access: { member: () => null },
+    });
     const { result } = renderHook(() => useScopeStatus({ wsId: "w1" }), { wrapper: t.Provider });
     await act(async () => {
       await t.engine.syncScope({ wsId: "w1" });

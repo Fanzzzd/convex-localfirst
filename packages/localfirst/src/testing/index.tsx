@@ -10,7 +10,7 @@ import {
   type LocalFirstEngine,
   type LocalFirstManifest,
   type SyncScope,
-  type SyncTransport
+  type SyncTransport,
 } from "../core/index.js";
 import { LF_METADATA_KEY } from "../core/internal.js";
 import { LocalFirstEngineProvider, convexFunctionName } from "../react/index.js";
@@ -22,7 +22,7 @@ import {
   type LedgerEntry,
   type PullInput,
   type PushInput,
-  type SyncConfig
+  type SyncConfig,
 } from "../server/serverSync.js";
 import { MemoryServerStore } from "./memoryServer.js";
 
@@ -114,10 +114,12 @@ const microtask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
  * ```
  */
 export function createTestHarness<Modules extends Record<string, unknown>>(
-  options: CreateTestHarnessOptions<Modules>
+  options: CreateTestHarnessOptions<Modules>,
 ): TestHarness<Modules> {
   const { modules } = options;
-  const manifest: LocalFirstManifest = collectManifest(modules, { schemaVersion: options.schemaVersion });
+  const manifest: LocalFirstManifest = collectManifest(modules, {
+    schemaVersion: options.schemaVersion,
+  });
   const schemaVersion = manifest.schemaVersion;
 
   // --- Server config (derived from the SAME modules) --------------------------
@@ -126,11 +128,12 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
   const tables = { ...serverTables };
   for (const [table, stamp] of Object.entries(options.serverStamp ?? {})) {
     const base = tables[table];
-    if (!base) throw new Error(`createTestHarness: serverStamp names unknown local-first table "${table}"`);
+    if (!base)
+      throw new Error(`createTestHarness: serverStamp names unknown local-first table "${table}"`);
     tables[table] = {
       ...base,
       serverOnlyFields: [...new Set(stamp.fields)],
-      serverStamp: (input) => stamp.stamp(input)
+      serverStamp: (input) => stamp.stamp(input),
     };
   }
   let now = options.now ?? 1_000_000;
@@ -139,7 +142,7 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
     tables,
     now: () => now,
     access: options.access,
-    onWrite: options.onWrite
+    onWrite: options.onWrite,
   };
 
   // --- Deterministic id factory (globally unique across engines) --------------
@@ -171,12 +174,21 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
       mutation: async (_ref: unknown, args: Record<string, unknown>) =>
         handlePush(serverStore, config, args as unknown as PushInput),
       query: async (_ref: unknown, args: Record<string, unknown>) =>
-        handlePull(serverStore, config, { ...args, cursors: args.cursors ?? {} } as unknown as PullInput)
+        handlePull(serverStore, config, {
+          ...args,
+          cursors: args.cursors ?? {},
+        } as unknown as PullInput),
     };
-    const real = createConvexTransport({ client, push: "PUSH", pull: "PULL", clientId, userId: uid });
+    const real = createConvexTransport({
+      client,
+      push: "PUSH",
+      pull: "PULL",
+      clientId,
+      userId: uid,
+    });
     return {
       push: (request) => (online ? real.push(request) : Promise.reject(new Error("offline"))),
-      pull: (request) => (online ? real.pull(request) : Promise.reject(new Error("offline")))
+      pull: (request) => (online ? real.pull(request) : Promise.reject(new Error("offline"))),
     };
   };
 
@@ -197,7 +209,7 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
       idFactory: (table) => `${table}_${uid ?? "anon"}_${++idSeq}`,
       clock: () => now,
       sleep: async () => {},
-      syncTimeoutMs: 0
+      syncTimeoutMs: 0,
     });
   };
 
@@ -214,10 +226,11 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
     if (currentUserId != null) keys.add(`u:${currentUserId}`);
     // Membership scopes the server has data in (a byUser key for another user would just
     // resolve back to this identity, so only include the current user's own).
-    for (const change of serverStore.changes) if (!change.scopeKey.startsWith("u:")) keys.add(change.scopeKey);
+    for (const change of serverStore.changes)
+      if (!change.scopeKey.startsWith("u:")) keys.add(change.scopeKey);
     return [...keys].map((key) => ({
       kind: (key.startsWith("u:") ? "byUser" : key.slice(0, key.indexOf(":"))) as SyncScope["kind"],
-      key
+      key,
     }));
   };
 
@@ -233,12 +246,16 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
           return () => engineListeners.delete(cb);
         },
         () => engine,
-        () => engine
+        () => engine,
       );
       return React.createElement(
         ConvexReact.ConvexProvider,
         { client: convexClient },
-        React.createElement(LocalFirstEngineProvider, { engine: active, userId: currentUserId, children })
+        React.createElement(LocalFirstEngineProvider, {
+          engine: active,
+          userId: currentUserId,
+          children,
+        }),
       );
     },
     server: {
@@ -246,7 +263,12 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
         const idField = config.tables[table]?.idField ?? "localId";
         for (const row of rows) {
           const localId = row[idField] != null ? String(row[idField]) : undefined;
-          await applyServerWrite(serverStore, config, { kind: "insert", table, value: { ...row }, localId }, serverIdFactory);
+          await applyServerWrite(
+            serverStore,
+            config,
+            { kind: "insert", table, value: { ...row }, localId },
+            serverIdFactory,
+          );
         }
       },
       rows(table) {
@@ -255,7 +277,7 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
       ledger() {
         return [...serverStore.ledger.values()];
       },
-      store: serverStore
+      store: serverStore,
     },
     goOffline() {
       online = false;
@@ -280,7 +302,7 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
       now: () => now,
       advance: (ms: number) => {
         now += ms;
-      }
+      },
     },
     setUser(uid) {
       engine.dispose();
@@ -292,7 +314,7 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
     dispose() {
       engine.dispose();
       void convexClient.close();
-    }
+    },
   };
 
   return harness;

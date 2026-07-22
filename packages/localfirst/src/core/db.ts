@@ -11,7 +11,7 @@ import {
   type DeclaredRelations,
   type ManyRelationDescriptor,
   type OneRelationDescriptor,
-  type RelationSpec
+  type RelationSpec,
 } from "./relations.js";
 import type { LocalQuery } from "./collection.js";
 import type { RowValue } from "./types.js";
@@ -24,7 +24,7 @@ export type LocalTableDeclaration<
   Row extends Record<string, unknown>,
   Shape extends object,
   Scope extends ScopeDefinition,
-  Relations extends DeclaredRelations
+  Relations extends DeclaredRelations,
 > = {
   readonly __localFirstTableType: LocalTableTypeInfo<Name, Row, Shape, Scope, Relations>;
 };
@@ -34,7 +34,7 @@ export type LocalTableTypeInfo<
   Row extends Record<string, unknown>,
   Shape extends object,
   Scope extends ScopeDefinition,
-  Relations extends DeclaredRelations
+  Relations extends DeclaredRelations,
 > = {
   readonly name: Name;
   readonly row: Row;
@@ -43,7 +43,9 @@ export type LocalTableTypeInfo<
   readonly relations: Relations;
 };
 
-type TableInfoFromValue<Value> = Value extends { readonly __localFirstTableType: infer Info } ? Info : never;
+type TableInfoFromValue<Value> = Value extends { readonly __localFirstTableType: infer Info }
+  ? Info
+  : never;
 
 type TableDeclarations<Modules extends Record<string, unknown>> = {
   [ModuleKey in keyof Modules]: Modules[ModuleKey] extends object
@@ -57,39 +59,59 @@ type DeclarationName<Declaration> = Declaration extends { readonly name: infer N
   ? Name
   : never;
 
-type DeclarationForName<Declaration, Name extends string> = Declaration extends { readonly name: Name }
+type DeclarationForName<Declaration, Name extends string> = Declaration extends {
+  readonly name: Name;
+}
   ? Declaration
   : never;
 
-type RowOf<Declaration> = Declaration extends { readonly row: infer Row extends Record<string, unknown> }
+type RowOf<Declaration> = Declaration extends {
+  readonly row: infer Row extends Record<string, unknown>;
+}
   ? Row
   : never;
 
-type ShapeOf<Declaration> = Declaration extends { readonly shape: infer Shape extends Record<string, unknown> }
+type ShapeOf<Declaration> = Declaration extends {
+  readonly shape: infer Shape extends Record<string, unknown>;
+}
   ? Shape
   : never;
 
-type ScopeOf<Declaration> = Declaration extends { readonly scope: infer Scope extends ScopeDefinition }
+type ScopeOf<Declaration> = Declaration extends {
+  readonly scope: infer Scope extends ScopeDefinition;
+}
   ? Scope
   : never;
 
-type RelationsOf<Declaration> = Declaration extends { readonly relations: infer Relations extends DeclaredRelations }
+type RelationsOf<Declaration> = Declaration extends {
+  readonly relations: infer Relations extends DeclaredRelations;
+}
   ? Relations
   : never;
 
-type ScopeField<Scope> = Scope extends { readonly kind: "byUser"; readonly field: infer Field extends string }
+type ScopeField<Scope> = Scope extends {
+  readonly kind: "byUser";
+  readonly field: infer Field extends string;
+}
   ? Field
-  : Scope extends { readonly kind: "byWorkspace"; readonly workspaceIdField: infer Field extends string }
+  : Scope extends {
+        readonly kind: "byWorkspace";
+        readonly workspaceIdField: infer Field extends string;
+      }
     ? Field
-    : Scope extends { readonly kind: "byProject"; readonly projectIdField: infer Field extends string }
+    : Scope extends {
+          readonly kind: "byProject";
+          readonly projectIdField: infer Field extends string;
+        }
       ? Field
       : never;
 
-type ScopeValues<Declaration> = ScopeField<ScopeOf<Declaration>> extends infer Field extends string
-  ? Field extends keyof ShapeOf<Declaration>
-    ? { [Key in Field]: ShapeOf<Declaration>[Key] }
-    : never
-  : never;
+type ScopeValues<Declaration> =
+  ScopeField<ScopeOf<Declaration>> extends infer Field extends string
+    ? Field extends keyof ShapeOf<Declaration>
+      ? { [Key in Field]: ShapeOf<Declaration>[Key] }
+      : never
+    : never;
 
 type ShapeField<Declaration> = Extract<keyof ShapeOf<Declaration>, string>;
 
@@ -102,7 +124,7 @@ type TargetRow<Modules extends Record<string, unknown>, Descriptor> = Descriptor
 type DeclaredRelationsResult<
   Modules extends Record<string, unknown>,
   Relations extends DeclaredRelations,
-  Names extends keyof Relations
+  Names extends keyof Relations,
 > = {
   [Name in Names]: Relations[Name] extends OneRelationDescriptor
     ? TargetRow<Modules, Relations[Name]> | null
@@ -117,38 +139,47 @@ export type TypedTableQuery<
   Modules extends Record<string, unknown>,
   Declaration,
   Rel = Record<never, never>,
-  Group extends string = never
+  Group extends string = never,
 > = LocalQueryPlan<RowOf<Declaration>, Rel, Group> & {
   scope(values: ScopeValues<Declaration>): TypedTableQuery<Modules, Declaration, Rel, Group>;
-  filter(values: FilterSpec<ShapeOf<Declaration>>): TypedTableQuery<Modules, Declaration, Rel, Group>;
+  filter(
+    values: FilterSpec<ShapeOf<Declaration>>,
+  ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   /** Closure escape hatch; opaque predicates are always evaluated after index scanning. */
-  where(predicate: (row: RowOf<Declaration>) => boolean): TypedTableQuery<Modules, Declaration, Rel, Group>;
+  where(
+    predicate: (row: RowOf<Declaration>) => boolean,
+  ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   where<Field extends ShapeField<Declaration>>(
     field: Field,
-    value: ShapeOf<Declaration>[Field]
+    value: ShapeOf<Declaration>[Field],
   ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   order<Field extends ShapeField<Declaration>>(
     field: Field,
-    direction?: "asc" | "desc"
+    direction?: "asc" | "desc",
   ): TypedTableQuery<Modules, Declaration, Rel, Group>;
   orderBy: {
     <Field extends ShapeField<Declaration>>(
       field: Field,
-      direction?: "asc" | "desc"
+      direction?: "asc" | "desc",
     ): TypedTableQuery<Modules, Declaration, Rel, Group>;
     readonly field: string;
     readonly dir: "asc" | "desc";
   };
   limit(n: number): TypedTableQuery<Modules, Declaration, Rel, Group>;
   groupBy<Field extends ShapeField<Declaration>>(
-    field: Field
+    field: Field,
   ): TypedTableQuery<Modules, Declaration, Rel, Field>;
   related<Name extends string, Target extends Record<string, unknown>, Many extends boolean>(
     name: Name,
-    spec: RelationSpec<Target, Many>
-  ): TypedTableQuery<Modules, Declaration, Rel & { [Key in Name]: Many extends true ? Target[] : Target | undefined }, Group>;
+    spec: RelationSpec<Target, Many>,
+  ): TypedTableQuery<
+    Modules,
+    Declaration,
+    Rel & { [Key in Name]: Many extends true ? Target[] : Target | undefined },
+    Group
+  >;
   withRelations<Specs extends Record<string, RelationSpec>>(
-    specs: Specs
+    specs: Specs,
   ): TypedTableQuery<Modules, Declaration, Rel & RelationsResult<Specs>, Group>;
   with<const Names extends ReadonlyArray<Extract<keyof RelationsOf<Declaration>, string>>>(
     ...names: Names
@@ -168,13 +199,14 @@ export type LocalDb<Modules extends Record<string, unknown>> = {
 };
 
 /** Every local-first table name declared across `Modules` (the db-root's table keys). */
-export type TableNamesOf<Modules extends Record<string, unknown>> = DeclarationName<TableDeclarations<Modules>>;
+export type TableNamesOf<Modules extends Record<string, unknown>> = DeclarationName<
+  TableDeclarations<Modules>
+>;
 
 /** The row type of table `Name` declared in `Modules` — shape + id + timestamps. */
-export type TableRowOf<
-  Modules extends Record<string, unknown>,
-  Name extends string
-> = RowOf<DeclarationForName<TableDeclarations<Modules>, Name>>;
+export type TableRowOf<Modules extends Record<string, unknown>, Name extends string> = RowOf<
+  DeclarationForName<TableDeclarations<Modules>, Name>
+>;
 
 /**
  * The object `useCan()` returns — the client-side write mirror (DX v4 §6). Pass the same
@@ -189,18 +221,25 @@ export type CanChecker<Modules extends Record<string, unknown> = never> = [Modul
       remove(table: string, row: Record<string, unknown>): boolean;
     }
   : {
-      insert<Name extends TableNamesOf<Modules>>(table: Name, proposed: TableRowOf<Modules, Name>): boolean;
+      insert<Name extends TableNamesOf<Modules>>(
+        table: Name,
+        proposed: TableRowOf<Modules, Name>,
+      ): boolean;
       patch<Name extends TableNamesOf<Modules>>(
         table: Name,
         row: TableRowOf<Modules, Name>,
-        patch?: Partial<TableRowOf<Modules, Name>>
+        patch?: Partial<TableRowOf<Modules, Name>>,
       ): boolean;
-      remove<Name extends TableNamesOf<Modules>>(table: Name, row: TableRowOf<Modules, Name>): boolean;
+      remove<Name extends TableNamesOf<Modules>>(
+        table: Name,
+        row: TableRowOf<Modules, Name>,
+      ): boolean;
     };
 
-class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = never>
-  implements LocalQueryPlan<Row, unknown, Group>
-{
+class LocalDbQuery<
+  Row extends Record<string, unknown>,
+  Group extends string = never,
+> implements LocalQueryPlan<Row, unknown, Group> {
   readonly __localFirstQuery = true as const;
   declare readonly __rel: unknown;
   declare readonly __group: Group;
@@ -211,12 +250,13 @@ class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = n
 
   constructor(
     private readonly query: LocalQuery<Row, unknown, Group>,
-    private readonly declaredRelations: DeclaredRelations
+    private readonly declaredRelations: DeclaredRelations,
   ) {
-    const orderBy = (field: keyof Row, direction: "asc" | "desc" = "asc") => this.order(field, direction);
+    const orderBy = (field: keyof Row, direction: "asc" | "desc" = "asc") =>
+      this.order(field, direction);
     Object.defineProperties(orderBy, {
       field: { get: () => this.query.orderBy?.field ?? "" },
-      dir: { get: () => this.query.orderBy?.dir ?? "asc" }
+      dir: { get: () => this.query.orderBy?.dir ?? "asc" },
     });
     this.orderBy = orderBy as typeof this.orderBy;
   }
@@ -271,7 +311,10 @@ class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = n
 
   where(predicate: (row: Row) => boolean): LocalDbQuery<Row, Group>;
   where(field: string, value: unknown): LocalDbQuery<Row, Group>;
-  where(predicateOrField: ((row: Row) => boolean) | string, value?: unknown): LocalDbQuery<Row, Group> {
+  where(
+    predicateOrField: ((row: Row) => boolean) | string,
+    value?: unknown,
+  ): LocalDbQuery<Row, Group> {
     const predicate =
       typeof predicateOrField === "function"
         ? predicateOrField
@@ -304,7 +347,9 @@ class LocalDbQuery<Row extends Record<string, unknown>, Group extends string = n
     for (const name of names) {
       const descriptor = this.declaredRelations[name];
       if (!descriptor) {
-        throw new Error(`createLocalDb: relation "${name}" is not declared on table "${this.table}".`);
+        throw new Error(
+          `createLocalDb: relation "${name}" is not declared on table "${this.table}".`,
+        );
       }
       specs[name] = relationSpec(descriptor);
     }
@@ -345,7 +390,9 @@ function relationSpec(descriptor: DeclaredRelationDescriptor): RelationSpec {
  * );
  * ```
  */
-export function createLocalDb<const Modules extends Record<string, unknown>>(modules: Modules): LocalDb<Modules> {
+export function createLocalDb<const Modules extends Record<string, unknown>>(
+  modules: Modules,
+): LocalDb<Modules> {
   const manifest = collectManifest(modules);
   const db: Record<string, LocalDbQuery<Record<string, unknown>>> = {};
   for (const [table, definition] of Object.entries(manifest.tables)) {

@@ -10,13 +10,12 @@ import {
   type LocalFirstManifest,
   type PullResponse,
   type PushResponse,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 
 vi.mock("convex/react", () => ({
-  ConvexReactClient: class {
-    constructor(_url?: string) {}
-  },
+  // oxlint-disable-next-line typescript/no-extraneous-class -- stub for a class the consumer instantiates with `new`
+  ConvexReactClient: class {},
   ConvexProvider: ({ children }: { children: React.ReactNode }) => children,
   Authenticated: ({ children }: { children: React.ReactNode }) => children,
   Unauthenticated: () => null,
@@ -24,15 +23,16 @@ vi.mock("convex/react", () => ({
   useConvex: () => null,
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
   useQuery: () => undefined,
-  useMutation: () => vi.fn(async () => ({}))
+  useMutation: () => vi.fn(async () => ({})),
 }));
 
-const { ConvexProvider, ConvexReactClient, useCan, useMutation, useRole, useUndo } = await import(
-  "../../src/react/index"
-);
+const { ConvexProvider, ConvexReactClient, useCan, useMutation, useRole, useUndo } =
+  await import("../../src/react/index");
 
 type DocRow = { workspace_id: string; title: string; created_by: string } & Record<string, unknown>;
-const docsClientCan: ClientCanConfig<DocRow, number> = { write: ({ role }) => (role as number) >= 15 };
+const docsClientCan: ClientCanConfig<DocRow, number> = {
+  write: ({ role }) => (role as number) >= 15,
+};
 
 function manifest(): LocalFirstManifest {
   return defineLocalFirstManifest({
@@ -43,8 +43,8 @@ function manifest(): LocalFirstManifest {
         idField: "id",
         scope: byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "ws_members" }),
         indexes: { byWorkspace: ["workspace_id"] },
-        clientCan: docsClientCan as ClientCanConfig
-      })
+        clientCan: docsClientCan as ClientCanConfig,
+      }),
     },
     queries: {},
     mutations: {
@@ -57,24 +57,33 @@ function manifest(): LocalFirstManifest {
           kind: "insert",
           table: "docs",
           id: args.id,
-          value: { workspace_id: args.workspace_id, title: args.title, created_by: ctx.userId ?? "anon" }
-        })
+          value: {
+            workspace_id: args.workspace_id,
+            title: args.title,
+            created_by: ctx.userId ?? "anon",
+          },
+        }),
       }),
       "docs:rename": localMutation<{ id: string; title: string }>({
         kind: "mutation",
         name: "docs:rename",
         table: "docs",
         operationKind: "patch",
-        plan: (args) => ({ kind: "patch", table: "docs", id: args.id, patch: { title: args.title } })
+        plan: (args) => ({
+          kind: "patch",
+          table: "docs",
+          id: args.id,
+          patch: { title: args.title },
+        }),
       }),
       "docs:remove": localMutation<{ id: string }>({
         kind: "mutation",
         name: "docs:remove",
         table: "docs",
         operationKind: "delete",
-        plan: (args) => ({ kind: "delete", table: "docs", id: args.id })
-      })
-    }
+        plan: (args) => ({ kind: "delete", table: "docs", id: args.id }),
+      }),
+    },
   });
 }
 
@@ -86,12 +95,17 @@ function roleTransport(role: number): SyncTransport {
         rejected: [],
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull(): Promise<PullResponse> {
-      return { changes: [], cursors: { "byWorkspace:w1": "1" }, serverTime: 1, roles: { "byWorkspace:w1": role } };
-    }
+      return {
+        changes: [],
+        cursors: { "byWorkspace:w1": "1" },
+        serverTime: 1,
+        roles: { "byWorkspace:w1": role },
+      };
+    },
   };
 }
 
@@ -99,7 +113,12 @@ function wrap(ui: React.ReactNode, transport: SyncTransport) {
   return (
     <ConvexProvider
       client={new ConvexReactClient("http://localhost")}
-      localFirst={{ manifest: manifest(), transport, userId: "user_a", nameOf: (ref) => String(ref) }}
+      localFirst={{
+        manifest: manifest(),
+        transport,
+        userId: "user_a",
+        nameOf: (ref) => String(ref),
+      }}
     >
       {ui}
     </ConvexProvider>
@@ -111,7 +130,11 @@ afterEach(cleanup);
 describe("useRole (DX v4 §6)", () => {
   function RoleView() {
     const role = useRole<number>({ workspace_id: "w1" });
-    return <div data-testid="role">{role === undefined ? "loading" : role === null ? "denied" : String(role)}</div>;
+    return (
+      <div data-testid="role">
+        {role === undefined ? "loading" : role === null ? "denied" : String(role)}
+      </div>
+    );
   }
 
   it("is undefined until synced, then reactive to the pulled role", async () => {
@@ -143,11 +166,16 @@ describe("useCan (DX v4 §6)", () => {
 
 describe("useUndo (DX v4 §7)", () => {
   function UndoView() {
-    const create = useMutation<{ id: string; workspace_id: string; title: string }, unknown>("docs:create");
+    const create = useMutation<{ id: string; workspace_id: string; title: string }, unknown>(
+      "docs:create",
+    );
     const { undo, canUndo } = useUndo({ workspace_id: "w1" });
     return (
       <div>
-        <button data-testid="edit" onClick={() => void create({ id: "d1", workspace_id: "w1", title: "next" })}>
+        <button
+          data-testid="edit"
+          onClick={() => void create({ id: "d1", workspace_id: "w1", title: "next" })}
+        >
           edit
         </button>
         <button data-testid="undo" onClick={() => void undo()}>

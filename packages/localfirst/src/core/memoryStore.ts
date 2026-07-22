@@ -1,5 +1,6 @@
 import { compareOperations } from "./ordering.js";
 import { deriveView, nextCanonicalRow } from "./view.js";
+import { OWED_STATUSES } from "./storage.js";
 import type { LocalStore, StoreListener, StoreUnsubscribe, StoredBlob } from "./storage.js";
 import type {
   Cursor,
@@ -10,7 +11,7 @@ import type {
   RowValue,
   ScopeKey,
   ServerChange,
-  TableName
+  TableName,
 } from "./types.js";
 
 function clone<T>(value: T): T {
@@ -19,8 +20,6 @@ function clone<T>(value: T): T {
   // JSON round-trip throws on or silently drops.
   return structuredClone(value);
 }
-
-const OWED_STATUSES: ReadonlySet<OperationStatus> = new Set(["pending", "pushing"]);
 
 /**
  * In-memory implementation of the canonical-centric store. The live view is
@@ -58,7 +57,10 @@ export class MemoryLocalStore implements LocalStore {
     this.notify();
   }
 
-  async applyServerChanges(changes: readonly ServerChange[], expectedEpoch = this.epoch): Promise<void> {
+  async applyServerChanges(
+    changes: readonly ServerChange[],
+    expectedEpoch = this.epoch,
+  ): Promise<void> {
     if (changes.length === 0 || this.sessionEnded || expectedEpoch !== this.epoch) {
       return;
     }
@@ -103,7 +105,11 @@ export class MemoryLocalStore implements LocalStore {
     return operation ? clone(operation) : null;
   }
 
-  async updateOperationStatus(opId: string, status: OperationStatus, error?: string): Promise<void> {
+  async updateOperationStatus(
+    opId: string,
+    status: OperationStatus,
+    error?: string,
+  ): Promise<void> {
     const current = this.operations.get(opId);
     if (!current) {
       return;
@@ -140,7 +146,7 @@ export class MemoryLocalStore implements LocalStore {
     field: string,
     value: unknown,
     keepIds?: ReadonlySet<LocalId>,
-    expectedEpoch = this.epoch
+    expectedEpoch = this.epoch,
   ): Promise<void> {
     if (this.sessionEnded || expectedEpoch !== this.epoch) return;
     const rows = this.tableMap(table);
@@ -190,6 +196,7 @@ export class MemoryLocalStore implements LocalStore {
   }
 
   async getAllBlobs(): Promise<readonly StoredBlob[]> {
+    // oxlint-disable-next-line no-map-spread -- return shallow copies so callers can't mutate stored records
     return Array.from(this.blobs.values()).map((record) => ({ ...record }));
   }
 
@@ -223,7 +230,11 @@ export class MemoryLocalStore implements LocalStore {
 
   /** Derive the live view for one table: canonical + deterministic replay of active ops. */
   private deriveTable(table: TableName): RowValue[] {
-    return deriveView(table, Array.from(this.tableMap(table).values()), Array.from(this.operations.values()));
+    return deriveView(
+      table,
+      Array.from(this.tableMap(table).values()),
+      Array.from(this.operations.values()),
+    );
   }
 
   private tableMap(table: TableName): Map<LocalId, RowValue> {

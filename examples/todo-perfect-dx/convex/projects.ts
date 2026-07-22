@@ -6,11 +6,11 @@ export const projects = lf.table("projects", {
   shape: {
     workspaceId: v.string(),
     name: v.string(),
-    color: v.string()
+    color: v.string(),
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
-  indexes: { byWorkspace: ["workspaceId", "createdAt"] }
+  indexes: { byWorkspace: ["workspaceId", "createdAt"] },
 });
 
 export const create = projects.insert();

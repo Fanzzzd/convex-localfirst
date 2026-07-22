@@ -16,10 +16,10 @@ export const docUpdates = lf.table("doc_updates", {
     doc: v.string(),
     // A base64 Yjs update OR a compaction snapshot (a full-state update). Both are just
     // updates as far as the log is concerned.
-    update: v.string()
+    update: v.string(),
   },
   scope: scopeWorkspace, // scope field = "workspace" (shares ws_members with every table)
-  indexes: { byWorkspace: ["workspace"], byDoc: ["workspace", "doc"] }
+  indexes: { byWorkspace: ["workspace"], byDoc: ["workspace", "doc"] },
 });
 
 // append: one new update row (args: { workspace, doc, update }). Insert-only — never

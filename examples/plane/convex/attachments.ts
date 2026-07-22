@@ -14,11 +14,11 @@ export const attachments = lf.table("attachments", {
     size: v.number(),
     mime_type: v.string(),
     // Convex storage id, set by finalize (never by a client insert/patch).
-    storageId: v.optional(v.union(v.string(), v.null()))
+    storageId: v.optional(v.union(v.string(), v.null())),
   },
   scope: scopeWorkspaceId, // scope field = "workspace_id" (shared ws_members membership)
   timestamps: ["created_at", "updated_at"],
-  indexes: { byIssue: ["workspace_id", "issue_id", "created_at"] }
+  indexes: { byIssue: ["workspace_id", "issue_id", "created_at"] },
 });
 
 // Custom insert: `storageId` is omitted from the client args — it is server-controlled,
@@ -30,9 +30,9 @@ export const create = attachments.insert({
     issue_id: v.string(),
     name: v.string(),
     size: v.number(),
-    mime_type: v.string()
+    mime_type: v.string(),
   },
-  value: ({ args }) => ({ ...args })
+  value: ({ args }) => ({ ...args }),
 });
 
 // Deleting a not-yet-uploaded attachment cancels its pending upload client-side (the

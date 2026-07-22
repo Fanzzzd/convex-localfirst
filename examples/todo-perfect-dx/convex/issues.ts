@@ -10,17 +10,17 @@ export const issues = lf.table("issues", {
     title: v.string(),
     status: v.union(v.literal("backlog"), v.literal("in_progress"), v.literal("done")),
     priority: v.number(),
-    assignee: v.string()
+    assignee: v.string(),
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
   relations: {
     project: lf.one("projects", "projectId"),
-    comments: lf.backref("comments", "issueId")
+    comments: lf.backref("comments", "issueId"),
   },
   indexes: {
-    byWorkspace: ["workspaceId", "createdAt"]
-  }
+    byWorkspace: ["workspaceId", "createdAt"],
+  },
 });
 
 export const list = issues.query({
@@ -28,22 +28,28 @@ export const list = issues.query({
   index: "byWorkspace",
   key: ({ args }) => [args.workspaceId],
   order: "asc",
-  initial: []
+  initial: [],
 });
 
 // Custom insert: status starts at "backlog" instead of being a caller arg.
 export const create = issues.insert({
-  args: { workspaceId: v.string(), projectId: v.optional(v.string()), title: v.string(), priority: v.number(), assignee: v.string() },
-  value: ({ args }) => ({ ...args, status: "backlog" })
+  args: {
+    workspaceId: v.string(),
+    projectId: v.optional(v.string()),
+    title: v.string(),
+    priority: v.number(),
+    assignee: v.string(),
+  },
+  value: ({ args }) => ({ ...args, status: "backlog" }),
 });
 
 // No patch() closures: args forward 1:1 (updatedAt stamps automatically).
 export const setStatus = issues.patch({
-  args: { id: v.string(), status: v.string() }
+  args: { id: v.string(), status: v.string() },
 });
 
 export const setPriority = issues.patch({
-  args: { id: v.string(), priority: v.number() }
+  args: { id: v.string(), priority: v.number() },
 });
 
 export const remove = issues.remove();

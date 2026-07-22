@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { createCollaborativeDoc, type DocPersistence, type DocUpdateRow } from "../../src/yjs/provider.js";
+import {
+  createCollaborativeDoc,
+  type DocPersistence,
+  type DocUpdateRow,
+} from "../../src/yjs/provider.js";
 import { base64ToBytes, bytesToBase64 } from "../../src/yjs/yjsSync.js";
 
 // A fake "doc_updates" table that mimics a local-first backend: append inserts an
@@ -24,7 +28,7 @@ function makeTable(docId = "d1") {
     rejectServer: false,
     /** Hold the SERVER stage open until `releaseServer()` is called. */
     deferServer: false,
-    releaseServer: null as null | (() => void)
+    releaseServer: null as null | (() => void),
   };
 
   const persistence: DocPersistence = {
@@ -66,7 +70,7 @@ function makeTable(docId = "d1") {
         emit();
       }
       return { local: Promise.resolve(), server: Promise.resolve() };
-    }
+    },
   };
 
   const seed = (seedRows: readonly DocUpdateRow[]) => {
@@ -146,7 +150,7 @@ describe("createCollaborativeDoc — docId scoping", () => {
     provider.ingestRows([
       remoteRow("a", "d1", "mine "),
       remoteRow("b", "d2", "theirs"),
-      remoteRow("c", "d1", "too")
+      remoteRow("c", "d1", "too"),
     ]);
     // Order-independent CRDT, but only d1 rows are folded in.
     expect(text(provider.ydoc)).toContain("mine");
@@ -159,8 +163,16 @@ describe("createCollaborativeDoc — docId scoping", () => {
 describe("createCollaborativeDoc — deterministic multi-client convergence", () => {
   it("two clients converge exchanging updates through one shared table", async () => {
     const table = makeTable("shared");
-    const a = createCollaborativeDoc(table.persistence, { docId: "shared", compaction: false, flushDebounceMs: 0 });
-    const b = createCollaborativeDoc(table.persistence, { docId: "shared", compaction: false, flushDebounceMs: 0 });
+    const a = createCollaborativeDoc(table.persistence, {
+      docId: "shared",
+      compaction: false,
+      flushDebounceMs: 0,
+    });
+    const b = createCollaborativeDoc(table.persistence, {
+      docId: "shared",
+      compaction: false,
+      flushDebounceMs: 0,
+    });
 
     a.ydoc.getText("t").insert(0, "Hello ");
     await a.flush(); // A's row lands in the shared table → B ingests via subscribe
@@ -181,10 +193,14 @@ describe("createCollaborativeDoc — compaction safety (REVIEW §E2)", () => {
     const table = makeTable();
     const provider = createCollaborativeDoc(table.persistence, {
       docId: "d1",
-      compaction: { everyUpdates: 3, debounceMs: 0 }
+      compaction: { everyUpdates: 3, debounceMs: 0 },
     });
     // Three real update rows already in the log.
-    table.seed([remoteRow("r1", "d1", "a"), remoteRow("r2", "d1", "b"), remoteRow("r3", "d1", "c")]);
+    table.seed([
+      remoteRow("r1", "d1", "a"),
+      remoteRow("r2", "d1", "b"),
+      remoteRow("r3", "d1", "c"),
+    ]);
 
     table.control.rejectServer = true; // the snapshot write will be rejected
     await provider.compactNow();
@@ -205,7 +221,7 @@ describe("createCollaborativeDoc — compaction safety (REVIEW §E2)", () => {
     const table = makeTable();
     const provider = createCollaborativeDoc(table.persistence, {
       docId: "d1",
-      compaction: { everyUpdates: 2, debounceMs: 0 }
+      compaction: { everyUpdates: 2, debounceMs: 0 },
     });
     table.seed([remoteRow("r1", "d1", "x"), remoteRow("r2", "d1", "y")]);
 
@@ -228,9 +244,13 @@ describe("createCollaborativeDoc — compaction safety (REVIEW §E2)", () => {
     const table = makeTable();
     const provider = createCollaborativeDoc(table.persistence, {
       docId: "d1",
-      compaction: { everyUpdates: 3, debounceMs: 0 }
+      compaction: { everyUpdates: 3, debounceMs: 0 },
     });
-    table.seed([remoteRow("r1", "d1", "1"), remoteRow("r2", "d1", "2"), remoteRow("r3", "d1", "3")]);
+    table.seed([
+      remoteRow("r1", "d1", "1"),
+      remoteRow("r2", "d1", "2"),
+      remoteRow("r3", "d1", "3"),
+    ]);
     await tick(); // debounced auto-compaction fires
 
     expect(table.appends).toHaveLength(1); // one snapshot written
@@ -248,7 +268,7 @@ describe("createCollaborativeDoc — compaction safety (REVIEW §E2)", () => {
     const table = makeTable();
     const provider = createCollaborativeDoc(table.persistence, {
       docId: "d1",
-      compaction: { everyUpdates: 2, debounceMs: 0 }
+      compaction: { everyUpdates: 2, debounceMs: 0 },
     });
     table.seed([remoteRow("r1", "d1", "base ")]);
 

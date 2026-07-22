@@ -1,7 +1,20 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as ConvexReact from "convex/react";
 import { getFunctionName, makeFunctionReference } from "convex/server";
-import type { FunctionArgs, FunctionReference, FunctionReturnType, OptionalRestArgs } from "convex/server";
+import type {
+  FunctionArgs,
+  FunctionReference,
+  FunctionReturnType,
+  OptionalRestArgs,
+} from "convex/server";
 import {
   IndexedDbStore,
   MemoryLocalStore,
@@ -48,7 +61,7 @@ import {
   type RecoveryStatus,
   type RowValue,
   type SyncStatus,
-  type SyncTransport
+  type SyncTransport,
 } from "../core/index.js";
 // Engine + low-level helpers are INTERNAL (I13): imported from the internal subpath,
 // never re-exported to app authors. See convex-localfirst/core/internal.
@@ -57,7 +70,7 @@ import {
   coordinationName,
   createFallbackMutationCall,
   createMultiTabSync,
-  defaultFunctionName
+  defaultFunctionName,
 } from "../core/internal.js";
 
 export {
@@ -73,7 +86,7 @@ export {
   rebalance,
   matchesFilter,
   parseFilter,
-  serializeFilter
+  serializeFilter,
 };
 export type {
   BackrefRelationDescriptor,
@@ -89,7 +102,7 @@ export type {
   ManyRelationDescriptor,
   OneRelationDescriptor,
   RelationSpec,
-  TypedTableQuery
+  TypedTableQuery,
 };
 export type { TableNamesOf, TableRowOf } from "../core/index.js";
 
@@ -109,7 +122,12 @@ const EMPTY_STATUS: SyncStatus = {
   lastError: null,
   blockedBySchemaMismatch: false,
   partial: false,
-  recovery: { rejectedOperations: [], olderSchemaOperations: [], failedAttachments: [], failedGroups: [] }
+  recovery: {
+    rejectedOperations: [],
+    olderSchemaOperations: [],
+    failedAttachments: [],
+    failedGroups: [],
+  },
 };
 
 export type LocalFirstProviderConfig = {
@@ -207,11 +225,11 @@ export const convexFunctionName: FunctionNameResolver = reactDefaultFunctionName
 export type ConvexLocalFirstEngine = Omit<LocalFirstEngine, "mutate" | "query"> & {
   mutate<Mutation extends FunctionReference<"mutation">>(
     reference: Mutation,
-    args: FunctionArgs<Mutation>
+    args: FunctionArgs<Mutation>,
   ): LocalFirstMutationCall<FunctionReturnType<Mutation>>;
   query<Query extends FunctionReference<"query">>(
     reference: Query,
-    args: FunctionArgs<Query>
+    args: FunctionArgs<Query>,
   ): Promise<FunctionReturnType<Query> | undefined>;
 };
 
@@ -258,11 +276,13 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     options.manifest ??
     (options.modules
       ? collectManifest(options.modules, { schemaVersion: options.schemaVersion })
-      : raise("createConvexLocalFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."));
+      : raise(
+          "createConvexLocalFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`.",
+        ));
   const client =
     options.client ??
     new ConvexReact.ConvexReactClient(
-      options.url ?? raise("createConvexLocalFirst: pass either `client` or `url`.")
+      options.url ?? raise("createConvexLocalFirst: pass either `client` or `url`."),
     );
   const clientId = options.clientId ?? createClientId();
   const userId = options.userId ?? null;
@@ -271,7 +291,7 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     (typeof indexedDB !== "undefined"
       ? new IndexedDbStore({
           databaseName: options.databaseName ?? "convex-localfirst",
-          namespace: options.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
+          namespace: options.namespace ?? defaultNamespace(userId, manifest.schemaVersion),
         })
       : new MemoryLocalStore());
   const transport = createConvexTransport({
@@ -281,13 +301,17 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     clientId,
     // The transport envelope wants a string; an anonymous (null-userId) engine sends
     // "" — the server resolves the real identity from auth and ignores this anyway.
-    userId: userId ?? ""
+    userId: userId ?? "",
   });
   const attachmentBackend = createConvexAttachmentBackend(
     client,
-    options.attachments?.getUploadUrl ? convexFunctionName(options.attachments.getUploadUrl) : "attachments:getUploadUrl",
-    options.attachments?.finalize ? convexFunctionName(options.attachments.finalize) : "attachments:finalize",
-    userId
+    options.attachments?.getUploadUrl
+      ? convexFunctionName(options.attachments.getUploadUrl)
+      : "attachments:getUploadUrl",
+    options.attachments?.finalize
+      ? convexFunctionName(options.attachments.finalize)
+      : "attachments:finalize",
+    userId,
   );
   const engine = createLocalFirstEngine({
     manifest,
@@ -296,7 +320,10 @@ export function createConvexLocalFirst(options: CreateConvexLocalFirstOptions): 
     clientId,
     userId,
     nameOf: convexFunctionName,
-    attachments: { backend: attachmentBackend, storageIdField: options.attachments?.storageIdField }
+    attachments: {
+      backend: attachmentBackend,
+      storageIdField: options.attachments?.storageIdField,
+    },
   });
   // Runtime is core's engine; the cast only adds the convex-typed mutate/query overloads
   // (same methods, inferred arg/return types). Sound: the runtime signatures are wider.
@@ -322,17 +349,23 @@ function createConvexAttachmentBackend(
   client: InstanceType<typeof ConvexReact.ConvexReactClient>,
   getUploadUrlName: string,
   finalizeName: string,
-  userId: string | null
+  userId: string | null,
 ): AttachmentBackend {
   const getUploadUrlRef = makeFunctionReference<"mutation">(getUploadUrlName);
   const finalizeRef = makeFunctionReference<"mutation">(finalizeName);
   return {
     getUploadUrl: ({ table, localId }) =>
-      client.mutation(getUploadUrlRef as never, { table, localId, userId: userId ?? "" } as never) as Promise<string>,
+      client.mutation(
+        getUploadUrlRef as never,
+        { table, localId, userId: userId ?? "" } as never,
+      ) as Promise<string>,
     finalize: ({ table, localId, storageId }) =>
-      (client.mutation(finalizeRef as never, { table, localId, storageId, userId: userId ?? "" } as never) as Promise<unknown>).then(
-        () => undefined
-      )
+      (
+        client.mutation(
+          finalizeRef as never,
+          { table, localId, storageId, userId: userId ?? "" } as never,
+        ) as Promise<unknown>
+      ).then(() => undefined),
   };
 }
 
@@ -342,7 +375,11 @@ export function ConvexProvider(props: {
   readonly localFirst?: LocalFirstProviderConfig;
 }) {
   if (!props.localFirst) {
-    return <ConvexReact.ConvexProvider client={props.client}>{props.children}</ConvexReact.ConvexProvider>;
+    return (
+      <ConvexReact.ConvexProvider client={props.client}>
+        {props.children}
+      </ConvexReact.ConvexProvider>
+    );
   }
   return (
     <ConvexReact.ConvexProvider client={props.client}>
@@ -359,16 +396,17 @@ function LocalFirstProvider(
   props: LocalFirstProviderConfig & {
     readonly client: InstanceType<typeof ConvexReact.ConvexReactClient>;
     readonly children: React.ReactNode;
-  }
+  },
 ) {
   // Resolved ONCE per provider instance: the manifest is pure data derived from the
   // imported modules (stable), and rebuilding it on an inline `modules={{ todos }}`
   // object would thrash the engine every render.
   const [manifest] = useState<LocalFirstManifest>(() => {
     if (props.manifest) return props.manifest;
-    if (props.modules) return collectManifest(props.modules, { schemaVersion: props.schemaVersion });
+    if (props.modules)
+      return collectManifest(props.modules, { schemaVersion: props.schemaVersion });
     throw new Error(
-      "ConvexProvider localFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`."
+      "ConvexProvider localFirst: pass `modules` (your imported lf.table modules) or a prebuilt `manifest`.",
     );
   });
   const [clientId] = useState(() => props.clientId ?? createClientId());
@@ -389,10 +427,9 @@ function LocalFirstProvider(
         clientId,
         // The transport envelope wants a string; an anonymous (null-userId) engine sends
         // "" — the server resolves the real identity from auth and ignores this anyway.
-        userId: userId ?? ""
+        userId: userId ?? "",
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.transport, props.client, pushName, pullName, clientId, userId]
+    [props.transport, props.client, pushName, pullName, clientId, userId],
   );
 
   // Resolve the store with the SAME deps as the engine, so (a) an app that inlines a
@@ -409,11 +446,10 @@ function LocalFirstProvider(
       (typeof indexedDB !== "undefined"
         ? new IndexedDbStore({
             databaseName: props.databaseName ?? "convex-localfirst",
-            namespace: props.namespace ?? defaultNamespace(userId, manifest.schemaVersion)
+            namespace: props.namespace ?? defaultNamespace(userId, manifest.schemaVersion),
           })
         : new MemoryLocalStore()),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [manifest, userId, transport, props.nameOf]
+    [manifest, userId, transport, props.nameOf],
   );
   // Attachment upload backend (P5): the conventional endpoints over the SAME Convex
   // client. Deps use resolved NAMES (the `api.*` proxy is a fresh object per access).
@@ -426,8 +462,10 @@ function LocalFirstProvider(
   const storageIdField = props.attachments?.storageIdField;
   const injectedBackend = props.attachments?.backend;
   const attachmentBackend = useMemo(
-    () => injectedBackend ?? createConvexAttachmentBackend(props.client, getUploadUrlName, finalizeName, userId),
-    [injectedBackend, props.client, getUploadUrlName, finalizeName, userId]
+    () =>
+      injectedBackend ??
+      createConvexAttachmentBackend(props.client, getUploadUrlName, finalizeName, userId),
+    [injectedBackend, props.client, getUploadUrlName, finalizeName, userId],
   );
   const engine = useMemo(() => {
     return new LocalFirstEngine({
@@ -437,10 +475,9 @@ function LocalFirstProvider(
       userId,
       transport,
       nameOf: props.nameOf ?? reactDefaultFunctionName,
-      attachments: { backend: attachmentBackend, storageIdField }
+      attachments: { backend: attachmentBackend, storageIdField },
     });
     // clientId is intentionally captured once; store moves in lockstep (same deps).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifest, userId, transport, props.nameOf, store, attachmentBackend, storageIdField]);
 
   // The engine self-wires browser connectivity in its constructor — reflecting
@@ -470,31 +507,53 @@ function LocalFirstProvider(
     }
     let alive = true;
     const databaseName = props.databaseName ?? "convex-localfirst";
-    const reads = Array.from({ length: manifest.schemaVersion - 1 }, (_, index) => index + 1).map(async (version) => {
-      const namespace = defaultNamespace(userId, version);
-      const legacy = new IndexedDbStore({ databaseName, namespace });
-      try {
-        return (await legacy.getPendingOperations()).map(
-          ({ opId, table, id, kind, schemaVersion, createdAt, error }) =>
-            ({ opId, table, id, kind, schemaVersion, createdAt, error, namespace }) satisfies RecoveryOperation
-        );
-      } finally {
-        (await legacy._database()).close();
-      }
-    });
+    const reads = Array.from({ length: manifest.schemaVersion - 1 }, (_, index) => index + 1).map(
+      async (version) => {
+        const namespace = defaultNamespace(userId, version);
+        const legacy = new IndexedDbStore({ databaseName, namespace });
+        try {
+          return (await legacy.getPendingOperations()).map(
+            ({ opId, table, id, kind, schemaVersion, createdAt, error }) =>
+              ({
+                opId,
+                table,
+                id,
+                kind,
+                schemaVersion,
+                createdAt,
+                error,
+                namespace,
+              }) satisfies RecoveryOperation,
+          );
+        } finally {
+          (await legacy._database()).close();
+        }
+      },
+    );
     void Promise.all(reads)
       .then((operations) => {
         if (alive) engine.setOlderSchemaOperations(operations.flat());
       })
       .catch((error) => {
         if (alive) {
-          console.warn("[convex-localfirst] could not inspect older schema namespaces for pending operations", error);
+          console.warn(
+            "[convex-localfirst] could not inspect older schema namespaces for pending operations",
+            error,
+          );
         }
       });
     return () => {
       alive = false;
     };
-  }, [engine, manifest.schemaVersion, props.databaseName, props.namespace, props.store, store, userId]);
+  }, [
+    engine,
+    manifest.schemaVersion,
+    props.databaseName,
+    props.namespace,
+    props.store,
+    store,
+    userId,
+  ]);
 
   // Multi-tab coordination: elect one leader (only it runs the background batch push)
   // and poke other tabs to re-read the shared IndexedDB after a pull. Engaged only with
@@ -507,17 +566,28 @@ function LocalFirstProvider(
     // Coordinate on the SHARED-data boundary (the store the engine actually holds), not
     // just the user — see coordinationName. engine + store move in lockstep, so this can
     // never key an engine under another store's namespace.
-    const dispose = createMultiTabSync(engine, { name: coordinationName(store, userId), id: engine.clientId });
+    const dispose = createMultiTabSync(engine, {
+      name: coordinationName(store, userId),
+      id: engine.clientId,
+    });
     return dispose;
   }, [engine, userId, store]);
 
-  const beatName = props.sync?.presence ? reactDefaultFunctionName(props.sync.presence) : "sync:presence";
-  const listName = props.sync?.presenceList ? reactDefaultFunctionName(props.sync.presenceList) : "sync:presenceList";
+  const beatName = props.sync?.presence
+    ? reactDefaultFunctionName(props.sync.presence)
+    : "sync:presence";
+  const listName = props.sync?.presenceList
+    ? reactDefaultFunctionName(props.sync.presenceList)
+    : "sync:presenceList";
   const value = useMemo(
     () => ({ engine, presence: { client: props.client, clientId, userId, beatName, listName } }),
-    [engine, props.client, clientId, userId, beatName, listName]
+    [engine, props.client, clientId, userId, beatName, listName],
   );
-  return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
+  return (
+    <LocalFirstReactContext.Provider value={value}>
+      {props.children}
+    </LocalFirstReactContext.Provider>
+  );
 }
 
 // The engine is exposed as a HEADLESS type only (createLocalFirstEngine is the public
@@ -548,16 +618,20 @@ export function LocalFirstEngineProvider(props: {
         clientId: props.engine.clientId,
         userId: props.userId ?? null,
         beatName: "sync:presence",
-        listName: "sync:presenceList"
-      }
+        listName: "sync:presenceList",
+      },
     }),
-    [props.engine, props.userId]
+    [props.engine, props.userId],
   );
   useEffect(() => {
     props.engine.resume();
     // Deliberately no dispose on unmount: the caller owns the engine lifecycle.
   }, [props.engine]);
-  return <LocalFirstReactContext.Provider value={value}>{props.children}</LocalFirstReactContext.Provider>;
+  return (
+    <LocalFirstReactContext.Provider value={value}>
+      {props.children}
+    </LocalFirstReactContext.Provider>
+  );
 }
 
 export type UseLocalFirstQueryOptions<TResult> = {
@@ -579,10 +653,12 @@ type EmptyObject = Record<string, never>;
  * it is a compile error), while an empty-args query lets you omit it. `"skip"` is always
  * allowed in place of the args (Convex-identical).
  */
-export type QueryArgsAndOptions<Query extends FunctionReference<"query">, Options> =
-  Query["_args"] extends EmptyObject
-    ? [args?: EmptyObject | "skip", options?: Options]
-    : [args: Query["_args"] | "skip", options?: Options];
+export type QueryArgsAndOptions<
+  Query extends FunctionReference<"query">,
+  Options,
+> = Query["_args"] extends EmptyObject
+  ? [args?: EmptyObject | "skip", options?: Options]
+  : [args: Query["_args"] | "skip", options?: Options];
 
 /**
  * Convex-compatible useQuery. Args and result type are inferred from the Convex
@@ -597,11 +673,14 @@ export type QueryArgsAndOptions<Query extends FunctionReference<"query">, Option
  */
 export function useQuery<Query extends FunctionReference<"query">>(
   reference: Query,
-  ...argsAndOptions: QueryArgsAndOptions<Query, UseLocalFirstQueryOptions<FunctionReturnType<Query>>>
+  ...argsAndOptions: QueryArgsAndOptions<
+    Query,
+    UseLocalFirstQueryOptions<FunctionReturnType<Query>>
+  >
 ): FunctionReturnType<Query> | undefined {
   const [args, options] = argsAndOptions as [
     FunctionArgs<Query> | "skip" | undefined,
-    UseLocalFirstQueryOptions<FunctionReturnType<Query>>?
+    UseLocalFirstQueryOptions<FunctionReturnType<Query>>?,
   ];
   const engine = useLocalFirstEngine();
   const isLocal = engine !== null && engine.hasLocalQuery(reference);
@@ -609,14 +688,14 @@ export function useQuery<Query extends FunctionReference<"query">>(
 
   const convexResult = ConvexReact.useQuery(
     reference as never,
-    (isLocal ? "skip" : resolvedArgs) as never
+    (isLocal ? "skip" : resolvedArgs) as never,
   ) as FunctionReturnType<Query> | undefined;
 
   const localResult = useLocalQuery<FunctionArgs<Query>, FunctionReturnType<Query>>(
     isLocal ? engine : null,
     reference,
     resolvedArgs,
-    options
+    options,
   );
 
   return isLocal ? localResult : convexResult;
@@ -626,14 +705,17 @@ function useLocalQuery<TArgs, TResult>(
   engine: LocalFirstEngine | null,
   reference: unknown,
   args: TArgs | "skip",
-  options?: UseLocalFirstQueryOptions<TResult>
+  options?: UseLocalFirstQueryOptions<TResult>,
 ): TResult | undefined {
   const [value, setValue] = useState<TResult | undefined>(options?.initial);
   const argsKey = useMemo(() => JSON.stringify(args), [args]);
   // Key the effect on the resolved function NAME, not the reference object:
   // Convex's `api` proxy returns a fresh object per access, so using the object
   // identity would re-run this effect every render (an infinite sync loop).
-  const refKey = useMemo(() => (engine ? engine.functionName(reference) : null), [engine, reference]);
+  const refKey = useMemo(
+    () => (engine ? engine.functionName(reference) : null),
+    [engine, reference],
+  );
 
   useEffect(() => {
     if (!engine || args === "skip") {
@@ -669,7 +751,7 @@ function useLocalQuery<TArgs, TResult>(
       unwatch?.();
     };
     // refKey/argsKey are the stable identity of (function, args); reference and
-    // options are read at effect time. eslint-disable-next-line react-hooks/exhaustive-deps
+    // options are read at effect time.
   }, [engine, refKey, argsKey]);
 
   // "skip" must read as no data SYNCHRONOUSLY (Convex returns undefined): the
@@ -698,7 +780,7 @@ export type UseLiveQueryOptions = {
 
 function liveStructuralKey<Row extends Record<string, unknown>, Rel, Group extends string>(
   engine: LocalFirstEngine,
-  query: LocalQueryPlan<Row, Rel, Group>
+  query: LocalQueryPlan<Row, Rel, Group>,
 ): string {
   return JSON.stringify({
     t: [...engine.tablesForPlan(query)].sort(),
@@ -707,25 +789,28 @@ function liveStructuralKey<Row extends Record<string, unknown>, Rel, Group exten
     o: query.orderSpec ?? (typeof query.orderBy === "function" ? null : (query.orderBy ?? null)),
     l: query.rowLimit ?? null,
     p: query.predicateCount ?? 0,
-    g: query.groupField ?? null
+    g: query.groupField ?? null,
   });
 }
 
 export function useLiveQuery<Row extends Record<string, unknown>, Rel, Group extends string>(
-  query: (LocalQueryPlan<Row, Rel, Group> & ([Group] extends [never] ? never : { readonly __group: Group })) | "skip",
-  options?: UseLiveQueryOptions
+  query:
+    | (LocalQueryPlan<Row, Rel, Group> &
+        ([Group] extends [never] ? never : { readonly __group: Group }))
+    | "skip",
+  options?: UseLiveQueryOptions,
 ): ReadonlyMap<string | null, Array<Row & Rel>> | undefined;
 export function useLiveQuery<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
   query: LocalQueryPlan<Row, Rel, never> | "skip",
-  options?: UseLiveQueryOptions
+  options?: UseLiveQueryOptions,
 ): Array<Row & Rel> | undefined;
 export function useLiveQuery<
   Row extends Record<string, unknown> = RowValue,
   Rel = unknown,
-  Group extends string = never
+  Group extends string = never,
 >(
   query: LocalQueryPlan<Row, Rel, Group> | "skip",
-  options?: UseLiveQueryOptions
+  options?: UseLiveQueryOptions,
 ): Array<Row & Rel> | ReadonlyMap<string | null, Array<Row & Rel>> | undefined {
   const engine = useLocalFirstEngine();
   const [, setTick] = useState(0);
@@ -739,10 +824,7 @@ export function useLiveQuery<
   // count). The incremental view is re-subscribed only when this changes; ordinary data
   // changes are handled by the view's O(log n) delta splicing, never by re-scanning. An
   // inline-rebuilt query object with the same shape keeps the same view (stable identity).
-  const structuralKey =
-    query === "skip" || !engine
-      ? null
-      : liveStructuralKey(engine, query);
+  const structuralKey = query === "skip" || !engine ? null : liveStructuralKey(engine, query);
 
   useEffect(() => {
     if (!engine || query === "skip") {
@@ -758,7 +840,8 @@ export function useLiveQuery<
     void engine.refreshPlan(query);
     const unwatch = engine.watchPlan(query);
     const pollMs = options?.pollMs;
-    const timer = !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
+    const timer =
+      !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
     return () => {
       sub.dispose();
       subRef.current = null;
@@ -766,7 +849,6 @@ export function useLiveQuery<
       if (timer) clearInterval(timer);
     };
     // query is read at effect time; structuralKey is the stable identity of its shape.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, structuralKey]);
 
   if (query === "skip" || !engine) return undefined;
@@ -778,20 +860,23 @@ export function useLiveQuery<
  * Ordering and row limits do not affect counts. Grouped plans return a record;
  * ungrouped plans return one number. */
 export function useLiveCounts<Row extends Record<string, unknown>, Rel, Group extends string>(
-  query: (LocalQueryPlan<Row, Rel, Group> & ([Group] extends [never] ? never : { readonly __group: Group })) | "skip",
-  options?: UseLiveQueryOptions
+  query:
+    | (LocalQueryPlan<Row, Rel, Group> &
+        ([Group] extends [never] ? never : { readonly __group: Group }))
+    | "skip",
+  options?: UseLiveQueryOptions,
 ): Record<string, number> | undefined;
 export function useLiveCounts<Row extends Record<string, unknown> = RowValue, Rel = unknown>(
   query: LocalQueryPlan<Row, Rel, never> | "skip",
-  options?: UseLiveQueryOptions
+  options?: UseLiveQueryOptions,
 ): number | undefined;
 export function useLiveCounts<
   Row extends Record<string, unknown> = RowValue,
   Rel = unknown,
-  Group extends string = never
+  Group extends string = never,
 >(
   query: LocalQueryPlan<Row, Rel, Group> | "skip",
-  options?: UseLiveQueryOptions
+  options?: UseLiveQueryOptions,
 ): number | Record<string, number> | undefined {
   const engine = useLocalFirstEngine();
   const [, setTick] = useState(0);
@@ -812,14 +897,14 @@ export function useLiveCounts<
     void engine.refreshPlan(query);
     const unwatch = engine.watchPlan(query);
     const pollMs = options?.pollMs;
-    const timer = !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
+    const timer =
+      !unwatch && pollMs ? setInterval(() => void engine.refreshPlan(query), pollMs) : null;
     return () => {
       sub.dispose();
       subRef.current = null;
       unwatch?.();
       if (timer) clearInterval(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, structuralKey]);
 
   if (query === "skip" || !engine) return undefined;
@@ -858,7 +943,7 @@ const EMPTY_SEARCH: UseSearchResult = { results: [], total: 0 };
 export function useSearch<Row extends Record<string, unknown> = RowValue>(
   table: string,
   query: string,
-  options?: UseSearchOptions
+  options?: UseSearchOptions,
 ): UseSearchResult<Row> {
   const engine = useLocalFirstEngine();
   const [, setTick] = useState(0);
@@ -891,7 +976,6 @@ export function useSearch<Row extends Record<string, unknown> = RowValue>(
       subRef.current = null;
     };
     // query/scope/limit are read at effect time; structuralKey is their stable identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, structuralKey]);
 
   if (!engine || trimmed === "") return EMPTY_SEARCH as UseSearchResult<Row>;
@@ -916,28 +1000,37 @@ export type LocalFirstMutator<Mutation extends FunctionReference<"mutation">> = 
  * `.local` / `.server` are separately awaitable.
  */
 export function useMutation<Mutation extends FunctionReference<"mutation">>(
-  reference: Mutation
+  reference: Mutation,
 ): LocalFirstMutator<Mutation> {
   type TArgs = FunctionArgs<Mutation>;
   type TResult = FunctionReturnType<Mutation>;
   const engine = useLocalFirstEngine();
-  const convexMutation = ConvexReact.useMutation(reference as never) as (args: TArgs) => Promise<TResult>;
+  const convexMutation = ConvexReact.useMutation(reference as never) as (
+    args: TArgs,
+  ) => Promise<TResult>;
   const isLocal = engine !== null && engine.hasLocalMutation(reference);
   // Stable function NAME, not the per-access `api` proxy object — otherwise the
   // returned mutator changes every render and re-runs any effect that depends on it.
-  const refKey = useMemo(() => (engine ? engine.functionName(reference) : null), [engine, reference]);
+  const refKey = useMemo(
+    () => (engine ? engine.functionName(reference) : null),
+    [engine, reference],
+  );
 
   return useMemo<LocalFirstMutator<Mutation>>(() => {
     // Empty-args mutations may be called with (); default the omitted args to {}.
     if (isLocal && engine) {
       return ((...args: OptionalRestArgs<Mutation>) =>
-        engine.mutate<TArgs, TResult>(reference, (args[0] ?? {}) as TArgs)) as LocalFirstMutator<Mutation>;
+        engine.mutate<TArgs, TResult>(
+          reference,
+          (args[0] ?? {}) as TArgs,
+        )) as LocalFirstMutator<Mutation>;
     }
     // Fallback to Convex, but keep the uniform return type so .local/.server work.
     return ((...args: OptionalRestArgs<Mutation>) =>
-      createFallbackMutationCall<TResult>(convexMutation((args[0] ?? {}) as TArgs))) as LocalFirstMutator<Mutation>;
+      createFallbackMutationCall<TResult>(
+        convexMutation((args[0] ?? {}) as TArgs),
+      )) as LocalFirstMutator<Mutation>;
     // reference is read at call time; refKey is its stable identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, convexMutation, isLocal, refKey]);
 }
 
@@ -960,16 +1053,20 @@ export function useMutation<Mutation extends FunctionReference<"mutation">>(
  * }).local;
  * ```
  */
-export function useBatch(): <T = unknown>(fn: () => void | Promise<void>) => LocalFirstBatchCall<T> {
+export function useBatch(): <T = unknown>(
+  fn: () => void | Promise<void>,
+) => LocalFirstBatchCall<T> {
   const engine = useLocalFirstEngine();
   return useCallback(
-    <T = unknown>(fn: () => void | Promise<void>): LocalFirstBatchCall<T> => {
+    <T = unknown,>(fn: () => void | Promise<void>): LocalFirstBatchCall<T> => {
       if (!engine) {
-        throw new Error("useBatch: no local-first engine (mount inside ConvexProvider with localFirst).");
+        throw new Error(
+          "useBatch: no local-first engine (mount inside ConvexProvider with localFirst).",
+        );
       }
       return engine.batch<T>(fn);
     },
-    [engine]
+    [engine],
   );
 }
 
@@ -1007,7 +1104,12 @@ export type ScopeStatus = {
   readonly denied: boolean;
 };
 
-const HYDRATING_SCOPE: ScopeStatus = { hydrated: false, partial: false, syncing: false, denied: false };
+const HYDRATING_SCOPE: ScopeStatus = {
+  hydrated: false,
+  partial: false,
+  syncing: false,
+  denied: false,
+};
 
 /**
  * Per-scope hydration honesty (DX v4 §10). Pass the scope-value object (`{ workspace_id }`,
@@ -1024,7 +1126,9 @@ const HYDRATING_SCOPE: ScopeStatus = { hydrated: false, partial: false, syncing:
 export function useScopeStatus(scope: Record<string, unknown> | null | undefined): ScopeStatus {
   const engine = useLocalFirstEngine();
   const scopeKey = useMemo(() => JSON.stringify(scope ?? null), [scope]);
-  const [status, setStatus] = useState<ScopeStatus>(() => engine?.getScopeStatus(scope) ?? HYDRATING_SCOPE);
+  const [status, setStatus] = useState<ScopeStatus>(
+    () => engine?.getScopeStatus(scope) ?? HYDRATING_SCOPE,
+  );
   useEffect(() => {
     if (!engine) {
       setStatus(HYDRATING_SCOPE);
@@ -1042,7 +1146,6 @@ export function useScopeStatus(scope: Record<string, unknown> | null | undefined
       unsubRoles();
     };
     // scope is read at effect time; scopeKey is its stable identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, scopeKey]);
   return status;
 }
@@ -1061,12 +1164,12 @@ export function useScopeStatus(scope: Record<string, unknown> | null | undefined
  * ```
  */
 export function useRole<Role = unknown>(
-  scope: Record<string, unknown> | null | undefined
+  scope: Record<string, unknown> | null | undefined,
 ): Role | null | undefined {
   const engine = useLocalFirstEngine();
   const scopeKey = useMemo(() => JSON.stringify(scope ?? null), [scope]);
   const [role, setRole] = useState<Role | null | undefined>(() =>
-    engine ? (engine.getRole(scope) as Role | null | undefined) : undefined
+    engine ? (engine.getRole(scope) as Role | null | undefined) : undefined,
   );
   useEffect(() => {
     if (!engine) {
@@ -1079,7 +1182,6 @@ export function useRole<Role = unknown>(
     void engine.syncRoleScope(scope);
     return engine.subscribeRoles(read);
     // scope is read at effect time; scopeKey is its stable identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, scopeKey]);
   return role;
 }
@@ -1109,13 +1211,18 @@ export function useCan<Modules extends Record<string, unknown> = never>(): CanCh
         insert: (table: string, proposed: Record<string, unknown>) =>
           engine ? engine.can(table, "insert", { proposed }) : true,
         patch: (table: string, row: Record<string, unknown>, patch?: Record<string, unknown>) =>
-          engine ? engine.can(table, "patch", { before: row, patch, proposed: { ...row, ...(patch ?? {}) } }) : true,
+          engine
+            ? engine.can(table, "patch", {
+                before: row,
+                patch,
+                proposed: { ...row, ...patch },
+              })
+            : true,
         remove: (table: string, row: Record<string, unknown>) =>
-          engine ? engine.can(table, "delete", { before: row, proposed: null }) : true
+          engine ? engine.can(table, "delete", { before: row, proposed: null }) : true,
       }) as CanChecker<Modules>,
     // tick refreshes the checker identity when roles change, so consumers re-evaluate.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [engine, tick]
+    [engine, tick],
   );
 }
 
@@ -1148,11 +1255,10 @@ export function useUndo(scope?: Record<string, unknown> | null): {
       undo: () => (engine ? engine.undo(scope) : Promise.resolve()),
       redo: () => (engine ? engine.redo(scope) : Promise.resolve()),
       canUndo: engine ? engine.canUndo(scope) : false,
-      canRedo: engine ? engine.canRedo(scope) : false
+      canRedo: engine ? engine.canRedo(scope) : false,
     }),
     // scope is read at call time; scopeKey + tick are the stable identity + change signal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [engine, scopeKey, tick]
+    [engine, scopeKey, tick],
   );
 }
 
@@ -1177,20 +1283,23 @@ export type CreateAttachmentInput = {
  * ```
  */
 export function useCreateAttachment(
-  insert: FunctionReference<"mutation">
+  insert: FunctionReference<"mutation">,
 ): (input: CreateAttachmentInput) => Promise<{ localId: string }> {
   const engine = useLocalFirstEngine();
   const refKey = useMemo(() => (engine ? engine.functionName(insert) : null), [engine, insert]);
   return useCallback(
     (input: CreateAttachmentInput) => {
       if (!engine) {
-        return Promise.reject(new Error("useCreateAttachment: no local-first engine (mount inside ConvexProvider with localFirst)."));
+        return Promise.reject(
+          new Error(
+            "useCreateAttachment: no local-first engine (mount inside ConvexProvider with localFirst).",
+          ),
+        );
       }
       return engine.createAttachment({ insert, metadata: input.metadata, blob: input.blob });
     },
     // insert is read at call time; refKey is its stable identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [engine, refKey]
+    [engine, refKey],
   );
 }
 
@@ -1205,7 +1314,8 @@ const DEFAULT_ATTACHMENT_STATE: AttachmentUploadState = { state: "queued", progr
 export function useAttachmentUpload(localId: string | null | undefined): AttachmentUploadState {
   const engine = useLocalFirstEngine();
   const [state, setState] = useState<AttachmentUploadState>(
-    () => (engine && localId ? engine.getAttachmentState(localId) : null) ?? DEFAULT_ATTACHMENT_STATE
+    () =>
+      (engine && localId ? engine.getAttachmentState(localId) : null) ?? DEFAULT_ATTACHMENT_STATE,
   );
   useEffect(() => {
     if (!engine || !localId) {
@@ -1214,7 +1324,7 @@ export function useAttachmentUpload(localId: string | null | undefined): Attachm
     }
     setState(engine.getAttachmentState(localId) ?? DEFAULT_ATTACHMENT_STATE);
     return engine.subscribeAttachment(localId, () =>
-      setState(engine.getAttachmentState(localId) ?? DEFAULT_ATTACHMENT_STATE)
+      setState(engine.getAttachmentState(localId) ?? DEFAULT_ATTACHMENT_STATE),
     );
   }, [engine, localId]);
   return state;
@@ -1245,7 +1355,7 @@ const EMPTY_PEERS: PresencePeer[] = [];
 export function usePresence(
   scope?: { readonly workspace?: string; readonly project?: string },
   data?: Record<string, unknown>,
-  options?: { readonly heartbeatMs?: number }
+  options?: { readonly heartbeatMs?: number },
 ): { readonly peers: PresencePeer[]; readonly others: PresencePeer[] } {
   const presence = useContext(LocalFirstReactContext)?.presence ?? null;
   const heartbeatMs = options?.heartbeatMs ?? 10_000;
@@ -1261,11 +1371,11 @@ export function usePresence(
   const peers =
     (ConvexReact.useQuery(
       listRef as never,
-      (presence ? { scopeKey, userId: presence.userId ?? "" } : "skip") as never
+      (presence ? { scopeKey, userId: presence.userId ?? "" } : "skip") as never,
     ) as PresencePeer[] | undefined) ?? EMPTY_PEERS;
 
   // The heartbeat loop reads `data` through a ref so a changing object doesn't
-  // restart it. ponytail: a data change is broadcast on the NEXT beat (≤ heartbeatMs);
+  // restart it. A data change is broadcast on the NEXT beat (≤ heartbeatMs);
   // lower heartbeatMs if you push fast-changing data like cursors.
   const dataRef = useRef<Record<string, unknown>>(data ?? {});
   dataRef.current = data ?? {};
@@ -1283,8 +1393,8 @@ export function usePresence(
             clientId: presence.clientId,
             userId: presence.userId ?? "",
             data: dataRef.current,
-            leaving
-          } as never
+            leaving,
+          } as never,
         )
         .catch(() => {
           // Presence is best-effort: an offline or rejected beat simply means we
@@ -1302,7 +1412,10 @@ export function usePresence(
   }, [presence, scopeKey, heartbeatMs]);
 
   return useMemo(
-    () => ({ peers, others: presence ? peers.filter((p) => p.clientId !== presence.clientId) : peers }),
-    [peers, presence]
+    () => ({
+      peers,
+      others: presence ? peers.filter((p) => p.clientId !== presence.clientId) : peers,
+    }),
+    [peers, presence],
   );
 }

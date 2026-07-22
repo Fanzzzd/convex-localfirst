@@ -8,10 +8,8 @@ export type LocalQueryGroupKey = string | null;
 export type LocalQueryResult<
   Row extends Record<string, unknown>,
   Rel,
-  Group extends string = never
-> = [Group] extends [never]
-  ? Array<Row & Rel>
-  : ReadonlyMap<LocalQueryGroupKey, Array<Row & Rel>>;
+  Group extends string = never,
+> = [Group] extends [never] ? Array<Row & Rel> : ReadonlyMap<LocalQueryGroupKey, Array<Row & Rel>>;
 
 export type LocalQueryCountResult<Group extends PropertyKey = never> = [Group] extends [never]
   ? number
@@ -31,7 +29,7 @@ export type LocalQueryCountResult<Group extends PropertyKey = never> = [Group] e
 export type LocalQueryPlan<
   Row extends Record<string, unknown> = Record<string, unknown>,
   Rel = unknown,
-  Group extends string = never
+  Group extends string = never,
 > = {
   readonly __localFirstQuery: true;
   /**
@@ -111,9 +109,8 @@ type Ops<Row extends Record<string, unknown>> = {
 export class LocalQuery<
   Row extends Record<string, unknown> = RowValue,
   Rel = unknown,
-  Group extends string = never
-> implements LocalQueryPlan<Row, Rel, Group>
-{
+  Group extends string = never,
+> implements LocalQueryPlan<Row, Rel, Group> {
   readonly __localFirstQuery = true as const;
   /** Phantom carrier for `Rel` (see LocalQueryPlan.__rel) — `declare` ⇒ no runtime field. */
   declare readonly __rel: Rel;
@@ -121,7 +118,12 @@ export class LocalQuery<
 
   constructor(
     readonly table: string,
-    private readonly ops: Ops<Row> = { predicates: [], filters: [], orderDir: "asc", relations: [] }
+    private readonly ops: Ops<Row> = {
+      predicates: [],
+      filters: [],
+      orderDir: "asc",
+      relations: [],
+    },
   ) {}
 
   /** Narrow to a workspace/project scope (typed to the row's scope fields). */
@@ -141,7 +143,10 @@ export class LocalQuery<
   }
 
   /** Sort by a field; defaults to ascending. */
-  order<K extends keyof Row>(field: K, direction: "asc" | "desc" = "asc"): LocalQuery<Row, Rel, Group> {
+  order<K extends keyof Row>(
+    field: K,
+    direction: "asc" | "desc" = "asc",
+  ): LocalQuery<Row, Rel, Group> {
     return this.with({ orderKey: field, orderDir: direction });
   }
 
@@ -162,11 +167,19 @@ export class LocalQuery<
    */
   related<Name extends string, Target extends Record<string, unknown>, Many extends boolean>(
     name: Name,
-    spec: RelationSpec<Target, Many>
-  ): LocalQuery<Row, Rel & { [K in Name]: Many extends true ? Target[] : Target | undefined }, Group> {
-    return new LocalQuery<Row, Rel & { [K in Name]: Many extends true ? Target[] : Target | undefined }, Group>(this.table, {
+    spec: RelationSpec<Target, Many>,
+  ): LocalQuery<
+    Row,
+    Rel & { [K in Name]: Many extends true ? Target[] : Target | undefined },
+    Group
+  > {
+    return new LocalQuery<
+      Row,
+      Rel & { [K in Name]: Many extends true ? Target[] : Target | undefined },
+      Group
+    >(this.table, {
       ...this.ops,
-      relations: [...this.ops.relations, { name, spec }]
+      relations: [...this.ops.relations, { name, spec }],
     });
   }
 
@@ -186,12 +199,15 @@ export class LocalQuery<
    * Equivalent to chaining `.related(name, spec)` for each entry.
    */
   withRelations<Specs extends Record<string, RelationSpec>>(
-    specs: Specs
+    specs: Specs,
   ): LocalQuery<Row, Rel & RelationsResult<Specs>, Group> {
-    const entries: RelationEntry[] = Object.keys(specs).map((name) => ({ name, spec: specs[name]! }));
+    const entries: RelationEntry[] = Object.keys(specs).map((name) => ({
+      name,
+      spec: specs[name]!,
+    }));
     return new LocalQuery<Row, Rel & RelationsResult<Specs>, Group>(this.table, {
       ...this.ops,
-      relations: [...this.ops.relations, ...entries]
+      relations: [...this.ops.relations, ...entries],
     });
   }
 
@@ -205,7 +221,9 @@ export class LocalQuery<
 
   /** Planning metadata (see LocalQueryPlan.orderBy). Populated from `.order(...)`. */
   get orderBy(): { readonly field: string; readonly dir: "asc" | "desc" } | undefined {
-    return this.ops.orderKey !== undefined ? { field: String(this.ops.orderKey), dir: this.ops.orderDir } : undefined;
+    return this.ops.orderKey !== undefined
+      ? { field: String(this.ops.orderKey), dir: this.ops.orderDir }
+      : undefined;
   }
 
   get orderSpec(): { readonly field: string; readonly dir: "asc" | "desc" } | undefined {
@@ -238,8 +256,10 @@ export class LocalQuery<
         if ((row as Record<string, unknown>)[key] !== scopeValues[key]) return false;
       }
     }
-    return this.ops.filters.every((filter) => matchesFilter(row, filter)) &&
-      this.ops.predicates.every((predicate) => predicate(row));
+    return (
+      this.ops.filters.every((filter) => matchesFilter(row, filter)) &&
+      this.ops.predicates.every((predicate) => predicate(row))
+    );
   }
 
   run(rows: readonly RowValue[]): Row[] {
@@ -261,6 +281,8 @@ export class LocalQuery<
 }
 
 /** Start a typed local-first query over a table: `collection<Doc<"issues">>("issues")`. */
-export function collection<Row extends Record<string, unknown> = RowValue>(table: string): LocalQuery<Row> {
+export function collection<Row extends Record<string, unknown> = RowValue>(
+  table: string,
+): LocalQuery<Row> {
   return new LocalQuery<Row>(table);
 }

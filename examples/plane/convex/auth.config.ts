@@ -30,7 +30,7 @@ export default {
       applicationID: APPLICATION_ID,
       issuer: ISSUER,
       jwks: JWKS_DATA_URI,
-      algorithm: "RS256"
-    }
-  ]
+      algorithm: "RS256",
+    },
+  ],
 };

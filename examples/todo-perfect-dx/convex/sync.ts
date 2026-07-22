@@ -28,9 +28,9 @@ export const { push, pull, presence, presenceList, gc } = createSyncFunctions({
         .query(membershipTable)
         .withIndex("by_user_ws", (q: any) => q.eq("userId", userId).eq("workspaceId", scopeValue))
         .unique();
-    }
+    },
   },
   // This demo runs on a local backend with NO auth provider, so identity can't
   // come from auth. Trust the client userId here only — never set this in prod.
-  devUnsafeAllowClientUserId: true
+  devUnsafeAllowClientUserId: true,
 });

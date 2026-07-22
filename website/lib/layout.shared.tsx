@@ -5,17 +5,17 @@ import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: "Convex Local-First"
+      title: "Convex Local-First",
     },
     links: [
       {
         text: "Getting started",
-        url: "/docs/getting-started"
+        url: "/docs/getting-started",
       },
       {
         text: "API",
-        url: "/docs/reference/api"
-      }
-    ]
+        url: "/docs/reference/api",
+      },
+    ],
   };
 }

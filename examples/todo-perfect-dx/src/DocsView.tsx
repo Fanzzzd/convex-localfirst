@@ -13,7 +13,8 @@ type DocRow = Doc<"documents"> & { _conflict?: unknown };
 const ICONS = ["📄", "📝", "📊", "🚀", "🐛", "💡", "📌", "🎯", "🔖", "📚"];
 
 export function DocsView({ workspaceId, user }: { workspaceId: string; user: string }) {
-  const docs = useLiveQuery(collection<DocRow>("documents").scope({ workspaceId }).order("position")) ?? [];
+  const docs =
+    useLiveQuery(collection<DocRow>("documents").scope({ workspaceId }).order("position")) ?? [];
   const createDocument = useMutation(api.documents.create);
   const renameDocument = useMutation(api.documents.rename);
   const setIcon = useMutation(api.documents.setIcon);
@@ -31,19 +32,19 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
   // treated as a root, so deleting a parent never hides its children.
   const { roots, childrenOf } = useMemo(() => {
     const ids = new Set<string>(docs.map((d) => d._id));
-    const childrenOf = new Map<string, DocRow[]>();
-    const roots: DocRow[] = [];
+    const childMap = new Map<string, DocRow[]>();
+    const rootList: DocRow[] = [];
     for (const d of docs) {
       const parent = d.parentId && ids.has(d.parentId) ? d.parentId : null;
       if (parent) {
-        const list = childrenOf.get(parent) ?? [];
+        const list = childMap.get(parent) ?? [];
         list.push(d);
-        childrenOf.set(parent, list);
+        childMap.set(parent, list);
       } else {
-        roots.push(d);
+        rootList.push(d);
       }
     }
-    return { roots, childrenOf };
+    return { roots: rootList, childrenOf: childMap };
   }, [docs]);
 
   // Keep a valid selection; default to the first page once data loads.
@@ -62,7 +63,13 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
   const createPage = async (parentId?: string) => {
     // .local resolves to the optimistic LocalCommit — its id is the new page's
     // localId, so we can select the page we just created with zero guesswork.
-    const commit = await createDocument({ workspaceId, title: "Untitled", icon: "📄", parentId, position: Date.now() }).local;
+    const commit = await createDocument({
+      workspaceId,
+      title: "Untitled",
+      icon: "📄",
+      parentId,
+      position: Date.now(),
+    }).local;
     if (parentId) setExpanded((e) => new Set(e).add(parentId));
     setSelected(commit.id);
   };
@@ -85,7 +92,7 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
           data-title={doc.title}
           className={cn(
             "group flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-sm hover:bg-muted",
-            selected === doc._id && "bg-muted font-medium"
+            selected === doc._id && "bg-muted font-medium",
           )}
           style={{ paddingLeft: 8 + depth * 14 }}
           onClick={() => setSelected(doc._id)}
@@ -96,7 +103,7 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
             className={cn(
               "flex size-4 items-center justify-center text-muted-foreground transition-transform",
               kids.length ? "" : "invisible",
-              isOpen && "rotate-90"
+              isOpen && "rotate-90",
             )}
             onClick={(e) => {
               e.stopPropagation();
@@ -130,14 +137,26 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
     <div className="flex gap-4" style={{ minHeight: "70vh" }}>
       <aside className="w-64 shrink-0 rounded-xl border bg-card p-2">
         <div className="mb-2 flex items-center justify-between px-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pages</span>
-          <Button data-testid="new-page" aria-label="New page" size="icon" variant="ghost" className="size-7" onClick={() => void createPage()}>
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Pages
+          </span>
+          <Button
+            data-testid="new-page"
+            aria-label="New page"
+            size="icon"
+            variant="ghost"
+            className="size-7"
+            onClick={() => void createPage()}
+          >
             <Plus className="size-4" />
           </Button>
         </div>
         <div data-testid="doc-tree" className="flex flex-col gap-0.5">
           {roots.length === 0 ? (
-            <p data-testid="docs-empty" className="px-2 py-6 text-center text-sm text-muted-foreground">
+            <p
+              data-testid="docs-empty"
+              className="px-2 py-6 text-center text-sm text-muted-foreground"
+            >
               No pages yet
             </p>
           ) : null}
@@ -156,7 +175,7 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
                 onClick={() =>
                   void setIcon({
                     id: selectedDoc._id,
-                    icon: ICONS[(ICONS.indexOf(selectedDoc.icon ?? "📄") + 1) % ICONS.length]!
+                    icon: ICONS[(ICONS.indexOf(selectedDoc.icon ?? "📄") + 1) % ICONS.length]!,
                   }).local
                 }
               >
@@ -170,14 +189,18 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
                   const id = selectedDoc._id;
                   setTitleDraft(value);
                   if (renameTimer.current) clearTimeout(renameTimer.current);
-                  renameTimer.current = setTimeout(() => void renameDocument({ id, title: value }).local, 300);
+                  renameTimer.current = setTimeout(
+                    () => void renameDocument({ id, title: value }).local,
+                    300,
+                  );
                 }}
                 onBlur={() => {
                   if (renameTimer.current) {
                     clearTimeout(renameTimer.current);
                     renameTimer.current = null;
                   }
-                  if (selectedDoc.title !== titleDraft) void renameDocument({ id: selectedDoc._id, title: titleDraft }).local;
+                  if (selectedDoc.title !== titleDraft)
+                    void renameDocument({ id: selectedDoc._id, title: titleDraft }).local;
                 }}
                 placeholder="Untitled"
                 className="h-auto border-0 px-0 !text-3xl font-bold shadow-none focus-visible:ring-0"
@@ -197,7 +220,12 @@ export function DocsView({ workspaceId, user }: { workspaceId: string; user: str
                 <Trash2 className="size-4" />
               </Button>
             </div>
-            <DocEditor key={selectedDoc._id} docId={selectedDoc._id} workspaceId={workspaceId} user={user} />
+            <DocEditor
+              key={selectedDoc._id}
+              docId={selectedDoc._id}
+              workspaceId={workspaceId}
+              user={user}
+            />
           </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 py-20 text-muted-foreground">

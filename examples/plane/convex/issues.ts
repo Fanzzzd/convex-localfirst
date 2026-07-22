@@ -32,7 +32,7 @@ export const issues = lf.table("issues", {
     description_html: v.optional(v.string()),
     is_draft: v.optional(v.boolean()),
     created_by: v.string(),
-    updated_by: v.optional(v.string())
+    updated_by: v.optional(v.string()),
   },
   scope: scopeWorkspaceId,
   timestamps: ["created_at", "updated_at"],
@@ -52,8 +52,8 @@ export const issues = lf.table("issues", {
         !!row && (row.created_by === userId || (row.assignee_ids ?? []).includes(userId ?? ""));
       if (action === "insert") return proposed?.created_by === userId;
       return sees(before) && (action === "delete" || sees(proposed));
-    }
-  }
+    },
+  },
 });
 
 // Derived from the shape: create takes every field (timestamps stamped automatically),

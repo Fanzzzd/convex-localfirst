@@ -10,11 +10,12 @@ import {
   type AttachmentBackend,
   type LocalFirstManifest,
   type PushResponse,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 
 // Minimal convex/react stub (local-first never touches it here).
 vi.mock("convex/react", () => ({
+  // oxlint-disable-next-line typescript/no-extraneous-class -- stub for a class the consumer instantiates with `new`
   ConvexReactClient: class {},
   ConvexProvider: ({ children }: { children: React.ReactNode }) => children,
   Authenticated: ({ children }: { children: React.ReactNode }) => children,
@@ -23,19 +24,28 @@ vi.mock("convex/react", () => ({
   useConvex: () => null,
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
   useQuery: () => undefined,
-  useMutation: () => async () => undefined
+  useMutation: () => async () => undefined,
 }));
 
-const { ConvexProvider, ConvexReactClient, useCreateAttachment, useAttachmentUpload, useSyncRecovery } = await import(
-  "../../src/react/index"
-);
+const {
+  ConvexProvider,
+  ConvexReactClient,
+  useCreateAttachment,
+  useAttachmentUpload,
+  useSyncRecovery,
+} = await import("../../src/react/index");
 const client = new ConvexReactClient("http://localhost");
 
 function manifest(): LocalFirstManifest {
   return defineLocalFirstManifest({
     schemaVersion: 1,
     tables: {
-      attachments: localTable({ table: "attachments", idField: "localId", scope: byUser("ownerId"), indexes: {} })
+      attachments: localTable({
+        table: "attachments",
+        idField: "localId",
+        scope: byUser("ownerId"),
+        indexes: {},
+      }),
     },
     queries: {},
     mutations: {
@@ -47,10 +57,10 @@ function manifest(): LocalFirstManifest {
           kind: "insert",
           table: "attachments",
           id: args.localId ?? ctx.localId("attachments"),
-          value: { ownerId: "user_a", name: args.name, storageId: null }
-        })
-      })
-    }
+          value: { ownerId: "user_a", name: args.name, storageId: null },
+        }),
+      }),
+    },
   });
 }
 
@@ -61,12 +71,12 @@ const acceptAll: SyncTransport = {
       rejected: [],
       idMaps: [],
       changes: [],
-      serverTime: 1
+      serverTime: 1,
     };
   },
   async pull() {
     return { changes: [], cursors: {}, serverTime: 1 };
-  }
+  },
 };
 
 function makeBackend(opts: { fail?: boolean; gate?: Promise<void> }): AttachmentBackend {
@@ -82,7 +92,7 @@ function makeBackend(opts: { fail?: boolean; gate?: Promise<void> }): Attachment
     },
     async finalize() {
       if (opts.fail) throw new Error("finalize denied");
-    }
+    },
   };
 }
 
@@ -95,7 +105,10 @@ function Harness({ localIdRef }: { localIdRef: { current: string | null } }) {
       <button
         type="button"
         onClick={() =>
-          void create({ metadata: { name: "f.txt" }, blob: new Blob(["x"], { type: "text/plain" }) }).then((r) => {
+          void create({
+            metadata: { name: "f.txt" },
+            blob: new Blob(["x"], { type: "text/plain" }),
+          }).then((r) => {
             localIdRef.current = r.localId;
             setLocalId(r.localId);
           })
@@ -132,11 +145,11 @@ describe("useCreateAttachment / useAttachmentUpload", () => {
           store: new MemoryLocalStore(),
           userId: "user_a",
           nameOf: (r) => String(r),
-          attachments: { backend }
+          attachments: { backend },
         }}
       >
         <Harness localIdRef={localIdRef} />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
 
     await act(async () => {
@@ -174,7 +187,7 @@ describe("useCreateAttachment / useAttachmentUpload", () => {
       >
         <Harness localIdRef={localIdRef} />
         <RecoveryProbe />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
 
     await act(async () => {
@@ -182,7 +195,9 @@ describe("useCreateAttachment / useAttachmentUpload", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("failed"), { timeout: 3000 });
+    await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("failed"), {
+      timeout: 3000,
+    });
     await waitFor(() => expect(screen.getByTestId("failed").textContent).toBe("1"));
   });
 });

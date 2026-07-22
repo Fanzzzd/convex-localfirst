@@ -2,10 +2,9 @@ import type {
   FunctionName,
   OperationKind,
   OperationPlan,
-  RoleValue,
   RowValue,
   SyncScope,
-  TableName
+  TableName,
 } from "./types.js";
 import type { DeclaredRelations } from "./relations.js";
 
@@ -14,7 +13,7 @@ import type { DeclaredRelations } from "./relations.js";
  *  only: the server stays authoritative. */
 export type ClientCanWriteInput<
   Row extends Record<string, unknown> = Record<string, unknown>,
-  Role = unknown
+  Role = unknown,
 > = {
   readonly userId: string | null;
   readonly role: Role;
@@ -29,7 +28,7 @@ export type ClientCanWriteInput<
  *  (isomorphic module: the server ignores it, the client uses it). Pure — no ctx. */
 export type ClientCanConfig<
   Row extends Record<string, unknown> = Record<string, unknown>,
-  Role = unknown
+  Role = unknown,
 > = {
   readonly write?: (input: ClientCanWriteInput<Row, Role>) => boolean;
 };
@@ -127,12 +126,10 @@ export type LocalMutationDefinition<TArgs = unknown, TResult = unknown> = {
 export type LocalFirstManifest = {
   readonly schemaVersion: number;
   readonly tables: Record<TableName, LocalTableDefinition>;
-  // ponytail: a heterogeneous registry of differently-typed query/mutation defs.
+  // A heterogeneous registry of differently-typed query/mutation defs.
   // Function-arg contravariance makes <unknown,unknown> reject concrete defs, so
   // the container is intentionally <any, any>; per-call generics stay precise.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly queries: Record<FunctionName, LocalQueryDefinition<any, any>>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly mutations: Record<FunctionName, LocalMutationDefinition<any, any>>;
 };
 
@@ -145,13 +142,13 @@ export function localTable(definition: LocalTableDefinition): LocalTableDefiniti
 }
 
 export function localQuery<TArgs, TResult>(
-  definition: LocalQueryDefinition<TArgs, TResult>
+  definition: LocalQueryDefinition<TArgs, TResult>,
 ): LocalQueryDefinition<TArgs, TResult> {
   return definition;
 }
 
 export function localMutation<TArgs, TResult = unknown>(
-  definition: LocalMutationDefinition<TArgs, TResult>
+  definition: LocalMutationDefinition<TArgs, TResult>,
 ): LocalMutationDefinition<TArgs, TResult> {
   return definition;
 }

@@ -10,16 +10,19 @@ function capturingTransport(): { transport: SyncTransport; pushes: PushRequest["
     async push(request): Promise<PushResponse> {
       pushes.push(request.mutations);
       return {
-        accepted: request.mutations.map((op) => ({ opId: op.opId, serverResult: { ok: true, id: op.id } })),
+        accepted: request.mutations.map((op) => ({
+          opId: op.opId,
+          serverResult: { ok: true, id: op.id },
+        })),
         rejected: [],
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
   return { transport, pushes };
 }
@@ -33,12 +36,12 @@ function groupRejectingTransport(reason: string): SyncTransport {
         rejected: request.mutations.map((op) => ({ opId: op.opId, message: reason })),
         idMaps: [],
         changes: [],
-        serverTime: 1
+        serverTime: 1,
       };
     },
     async pull() {
       return { changes: [], cursors: {}, serverTime: 1 };
-    }
+    },
   };
 }
 
@@ -89,7 +92,7 @@ describe("atomic write groups — client (engine.batch)", () => {
       engine.batch(async () => {
         const call = engine.mutate("todos:create", { localId: "t1", listId: "a", text: "x" });
         await call.server; // not allowed inside fn — the group has not been dispatched
-      })
+      }),
     ).rejects.toThrow(/do not await a batched mutation/i);
   });
 
@@ -132,11 +135,35 @@ describe("atomic write groups — client (engine.batch)", () => {
       table: "todos",
       kind: "insert" as const,
       args: {},
-      status: "pending" as const
+      status: "pending" as const,
     };
-    await store.enqueueOperation({ ...base, opId: "solo", id: "s0", value: { listId: "a", text: "solo" }, createdAt: 1 });
-    await store.enqueueOperation({ ...base, opId: "g0", id: "g0", value: { listId: "a", text: "g0" }, createdAt: 2, groupId: "G", groupSize: 2, groupIndex: 0 });
-    await store.enqueueOperation({ ...base, opId: "g1", id: "g1", value: { listId: "a", text: "g1" }, createdAt: 3, groupId: "G", groupSize: 2, groupIndex: 1 });
+    await store.enqueueOperation({
+      ...base,
+      opId: "solo",
+      id: "s0",
+      value: { listId: "a", text: "solo" },
+      createdAt: 1,
+    });
+    await store.enqueueOperation({
+      ...base,
+      opId: "g0",
+      id: "g0",
+      value: { listId: "a", text: "g0" },
+      createdAt: 2,
+      groupId: "G",
+      groupSize: 2,
+      groupIndex: 0,
+    });
+    await store.enqueueOperation({
+      ...base,
+      opId: "g1",
+      id: "g1",
+      value: { listId: "a", text: "g1" },
+      createdAt: 3,
+      groupId: "G",
+      groupSize: 2,
+      groupIndex: 1,
+    });
 
     await engine.syncOnce();
 
@@ -167,12 +194,16 @@ describe("atomic write groups — client (engine.batch)", () => {
     expect(pushes).toHaveLength(1);
     const ops = pushes[0]!;
     expect(ops).toHaveLength(2);
-    expect(ops.every((op) => op.groupId === ops[0]!.groupId && op.groupId !== undefined)).toBe(true);
+    expect(ops.every((op) => op.groupId === ops[0]!.groupId && op.groupId !== undefined)).toBe(
+      true,
+    );
     expect(ops.map((op) => op.groupIndex)).toEqual([0, 1]);
   });
 
   it("a rejected group reverts ALL its ops as one unit and surfaces ONE recovery entry; .server rejects", async () => {
-    const { engine, store } = createHarness({ transport: groupRejectingTransport("groupRejected: not a member") });
+    const { engine, store } = createHarness({
+      transport: groupRejectingTransport("groupRejected: not a member"),
+    });
     const call = engine.batch(() => {
       engine.mutate("todos:create", { localId: "t1", listId: "a", text: "one" });
       engine.mutate("todos:create", { localId: "t2", listId: "a", text: "two" });

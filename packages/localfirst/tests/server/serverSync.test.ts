@@ -10,9 +10,8 @@ import {
   type PushInput,
   type PushOp,
   type ServerOperation,
-  type ServerStore,
   type StoredChange,
-  type SyncConfig
+  type SyncConfig,
 } from "../../src/server/serverSync";
 
 // The in-memory authoritative server store is the SAME shipped machinery the test
@@ -26,11 +25,24 @@ const config: SyncConfig = {
       scope: byUser("ownerId"),
       idField: "localId",
       mutations: {
-        "todos:create": { kind: "insert", fields: ["ownerId", "localId", "listId", "text", "done", "labels", "votes", "amount", "blob"] },
+        "todos:create": {
+          kind: "insert",
+          fields: [
+            "ownerId",
+            "localId",
+            "listId",
+            "text",
+            "done",
+            "labels",
+            "votes",
+            "amount",
+            "blob",
+          ],
+        },
         "todos:toggle": { kind: "patch", fields: ["done", "text", "labels", "votes"] },
         "todos:update": { kind: "patch", fields: ["done", "text", "labels", "votes"] },
-        "todos:remove": { kind: "delete", fields: [] }
-      }
+        "todos:remove": { kind: "delete", fields: [] },
+      },
     },
     docs: {
       scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
@@ -38,17 +50,23 @@ const config: SyncConfig = {
       mutations: {
         "docs:create": { kind: "insert", fields: ["wsId", "localId", "title", "createdBy"] },
         "docs:update": { kind: "patch", fields: ["title", "createdBy"] },
-        "docs:remove": { kind: "delete", fields: [] }
-      }
+        "docs:remove": { kind: "delete", fields: [] },
+      },
     },
   },
   access: {
     member: ({ userId, scopeValue, membershipTable }, store) =>
-      (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`) ? "member" : null
-  }
+      (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`)
+        ? "member"
+        : null,
+  },
 };
 
-const insert = (localId: string, value: Record<string, unknown>, opId = `op_${localId}`): PushOp => ({
+const insert = (
+  localId: string,
+  value: Record<string, unknown>,
+  opId = `op_${localId}`,
+): PushOp => ({
   opId,
   clientId: "c1",
   schemaVersion: 1,
@@ -56,7 +74,7 @@ const insert = (localId: string, value: Record<string, unknown>, opId = `op_${lo
   table: "todos",
   kind: "insert",
   localId,
-  value
+  value,
 });
 
 describe("server sync — security", () => {
@@ -66,7 +84,7 @@ describe("server sync — security", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { listId: "inbox", text: "a-secret" })]
+      mutations: [insert("t1", { listId: "inbox", text: "a-secret" })],
     });
 
     const pulled = await handlePull(store, config, {
@@ -74,7 +92,7 @@ describe("server sync — security", () => {
       clientId: "cB",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: {}
+      cursors: {},
     });
     expect(pulled.changes).toHaveLength(0);
 
@@ -83,7 +101,7 @@ describe("server sync — security", () => {
       clientId: "c1",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: {}
+      cursors: {},
     });
     expect(own.changes).toHaveLength(1);
   });
@@ -94,7 +112,7 @@ describe("server sync — security", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { ownerId: "user_b", listId: "inbox", text: "x" })] // lying client
+      mutations: [insert("t1", { ownerId: "user_b", listId: "inbox", text: "x" })], // lying client
     });
     expect(res.accepted).toHaveLength(1);
     expect(res.changes[0]?.data?.ownerId).toBe("user_a");
@@ -113,14 +131,14 @@ describe("server sync — security", () => {
       table: "docs",
       kind: "insert",
       localId: "d1",
-      value: { wsId: "ws1", title: "hello" }
+      value: { wsId: "ws1", title: "hello" },
     };
 
     const member = await handlePush(store, config, {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [docOp]
+      mutations: [docOp],
     });
     expect(member.accepted).toHaveLength(1);
 
@@ -128,7 +146,7 @@ describe("server sync — security", () => {
       userId: "user_c",
       clientId: "cC",
       schemaVersion: 1,
-      mutations: [{ ...docOp, opId: "d2", localId: "d2" }]
+      mutations: [{ ...docOp, opId: "d2", localId: "d2" }],
     });
     expect(nonMember.rejected[0]?.message).toContain("member");
 
@@ -139,7 +157,7 @@ describe("server sync — security", () => {
       clientId: "c1",
       schemaVersion: 1,
       scopes: [{ kind: "byWorkspace", value: "ws1" }],
-      cursors: {}
+      cursors: {},
     });
     expect(memberPull.changes).toHaveLength(1);
 
@@ -149,7 +167,7 @@ describe("server sync — security", () => {
       clientId: "cC",
       schemaVersion: 1,
       scopes: [{ kind: "byWorkspace", value: "ws1" }],
-      cursors: {}
+      cursors: {},
     });
     expect(pull.changes).toHaveLength(0);
   });
@@ -158,15 +176,39 @@ describe("server sync — security", () => {
     const store = new MemoryServerStore();
     store.members.add("user_a:ws1:ws_members"); // member of ws1 only
     const docOp: PushOp = {
-      opId: "d1", clientId: "c1", schemaVersion: 1, functionName: "docs:create",
-      table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "hello" }
+      opId: "d1",
+      clientId: "c1",
+      schemaVersion: 1,
+      functionName: "docs:create",
+      table: "docs",
+      kind: "insert",
+      localId: "d1",
+      value: { wsId: "ws1", title: "hello" },
     };
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [docOp] });
+    await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [docOp],
+    });
 
     // Try to move the row into ws2 (not a member) via a patch on the scope field.
     const moveScope = await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [{ opId: "p1", clientId: "c1", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { wsId: "ws2" } }]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "p1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { wsId: "ws2" },
+        },
+      ],
     });
     expect(moveScope.accepted).toHaveLength(0);
     expect(moveScope.rejected[0]?.message).toContain("scope field");
@@ -176,8 +218,21 @@ describe("server sync — security", () => {
 
     // Rewriting the id field is also rejected.
     const moveId = await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [{ opId: "p2", clientId: "c1", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { localId: "evil" } }]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "p2",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { localId: "evil" },
+        },
+      ],
     });
     expect(moveId.rejected[0]?.message).toContain("id field");
   });
@@ -187,14 +242,40 @@ describe("server sync — security", () => {
     store.members.add("user_a:ws1:ws_members");
     store.members.add("user_b:ws1:ws_members"); // both are members of ws1
     await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1,
-      mutations: [{ opId: "d1", clientId: "cA", schemaVersion: 1, functionName: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "hi" } }]
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "d1",
+          clientId: "cA",
+          schemaVersion: 1,
+          functionName: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d1",
+          value: { wsId: "ws1", title: "hi" },
+        },
+      ],
     });
 
     // user_b (NOT the creator) patches the same row — must resolve the serverId.
     const res = await handlePush(store, config, {
-      userId: "user_b", clientId: "cB", schemaVersion: 1,
-      mutations: [{ opId: "p1", clientId: "cB", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { title: "edited by b" } }]
+      userId: "user_b",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "p1",
+          clientId: "cB",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { title: "edited by b" },
+        },
+      ],
     });
     expect(res.accepted).toHaveLength(1);
     const serverId = (await store.getServerId("docs", "d1")) as string;
@@ -206,15 +287,42 @@ describe("server sync — security", () => {
     store.members.add("user_a:ws1:ws_members"); // a in ws1
     store.members.add("user_b:ws2:ws_members"); // b in ws2, NOT ws1
     await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1,
-      mutations: [{ opId: "d1", clientId: "cA", schemaVersion: 1, functionName: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "secret" } }]
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "d1",
+          clientId: "cA",
+          schemaVersion: 1,
+          functionName: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d1",
+          value: { wsId: "ws1", title: "secret" },
+        },
+      ],
     });
 
     // b is a member of ws2 but the row is in ws1; claiming wsId: ws2 in op.value
     // must NOT authorize the write — scope is derived from the existing row (ws1).
     const res = await handlePush(store, config, {
-      userId: "user_b", clientId: "cB", schemaVersion: 1,
-      mutations: [{ opId: "p1", clientId: "cB", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", value: { wsId: "ws2" }, patch: { title: "hacked" } }]
+      userId: "user_b",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "p1",
+          clientId: "cB",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          value: { wsId: "ws2" },
+          patch: { title: "hacked" },
+        },
+      ],
     });
     expect(res.accepted).toHaveLength(0);
     // Generic patch rejection (no oracle); the security property is the untouched row below.
@@ -226,19 +334,47 @@ describe("server sync — security", () => {
   it("byUser: a user cannot patch or delete another user's row (id map is global, ownership is checked)", async () => {
     const store = new MemoryServerStore();
     await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [insert("t1", { text: "a-private" })]
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "a-private" })],
     });
 
     const patch = await handlePush(store, config, {
-      userId: "user_b", clientId: "cB", schemaVersion: 1,
-      mutations: [{ opId: "p1", clientId: "cB", schemaVersion: 1, functionName: "todos:toggle", table: "todos", kind: "patch", localId: "t1", patch: { done: true } }]
+      userId: "user_b",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "p1",
+          clientId: "cB",
+          schemaVersion: 1,
+          functionName: "todos:toggle",
+          table: "todos",
+          kind: "patch",
+          localId: "t1",
+          patch: { done: true },
+        },
+      ],
     });
     // Patch uses one generic message for every denial (no existence/ownership oracle).
     expect(patch.rejected[0]?.message).toContain("Cannot patch");
 
     const del = await handlePush(store, config, {
-      userId: "user_b", clientId: "cB", schemaVersion: 1,
-      mutations: [{ opId: "del1", clientId: "cB", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId: "t1" }]
+      userId: "user_b",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "del1",
+          clientId: "cB",
+          schemaVersion: 1,
+          functionName: "todos:remove",
+          table: "todos",
+          kind: "delete",
+          localId: "t1",
+        },
+      ],
     });
     // Delete uses one generic message for every denial (no existence/ownership oracle).
     expect(del.rejected[0]?.message).toContain("Cannot delete");
@@ -250,17 +386,38 @@ describe("server sync — security", () => {
   it("delete is idempotent for the AUTHORIZED owner: a second delete is an accepted no-op (no serverId leak)", async () => {
     const store = new MemoryServerStore();
     const del = (opId: string, localId: string, userId = "user_a", clientId = "c1"): PushOp => ({
-      opId, clientId, schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId
+      opId,
+      clientId,
+      schemaVersion: 1,
+      functionName: "todos:remove",
+      table: "todos",
+      kind: "delete",
+      localId,
     });
 
     // Real delete then a SECOND delete by the same owner (concurrent-compaction /
     // replay shape): the first emits a delete change, the second is an accepted no-op
     // that emits no change and — crucially — does NOT echo the (now-gone) serverId.
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "x" })] });
-    const first = await handlePush(store, config, { userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [del("dA", "t1")] });
+    await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "x" })],
+    });
+    const first = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [del("dA", "t1")],
+    });
     expect(first.changes.some((c) => c.kind === "delete" && c.localId === "t1")).toBe(true);
 
-    const second = await handlePush(store, config, { userId: "user_a", clientId: "cB", schemaVersion: 1, mutations: [del("dB", "t1")] });
+    const second = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [del("dB", "t1")],
+    });
     expect(second.rejected).toEqual([]); // no "No server row" error
     expect(second.accepted[0]?.opId).toBe("dB");
     expect(second.changes).toEqual([]); // nothing new to append — already gone
@@ -274,12 +431,32 @@ describe("server sync — security", () => {
     // trivially differ; identical localId is what proves indistinguishability.
     const probe = (store: MemoryServerStore) =>
       handlePush(store, config, {
-        userId: "user_b", clientId: "cB", schemaVersion: 1,
-        mutations: [{ opId: "probe", clientId: "cB", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId: "t1" }]
+        userId: "user_b",
+        clientId: "cB",
+        schemaVersion: 1,
+        mutations: [
+          {
+            opId: "probe",
+            clientId: "cB",
+            schemaVersion: 1,
+            functionName: "todos:remove",
+            table: "todos",
+            kind: "delete",
+            localId: "t1",
+          },
+        ],
       });
     const seed = (store: MemoryServerStore, mutations: PushInput["mutations"]) =>
       handlePush(store, config, { userId: "user_a", clientId: "cA", schemaVersion: 1, mutations });
-    const remove = (localId: string) => ({ opId: `d_${localId}`, clientId: "cA", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete" as const, localId });
+    const remove = (localId: string) => ({
+      opId: `d_${localId}`,
+      clientId: "cA",
+      schemaVersion: 1,
+      functionName: "todos:remove",
+      table: "todos",
+      kind: "delete" as const,
+      localId,
+    });
 
     // U1: t1 never existed. U2: t1 is a foreign LIVE row. U3: t1 is foreign and GONE.
     const u1 = new MemoryServerStore();
@@ -289,12 +466,18 @@ describe("server sync — security", () => {
     await seed(u3, [insert("t1", { text: "x" })]);
     await seed(u3, [remove("t1")]);
 
-    const [neverSeen, foreignLive, foreignGone] = await Promise.all([probe(u1), probe(u2), probe(u3)]);
+    const [neverSeen, foreignLive, foreignGone] = await Promise.all([
+      probe(u1),
+      probe(u2),
+      probe(u3),
+    ]);
     for (const r of [neverSeen, foreignLive, foreignGone]) {
       expect(r.accepted).toEqual([]);
       expect(r.rejected).toHaveLength(1);
     }
-    const messages = new Set([neverSeen, foreignLive, foreignGone].map((r) => r.rejected[0]?.message));
+    const messages = new Set(
+      [neverSeen, foreignLive, foreignGone].map((r) => r.rejected[0]?.message),
+    );
     expect(messages.size).toBe(1); // identical rejection for every state — no oracle
     // The foreign LIVE row was NOT deleted by the rejected probe.
     expect(await u2.getRow("todos", u2.idmap.get("todos:t1") as string)).not.toBeNull();
@@ -304,13 +487,31 @@ describe("server sync — security", () => {
     // Same construction as the delete oracle test, for the patch path.
     const probe = (store: MemoryServerStore) =>
       handlePush(store, config, {
-        userId: "user_b", clientId: "cB", schemaVersion: 1,
-        mutations: [{ opId: "p", clientId: "cB", schemaVersion: 1, functionName: "todos:toggle", table: "todos", kind: "patch", localId: "t1", patch: { text: "hijack" } }]
+        userId: "user_b",
+        clientId: "cB",
+        schemaVersion: 1,
+        mutations: [
+          {
+            opId: "p",
+            clientId: "cB",
+            schemaVersion: 1,
+            functionName: "todos:toggle",
+            table: "todos",
+            kind: "patch",
+            localId: "t1",
+            patch: { text: "hijack" },
+          },
+        ],
       });
 
     const u1 = new MemoryServerStore(); // t1 never existed
     const u2 = new MemoryServerStore(); // t1 is a foreign LIVE row
-    await handlePush(u2, config, { userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [insert("t1", { text: "x" })] });
+    await handlePush(u2, config, {
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "x" })],
+    });
 
     const [neverSeen, foreignLive] = await Promise.all([probe(u1), probe(u2)]);
     for (const r of [neverSeen, foreignLive]) {
@@ -325,10 +526,16 @@ describe("server sync — security", () => {
   it("rejects an insert that reuses an existing localId (localId is not a capability)", async () => {
     const store = new MemoryServerStore();
     await handlePush(store, config, {
-      userId: "user_a", clientId: "cA", schemaVersion: 1, mutations: [insert("t1", { text: "first" })]
+      userId: "user_a",
+      clientId: "cA",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "first" })],
     });
     const dup = await handlePush(store, config, {
-      userId: "user_b", clientId: "cB", schemaVersion: 1, mutations: [insert("t1", { text: "second" }, "op_dup")]
+      userId: "user_b",
+      clientId: "cB",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "second" }, "op_dup")],
     });
     expect(dup.accepted).toHaveLength(0);
     expect(dup.rejected[0]?.message).toContain("Duplicate");
@@ -340,12 +547,24 @@ describe("server sync — security", () => {
       schemaVersion: 1,
       now: () => 1,
       tables: {
-        docs: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }), idField: "localId" },
-        secrets: { scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "secret_members" }), idField: "localId" }
-      }
+        docs: {
+          scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
+          idField: "localId",
+        },
+        secrets: {
+          scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "secret_members" }),
+          idField: "localId",
+        },
+      },
     };
     await expect(
-      handlePull(store, mixed, { userId: "u", clientId: "c", schemaVersion: 1, scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {} })
+      handlePull(store, mixed, {
+        userId: "u",
+        clientId: "c",
+        schemaVersion: 1,
+        scopes: [{ kind: "byWorkspace", value: "ws1" }],
+        cursors: {},
+      }),
     ).rejects.toThrow(/membershipTable/);
   });
 
@@ -355,7 +574,7 @@ describe("server sync — security", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 999,
-      mutations: [insert("t1", { text: "x" })]
+      mutations: [insert("t1", { text: "x" })],
     });
     expect(res.schemaMismatch).toBe(true);
     expect(res.accepted).toHaveLength(0);
@@ -374,8 +593,8 @@ describe("server sync — declared mutation and role access hardening", () => {
           return "guest";
         },
         write: ({ userId, role, action, proposed }) =>
-          role !== "guest" || action !== "insert" || proposed?.createdBy === userId
-      }
+          role !== "guest" || action !== "insert" || proposed?.createdBy === userId,
+      },
     };
     const op = (opId: string, localId: string, createdBy: string): ServerOperation => ({
       opId,
@@ -385,13 +604,13 @@ describe("server sync — declared mutation and role access hardening", () => {
       table: "docs",
       kind: "insert",
       localId,
-      value: { wsId: "ws1", title: localId, createdBy }
+      value: { wsId: "ws1", title: localId, createdBy },
     });
     const pushed = await handlePush(store, cfg, {
       userId: "guest",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [op("ok", "d1", "guest"), op("forged", "d2", "other")]
+      mutations: [op("ok", "d1", "guest"), op("forged", "d2", "other")],
     });
     expect(pushed.accepted.map((entry) => entry.opId)).toEqual(["ok"]);
     expect(pushed.rejected.map((entry) => entry.opId)).toEqual(["forged"]);
@@ -404,9 +623,9 @@ describe("server sync — declared mutation and role access hardening", () => {
       schemaVersion: 1,
       scopes: [
         { kind: "byWorkspace", value: "ws1" },
-        { kind: "byWorkspace", value: "ws1" }
+        { kind: "byWorkspace", value: "ws1" },
       ],
-      cursors: {}
+      cursors: {},
     });
     expect(memberCalls).toBe(1);
   });
@@ -417,8 +636,8 @@ describe("server sync — declared mutation and role access hardening", () => {
       ...config,
       tables: {
         ...config.tables,
-        readonly: { scope: byUser("ownerId"), idField: "localId" }
-      }
+        readonly: { scope: byUser("ownerId"), idField: "localId" },
+      },
     };
     const res = await handlePush(store, queryOnly, {
       userId: "user_a",
@@ -435,14 +654,14 @@ describe("server sync — declared mutation and role access hardening", () => {
           table: "readonly",
           kind: "insert",
           localId: "q",
-          value: { ownerId: "user_a" }
-        }
-      ]
+          value: { ownerId: "user_a" },
+        },
+      ],
     });
     expect(res.rejected.map((entry) => entry.message)).toEqual([
       "unknownFunction",
       "unknownField",
-      "unknownFunction"
+      "unknownFunction",
     ]);
   });
 
@@ -458,16 +677,16 @@ describe("server sync — declared mutation and role access hardening", () => {
           serverStamp: () => ({ sequenceId: 1 }),
           mutations: {
             ...config.tables.todos!.mutations,
-            "todos:update": { kind: "patch", fields: ["text", "sequenceId"] }
-          }
-        }
-      }
+            "todos:update": { kind: "patch", fields: ["text", "sequenceId"] },
+          },
+        },
+      },
     };
     await handlePush(store, cfg, {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("base", { text: "ok" }, "base")]
+      mutations: [insert("base", { text: "ok" }, "base")],
     });
     const res = await handlePush(store, cfg, {
       userId: "user_a",
@@ -483,11 +702,14 @@ describe("server sync — declared mutation and role access hardening", () => {
           table: "todos",
           kind: "patch",
           localId: "base",
-          patch: { sequenceId: 99 }
-        }
-      ]
+          patch: { sequenceId: 99 },
+        },
+      ],
     });
-    expect(res.rejected.map((entry) => entry.message)).toEqual(["serverOnlyField", "serverOnlyField"]);
+    expect(res.rejected.map((entry) => entry.message)).toEqual([
+      "serverOnlyField",
+      "serverOnlyField",
+    ]);
   });
 
   it("rethrows commit failures after a row write instead of recording rejection", async () => {
@@ -496,7 +718,7 @@ describe("server sync — declared mutation and role access hardening", () => {
         userId: string,
         op: ServerOperation,
         entry: Omit<LedgerEntry, "schemaVersion" | "changes">,
-        change?: Omit<StoredChange, "changeId">
+        change?: Omit<StoredChange, "changeId">,
       ) {
         if (entry.status === "accepted") throw new Error("commit failed");
         return await super.commitOp(userId, op, entry, change);
@@ -508,8 +730,8 @@ describe("server sync — declared mutation and role access hardening", () => {
         userId: "user_a",
         clientId: "c1",
         schemaVersion: 1,
-        mutations: [insert("t1", { text: "x" })]
-      })
+        mutations: [insert("t1", { text: "x" })],
+      }),
     ).rejects.toThrow("commit failed");
     expect(store.ledger.size).toBe(0);
   });
@@ -534,14 +756,21 @@ describe("server sync — component (ledger/changes/idmap)", () => {
     const store = new MemoryServerStore();
     const op = insert("t1", { text: "x" });
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [op]
-    });
-    const replay = await handlePush(store, { ...config, schemaVersion: 2 }, {
       userId: "user_a",
-      clientId: "c2",
-      schemaVersion: 2,
-      mutations: [{ ...op, clientId: "c2", schemaVersion: 2 }]
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [op],
     });
+    const replay = await handlePush(
+      store,
+      { ...config, schemaVersion: 2 },
+      {
+        userId: "user_a",
+        clientId: "c2",
+        schemaVersion: 2,
+        mutations: [{ ...op, clientId: "c2", schemaVersion: 2 }],
+      },
+    );
     expect(replay.accepted).toEqual([]);
     expect(replay.rejected).toEqual([{ opId: op.opId, message: "schemaMismatch" }]);
     expect(store.changes).toHaveLength(1);
@@ -554,11 +783,21 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       ...config,
       onWrite: async ({ functionName }) => {
         calls.push(functionName);
-      }
+      },
     };
     const op = insert("t1", { text: "x" });
-    await handlePush(store, cfg, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [op] });
-    await handlePush(store, cfg, { userId: "user_a", clientId: "c2", schemaVersion: 1, mutations: [op] });
+    await handlePush(store, cfg, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [op],
+    });
+    await handlePush(store, cfg, {
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      mutations: [op],
+    });
     expect(calls).toEqual(["todos:create"]);
   });
 
@@ -570,12 +809,22 @@ describe("server sync — component (ledger/changes/idmap)", () => {
     const op = insert("t1", { listId: "inbox", text: "x" });
     const store = new MemoryServerStore();
 
-    const first = await handlePush(store, config, { userId: "user_a", clientId: "mount-A", schemaVersion: 1, mutations: [op] });
+    const first = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "mount-A",
+      schemaVersion: 1,
+      mutations: [op],
+    });
     expect(first.accepted).toHaveLength(1);
     expect(first.rejected).toHaveLength(0);
 
     // Same op (same opId), replayed under a brand-new mount's clientId:
-    const replay = await handlePush(store, config, { userId: "user_a", clientId: "mount-B", schemaVersion: 1, mutations: [op] });
+    const replay = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "mount-B",
+      schemaVersion: 1,
+      mutations: [op],
+    });
     expect(replay.rejected).toHaveLength(0); // NOT a "Duplicate localId" rejection
     expect(replay.accepted).toHaveLength(1); // returns the prior result
     expect(store.changes).toHaveLength(1); // applied exactly once (log NOT re-appended)
@@ -591,11 +840,34 @@ describe("server sync — component (ledger/changes/idmap)", () => {
     // The ledger only carries a change when the op produced one. A duplicate no-op
     // delete must dedup to accepted WITHOUT inventing a change.
     const store = new MemoryServerStore();
-    await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "x" })] });
-    const del = { opId: "d1", clientId: "c1", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete" as const, localId: "t1" };
-    const first = await handlePush(store, config, { userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [del] });
+    await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "x" })],
+    });
+    const del = {
+      opId: "d1",
+      clientId: "c1",
+      schemaVersion: 1,
+      functionName: "todos:remove",
+      table: "todos",
+      kind: "delete" as const,
+      localId: "t1",
+    };
+    const first = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [del],
+    });
     expect(first.changes).toHaveLength(1); // the real delete change
-    const replay = await handlePush(store, config, { userId: "user_a", clientId: "c2", schemaVersion: 1, mutations: [del] });
+    const replay = await handlePush(store, config, {
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      mutations: [del],
+    });
     expect(replay.accepted).toHaveLength(1);
     expect(replay.changes[0]?.changeId).toBe(first.changes[0]?.changeId); // re-delivers the delete change
   });
@@ -606,7 +878,11 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" }), insert("t3", { text: "c" })]
+      mutations: [
+        insert("t1", { text: "a" }),
+        insert("t2", { text: "b" }),
+        insert("t3", { text: "c" }),
+      ],
     });
     const ids = store.changes.map((c) => c.changeId);
     expect(ids).toHaveLength(3);
@@ -619,7 +895,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { text: "a" })]
+      mutations: [insert("t1", { text: "a" })],
     });
 
     const scopeKey = scopeKeyForUser("user_a");
@@ -628,7 +904,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       clientId: "c1",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: {}
+      cursors: {},
     });
     const c1 = p1.cursors[scopeKey];
 
@@ -636,7 +912,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t2", { text: "b" })]
+      mutations: [insert("t2", { text: "b" })],
     });
 
     const p2 = await handlePull(store, config, {
@@ -644,7 +920,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       clientId: "c1",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: { [scopeKey]: c1 }
+      cursors: { [scopeKey]: c1 },
     });
     expect(p2.changes).toHaveLength(1); // only the new change
     expect(p2.cursors[scopeKey] > c1).toBe(true); // cursor moved forward
@@ -656,7 +932,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { listId: "inbox", text: "x", done: false })]
+      mutations: [insert("t1", { listId: "inbox", text: "x", done: false })],
     });
     const serverId = await store.getServerId("todos", "t1");
     expect(serverId).toBeTruthy();
@@ -674,9 +950,9 @@ describe("server sync — component (ledger/changes/idmap)", () => {
           table: "todos",
           kind: "patch",
           localId: "t1",
-          patch: { done: true }
-        }
-      ]
+          patch: { done: true },
+        },
+      ],
     });
     expect(patch.accepted).toHaveLength(1);
     const row = await store.getRow("todos", serverId as string);
@@ -695,15 +971,23 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { text: "x" })]
+      mutations: [insert("t1", { text: "x" })],
     });
     const del = await handlePush(store, config, {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
       mutations: [
-        { opId: "del1", clientId: "c1", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId: "t1" }
-      ]
+        {
+          opId: "del1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "todos:remove",
+          table: "todos",
+          kind: "delete",
+          localId: "t1",
+        },
+      ],
     });
     const deleteChangeId = del.changes[0]?.changeId as string;
     const insertChangeId = String(Number(deleteChangeId) - 1).padStart(12, "0");
@@ -714,7 +998,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       clientId: "c2",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: { [scopeKeyForUser("user_a")]: insertChangeId }
+      cursors: { [scopeKeyForUser("user_a")]: insertChangeId },
     });
     expect(behind.changes.some((c) => c.kind === "delete" && c.localId === "t1")).toBe(true);
 
@@ -725,7 +1009,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       clientId: "c3",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: {}
+      cursors: {},
     });
     expect(fresh.changes).toHaveLength(0);
     expect(fresh.snapshotScopes).toContain(scopeKeyForUser("user_a"));
@@ -737,7 +1021,7 @@ describe("server sync — component (ledger/changes/idmap)", () => {
       clientId: "c2",
       schemaVersion: 1,
       scopes: [{ kind: "byUser" }],
-      cursors: { [scopeKeyForUser("user_a")]: deleteChangeId }
+      cursors: { [scopeKeyForUser("user_a")]: deleteChangeId },
     });
     expect(past.changes).toHaveLength(0);
   });
@@ -751,14 +1035,18 @@ describe("server sync — schema guard + value codec", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [staleOp]
+      mutations: [staleOp],
     });
     expect(res.accepted).toHaveLength(0);
     expect(res.rejected).toHaveLength(1);
     expect(res.rejected[0]?.message).toMatch(/schema v2/);
     // The stale op must NOT have been applied to the canonical log.
     const pulled = await handlePull(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(pulled.changes).toHaveLength(0);
   });
@@ -767,25 +1055,34 @@ describe("server sync — schema guard + value codec", () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = { ...config, pullLimit: 2 };
     await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
       mutations: [
         insert("t1", { listId: "i", text: "a" }),
         insert("t2", { listId: "i", text: "b" }),
-        insert("t3", { listId: "i", text: "c" })
-      ]
+        insert("t3", { listId: "i", text: "c" }),
+      ],
     });
     const sk = scopeKeyForUser("user_a");
     const first = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(first.changes).toHaveLength(2);
     expect(first.hasMore[sk]).toBe(true);
     expect(first.snapshotScopes).toContain(sk); // first page resets
     expect(first.bootstrapCursors[sk]).toBeDefined();
     const second = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
       cursors: { [sk]: first.cursors[sk] || null },
-      bootstrapCursors: first.bootstrapCursors
+      bootstrapCursors: first.bootstrapCursors,
     });
     expect(second.changes).toHaveLength(1);
     expect(second.hasMore[sk]).toBe(false);
@@ -797,24 +1094,32 @@ describe("server sync — schema guard + value codec", () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = { ...config, pullLimit: 2 };
     await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
       mutations: [
         insert("t1", { listId: "i", text: "a" }),
         insert("t2", { listId: "i", text: "b" }),
-        insert("t3", { listId: "i", text: "c" })
-      ]
+        insert("t3", { listId: "i", text: "c" }),
+      ],
     });
     const sk = scopeKeyForUser("user_a");
     // Warm client one change behind the head: cursor at the first insert.
     const first = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: "000000000001" }
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000001" },
     });
     expect(first.changes).toHaveLength(2);
     expect(first.hasMore[sk]).toBe(true);
     const second = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: first.cursors[sk] }
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: first.cursors[sk] },
     });
     expect(second.changes).toHaveLength(0);
     expect(second.hasMore[sk]).toBe(false);
@@ -823,19 +1128,28 @@ describe("server sync — schema guard + value codec", () => {
   it("a cursor behind the GC horizon is reset and re-bootstrapped from current rows", async () => {
     const store = new MemoryServerStore();
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [
-        insert("t1", { text: "a" }),
-        insert("t2", { text: "b" })
-      ]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })],
     });
     // Delete t1, then GC everything except the newest change: the delete is pruned.
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
       mutations: [
-        { opId: "del1", clientId: "c1", schemaVersion: 1, functionName: "todos:remove", table: "todos", kind: "delete", localId: "t1" },
-        insert("t3", { text: "c" })
-      ]
+        {
+          opId: "del1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "todos:remove",
+          table: "todos",
+          kind: "delete",
+          localId: "t1",
+        },
+        insert("t3", { text: "c" }),
+      ],
     });
     const sk = scopeKeyForUser("user_a");
     store.gc(sk, 1); // only the newest change (t3's insert) survives
@@ -843,8 +1157,11 @@ describe("server sync — schema guard + value codec", () => {
     // A client whose cursor predates the horizon (it saw only t1+t2) must NOT sync
     // incrementally — it would miss the pruned delete and keep t1 as a ghost.
     const res = await handlePull(store, config, {
-      userId: "user_a", clientId: "c2", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: "000000000002" }
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000002" },
     });
     expect(res.snapshotScopes).toContain(sk);
     const ids = res.changes.map((c) => c.localId).sort();
@@ -853,8 +1170,11 @@ describe("server sync — schema guard + value codec", () => {
 
     // A client exactly at the last retained change stays incremental (no reset).
     const warm = await handlePull(store, config, {
-      userId: "user_a", clientId: "c3", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: "000000000004" }
+      userId: "user_a",
+      clientId: "c3",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: "000000000004" },
     });
     expect(warm.snapshotScopes).toHaveLength(0);
     expect(warm.changes).toHaveLength(0);
@@ -864,13 +1184,20 @@ describe("server sync — schema guard + value codec", () => {
     const store = new MemoryServerStore();
     const sk = scopeKeyForUser("user_a");
     const first = await handlePull(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(first.changes).toHaveLength(0);
     expect(first.cursors[sk]).toBe("000000000000");
     const second = await handlePull(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: first.cursors[sk] }
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: first.cursors[sk] },
     });
     expect(second.snapshotScopes).toHaveLength(0); // incremental from the zero cursor
     expect(second.changes).toHaveLength(0);
@@ -878,9 +1205,8 @@ describe("server sync — schema guard + value codec", () => {
 
   it("round-trips bigint/bytes row values losslessly via the injected Convex codec", async () => {
     const convexCodec: SyncConfig["valueCodec"] = {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       encode: (val) => JSON.stringify(convexToJson((val === undefined ? null : val) as any)),
-      decode: (s) => jsonToConvex(JSON.parse(s))
+      decode: (s) => jsonToConvex(JSON.parse(s)),
     };
     const store = new MemoryServerStore();
     const cfg: SyncConfig = { ...config, valueCodec: convexCodec };
@@ -888,14 +1214,20 @@ describe("server sync — schema guard + value codec", () => {
     const value = { listId: "inbox", text: "x", amount: 10n, blob: bytes };
 
     const res = await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", value)]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", value)],
     });
     expect(res.accepted).toHaveLength(1);
     expect(res.changes[0]?.data?.amount).toBe(10n); // bigint survives, no throw
 
     // A duplicate push reads the confirming change back through the codec (changesJson).
     const dup = await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", value)]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", value)],
     });
     expect(dup.accepted).toHaveLength(1);
     expect(dup.changes[0]?.data?.amount).toBe(10n); // round-tripped through changesJson
@@ -910,7 +1242,7 @@ describe("server sync — set-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { listId: "inbox", text: "x", labels: ["a"] })]
+      mutations: [insert("t1", { listId: "inbox", text: "x", labels: ["a"] })],
     });
 
     // Client A adds "b" (delta vs its base ["a"]).
@@ -927,9 +1259,9 @@ describe("server sync — set-field merge", () => {
           table: "todos",
           kind: "patch",
           localId: "t1",
-          patch: { labels: { __lfSet: { add: ["b"], remove: [] } } }
-        }
-      ]
+          patch: { labels: { __lfSet: { add: ["b"], remove: [] } } },
+        },
+      ],
     });
     expect(a.rejected).toHaveLength(0);
     // The change log carries the MATERIALIZED array (pull stays delta-free).
@@ -950,9 +1282,9 @@ describe("server sync — set-field merge", () => {
           table: "todos",
           kind: "patch",
           localId: "t1",
-          patch: { labels: { __lfSet: { add: ["c"], remove: [] } } }
-        }
-      ]
+          patch: { labels: { __lfSet: { add: ["c"], remove: [] } } },
+        },
+      ],
     });
     expect(b.rejected).toHaveLength(0);
     expect(b.changes[0]?.patch?.labels).toEqual(["a", "b", "c"]);
@@ -960,7 +1292,7 @@ describe("server sync — set-field merge", () => {
     // Final stored row reflects BOTH concurrent adds.
     const serverId = await store.getServerId("todos", "t1");
     const row = serverId ? await store.getRow("todos", serverId) : null;
-    expect((row?.labels as string[]).slice().sort()).toEqual(["a", "b", "c"]);
+    expect(((row?.labels ?? []) as string[]).slice().sort()).toEqual(["a", "b", "c"]);
   });
 
   it("rejects a set delta over a non-array field (client bug/forge) instead of corrupting it", async () => {
@@ -969,7 +1301,7 @@ describe("server sync — set-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t2", { listId: "inbox", text: "scalar" })]
+      mutations: [insert("t2", { listId: "inbox", text: "scalar" })],
     });
     const res = await handlePush(store, config, {
       userId: "user_a",
@@ -984,9 +1316,9 @@ describe("server sync — set-field merge", () => {
           table: "todos",
           kind: "patch",
           localId: "t2",
-          patch: { text: { __lfSet: { add: ["oops"], remove: [] } } } // "text" is a scalar
-        }
-      ]
+          patch: { text: { __lfSet: { add: ["oops"], remove: [] } } }, // "text" is a scalar
+        },
+      ],
     });
     expect(res.rejected).toHaveLength(1);
     expect(res.rejected[0]?.message).toMatch(/non-array field "text"/);
@@ -1003,7 +1335,7 @@ describe("server sync — set-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t4", { listId: "inbox", text: "no-labels-yet" })] // labels field absent
+      mutations: [insert("t4", { listId: "inbox", text: "no-labels-yet" })], // labels field absent
     });
     const res = await handlePush(store, config, {
       userId: "user_a",
@@ -1018,9 +1350,9 @@ describe("server sync — set-field merge", () => {
           table: "todos",
           kind: "patch",
           localId: "t4",
-          patch: { labels: { __lfSet: { add: ["b"], remove: [] } } }
-        }
-      ]
+          patch: { labels: { __lfSet: { add: ["b"], remove: [] } } },
+        },
+      ],
     });
     expect(res.rejected).toHaveLength(0);
     expect(res.changes[0]?.patch?.labels).toEqual(["b"]); // materialized from empty
@@ -1035,7 +1367,7 @@ describe("server sync — counter-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t1", { listId: "inbox", text: "x", votes: 3 })]
+      mutations: [insert("t1", { listId: "inbox", text: "x", votes: 3 })],
     });
 
     // Client A increments +2 (delta vs its base 3).
@@ -1044,8 +1376,17 @@ describe("server sync — counter-field merge", () => {
       clientId: "cA",
       schemaVersion: 1,
       mutations: [
-        { opId: "pA", clientId: "cA", schemaVersion: 1, functionName: "todos:update", table: "todos", kind: "patch", localId: "t1", patch: { votes: { __lfCounter: 2 } } }
-      ]
+        {
+          opId: "pA",
+          clientId: "cA",
+          schemaVersion: 1,
+          functionName: "todos:update",
+          table: "todos",
+          kind: "patch",
+          localId: "t1",
+          patch: { votes: { __lfCounter: 2 } },
+        },
+      ],
     });
     expect(a.rejected).toHaveLength(0);
     expect(a.changes[0]?.patch?.votes).toBe(5); // materialized number, not a delta (pull stays delta-free)
@@ -1057,8 +1398,17 @@ describe("server sync — counter-field merge", () => {
       clientId: "cB",
       schemaVersion: 1,
       mutations: [
-        { opId: "pB", clientId: "cB", schemaVersion: 1, functionName: "todos:update", table: "todos", kind: "patch", localId: "t1", patch: { votes: { __lfCounter: 1 } } }
-      ]
+        {
+          opId: "pB",
+          clientId: "cB",
+          schemaVersion: 1,
+          functionName: "todos:update",
+          table: "todos",
+          kind: "patch",
+          localId: "t1",
+          patch: { votes: { __lfCounter: 1 } },
+        },
+      ],
     });
     expect(b.rejected).toHaveLength(0);
     expect(b.changes[0]?.patch?.votes).toBe(6);
@@ -1074,15 +1424,24 @@ describe("server sync — counter-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t2", { listId: "inbox", text: "scalar" })]
+      mutations: [insert("t2", { listId: "inbox", text: "scalar" })],
     });
     const res = await handlePush(store, config, {
       userId: "user_a",
       clientId: "cA",
       schemaVersion: 1,
       mutations: [
-        { opId: "pX", clientId: "cA", schemaVersion: 1, functionName: "todos:update", table: "todos", kind: "patch", localId: "t2", patch: { text: { __lfCounter: 1 } } } // "text" is a string
-      ]
+        {
+          opId: "pX",
+          clientId: "cA",
+          schemaVersion: 1,
+          functionName: "todos:update",
+          table: "todos",
+          kind: "patch",
+          localId: "t2",
+          patch: { text: { __lfCounter: 1 } },
+        }, // "text" is a string
+      ],
     });
     expect(res.rejected).toHaveLength(1);
     expect(res.rejected[0]?.message).toMatch(/non-number field "text"/);
@@ -1094,21 +1453,29 @@ describe("server sync — counter-field merge", () => {
       userId: "user_a",
       clientId: "c1",
       schemaVersion: 1,
-      mutations: [insert("t3", { listId: "inbox", text: "no-votes-yet" })] // votes field absent
+      mutations: [insert("t3", { listId: "inbox", text: "no-votes-yet" })], // votes field absent
     });
     const res = await handlePush(store, config, {
       userId: "user_a",
       clientId: "cA",
       schemaVersion: 1,
       mutations: [
-        { opId: "pY", clientId: "cA", schemaVersion: 1, functionName: "todos:update", table: "todos", kind: "patch", localId: "t3", patch: { votes: { __lfCounter: 2 } } }
-      ]
+        {
+          opId: "pY",
+          clientId: "cA",
+          schemaVersion: 1,
+          functionName: "todos:update",
+          table: "todos",
+          kind: "patch",
+          localId: "t3",
+          patch: { votes: { __lfCounter: 2 } },
+        },
+      ],
     });
     expect(res.rejected).toHaveLength(0);
     expect(res.changes[0]?.patch?.votes).toBe(2); // materialized from 0
   });
 });
-
 
 describe("server sync — server-authored writes (applyServerWrite)", () => {
   const wsConfig: SyncConfig = {
@@ -1118,9 +1485,9 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       activities: {
         scope: byWorkspace({ workspaceIdField: "wsId", membershipTable: "ws_members" }),
         idField: "localId",
-        timestamps: { createdAt: "created_at", updatedAt: "updated_at" }
-      }
-    }
+        timestamps: { createdAt: "created_at", updatedAt: "updated_at" },
+      },
+    },
   };
   let n = 0;
   const nextId = () => `sv_${++n}`;
@@ -1131,13 +1498,24 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       store,
       wsConfig,
       { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
-      nextId
+      nextId,
     );
     expect(res.serverId).toBeDefined();
     const row = await store.getRow("activities", res.serverId!);
-    expect(row).toMatchObject({ wsId: "w1", verb: "created", localId: res.localId, created_at: 42, updated_at: 42 });
+    expect(row).toMatchObject({
+      wsId: "w1",
+      verb: "created",
+      localId: res.localId,
+      created_at: 42,
+      updated_at: 42,
+    });
     expect(store.changes).toHaveLength(1);
-    expect(store.changes[0]).toMatchObject({ scopeKey: "byWorkspace:w1", kind: "insert", localId: res.localId, version: 1 });
+    expect(store.changes[0]).toMatchObject({
+      scopeKey: "byWorkspace:w1",
+      kind: "insert",
+      localId: res.localId,
+      version: 1,
+    });
   });
 
   it("patch stamps updated_at, appends a v2 change, and refuses scope/id rewrites", async () => {
@@ -1146,12 +1524,26 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       store,
       wsConfig,
       { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
-      nextId
+      nextId,
     );
-    await applyServerWrite(store, wsConfig, { kind: "patch", table: "activities", localId, patch: { verb: "edited" } }, nextId);
-    expect(store.changes[1]).toMatchObject({ kind: "patch", version: 2, patch: { verb: "edited", updated_at: 42 } });
+    await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "patch", table: "activities", localId, patch: { verb: "edited" } },
+      nextId,
+    );
+    expect(store.changes[1]).toMatchObject({
+      kind: "patch",
+      version: 2,
+      patch: { verb: "edited", updated_at: 42 },
+    });
     await expect(
-      applyServerWrite(store, wsConfig, { kind: "patch", table: "activities", localId, patch: { wsId: "w2" } }, nextId)
+      applyServerWrite(
+        store,
+        wsConfig,
+        { kind: "patch", table: "activities", localId, patch: { wsId: "w2" } },
+        nextId,
+      ),
     ).rejects.toThrow(/scope field/);
   });
 
@@ -1161,11 +1553,21 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       store,
       wsConfig,
       { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
-      nextId
+      nextId,
     );
-    await applyServerWrite(store, wsConfig, { kind: "delete", table: "activities", localId }, nextId);
+    await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "delete", table: "activities", localId },
+      nextId,
+    );
     expect(store.changes[1]).toMatchObject({ kind: "delete", version: 2, localId });
-    const again = await applyServerWrite(store, wsConfig, { kind: "delete", table: "activities", localId }, nextId);
+    const again = await applyServerWrite(
+      store,
+      wsConfig,
+      { kind: "delete", table: "activities", localId },
+      nextId,
+    );
     expect(again.serverId).toBeUndefined();
     expect(store.changes).toHaveLength(2); // no extra change appended
   });
@@ -1177,22 +1579,27 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       tables: {
         activities: {
           ...wsConfig.tables.activities!,
-          syncedFields: ["wsId", "localId", "verb", "created_at", "updated_at"]
-        }
-      }
+          syncedFields: ["wsId", "localId", "verb", "created_at", "updated_at"],
+        },
+      },
     };
     const { localId } = await applyServerWrite(
       store,
       cfg,
       { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created", secret: "no" } },
-      nextId
+      nextId,
     );
     expect(store.changes[0]!.data).not.toHaveProperty("secret");
     await applyServerWrite(
       store,
       cfg,
-      { kind: "patch", table: "activities", localId, patch: { verb: "edited", secret: "still-no" } },
-      nextId
+      {
+        kind: "patch",
+        table: "activities",
+        localId,
+        patch: { verb: "edited", secret: "still-no" },
+      },
+      nextId,
     );
     expect(store.changes[1]!.patch).toEqual({ verb: "edited", updated_at: 42 });
   });
@@ -1204,14 +1611,14 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
       ...wsConfig,
       onWrite: async ({ userId, functionName }) => {
         calls.push({ userId, functionName });
-      }
+      },
     };
     await applyServerWrite(
       store,
       cfg,
       { kind: "insert", table: "activities", value: { wsId: "w1", verb: "created" } },
       nextId,
-      "actor-1"
+      "actor-1",
     );
     expect(calls).toEqual([{ userId: "actor-1", functionName: "serverWriter" }]);
   });
@@ -1227,12 +1634,17 @@ describe("server sync — server-authored writes (applyServerWrite)", () => {
           store,
           cfg,
           { kind: "insert", table: "activities", value: { wsId: "w1", verb: "recursive" } },
-          next
+          next,
         );
-      }
+      },
     };
     await expect(
-      applyServerWrite(store, cfg, { kind: "insert", table: "activities", value: { wsId: "w1", verb: "start" } }, next)
+      applyServerWrite(
+        store,
+        cfg,
+        { kind: "insert", table: "activities", value: { wsId: "w1", verb: "start" } },
+        next,
+      ),
     ).rejects.toThrow(/onWrite recursion exceeded 8 nested writes.*same local-first table/i);
   });
 });
@@ -1245,20 +1657,26 @@ describe("server sync — bootstrap hardening", () => {
       tables: {
         todos: {
           ...config.tables.todos!,
-          syncedFields: ["ownerId", "text", "localId"]
-        }
-      }
+          syncedFields: ["ownerId", "text", "localId"],
+        },
+      },
     };
     await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [insert("t1", { text: "x" })]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "x" })],
     });
     // Simulate a server-only `extra` column written by ordinary Convex code.
     const serverId = await store.getServerId("todos", "t1");
     await store.patchRow("todos", serverId!, { internalFlag: "moderation-hold" });
 
     const res = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c2", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(res.changes).toHaveLength(1);
     expect(res.changes[0]!.data).toEqual({ ownerId: "user_a", text: "x", localId: "t1" });
@@ -1269,20 +1687,28 @@ describe("server sync — bootstrap hardening", () => {
     const store = new MemoryServerStore();
     const cfg: SyncConfig = { ...config, pullLimit: 1 };
     await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })],
     });
     const sk = scopeKeyForUser("user_a");
     const first = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(first.bootstrapCursors[sk]).toBeDefined();
     expect(sk in first.cursors).toBe(false); // no cursor persisted mid-bootstrap
 
     // A concurrent write lands while the bootstrap is paging.
     await handlePush(store, cfg, {
-      userId: "user_a", clientId: "cX", schemaVersion: 1,
-      mutations: [insert("t3", { text: "c" })]
+      userId: "user_a",
+      clientId: "cX",
+      schemaVersion: 1,
+      mutations: [insert("t3", { text: "c" })],
     });
 
     // Drain the remaining bootstrap pages to completion.
@@ -1290,8 +1716,12 @@ describe("server sync — bootstrap hardening", () => {
     let res = first;
     for (let i = 0; i < 5 && boot[sk]; i++) {
       res = await handlePull(store, cfg, {
-        userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-        cursors: {}, bootstrapCursors: boot
+        userId: "user_a",
+        clientId: "c1",
+        schemaVersion: 1,
+        scopes: [{ kind: "byUser" }],
+        cursors: {},
+        bootstrapCursors: boot,
       });
       boot = res.bootstrapCursors;
     }
@@ -1300,8 +1730,11 @@ describe("server sync — bootstrap hardening", () => {
     expect(res.cursors[sk]).toBe("000000000002");
     expect(res.hasMore[sk]).toBe(true);
     const incr = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: { [sk]: res.cursors[sk] }
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { [sk]: res.cursors[sk] },
     });
     expect(incr.changes.map((c) => c.localId)).toEqual(["t3"]);
   });
@@ -1309,12 +1742,18 @@ describe("server sync — bootstrap hardening", () => {
   it("a doorbell pull never takes the bootstrap path (cheap reactive watch)", async () => {
     const store = new MemoryServerStore();
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })],
     });
     const res = await handlePull(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes: [{ kind: "byUser" }],
-      cursors: {}, doorbell: true
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
+      doorbell: true,
     });
     expect(res.snapshotScopes).toHaveLength(0);
     expect(res.changes.length).toBeLessThanOrEqual(1); // one change per scope, max
@@ -1323,18 +1762,26 @@ describe("server sync — bootstrap hardening", () => {
   it("drops bootstrap and incremental changes for retired tables", async () => {
     const store = new MemoryServerStore();
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [insert("t1", { text: "retired" })]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "retired" })],
     });
     const retired: SyncConfig = { ...config, tables: {} };
     const cold = await handlePull(store, retired, {
-      userId: "user_a", clientId: "c2", schemaVersion: 1,
-      scopes: [{ kind: "byUser" }], cursors: {}
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: {},
     });
     expect(cold.changes).toEqual([]);
     const incremental = await handlePull(store, retired, {
-      userId: "user_a", clientId: "c2", schemaVersion: 1,
-      scopes: [{ kind: "byUser" }], cursors: { "u:user_a": "000000000000" }
+      userId: "user_a",
+      clientId: "c2",
+      schemaVersion: 1,
+      scopes: [{ kind: "byUser" }],
+      cursors: { "u:user_a": "000000000000" },
     });
     expect(incremental.changes).toEqual([]);
   });
@@ -1347,19 +1794,32 @@ describe("server sync — bootstrap hardening", () => {
       await applyServerWrite(
         store,
         cfg,
-        { kind: "insert", table: "docs", localId: `d-${workspace}`, value: { wsId: workspace, title: workspace } },
-        () => "unused"
+        {
+          kind: "insert",
+          table: "docs",
+          localId: `d-${workspace}`,
+          value: { wsId: workspace, title: workspace },
+        },
+        () => "unused",
       );
     }
     const scopes = ["w1", "w2", "w3"].map((value) => ({ kind: "byWorkspace" as const, value }));
     const first = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes, cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes,
+      cursors: {},
     });
     expect(first.changes).toHaveLength(2);
     expect(first.hasMore["byWorkspace:w3"]).toBe(true);
     expect(first.cursors["byWorkspace:w3"]).toBeUndefined();
     const second = await handlePull(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1, scopes, cursors: first.cursors
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes,
+      cursors: first.cursors,
     });
     expect(second.changes.map((change) => change.localId)).toEqual(["d-w3"]);
 
@@ -1368,9 +1828,12 @@ describe("server sync — bootstrap hardening", () => {
         userId: "user_a",
         clientId: "c1",
         schemaVersion: 1,
-        scopes: Array.from({ length: 65 }, (_, i) => ({ kind: "byWorkspace" as const, value: `w${i}` })),
-        cursors: {}
-      })
+        scopes: Array.from({ length: 65 }, (_, i) => ({
+          kind: "byWorkspace" as const,
+          value: `w${i}`,
+        })),
+        cursors: {},
+      }),
     ).rejects.toThrow(/at most 64/);
   });
 });
@@ -1380,14 +1843,30 @@ describe("server sync — membership revocation", () => {
     const store = new MemoryServerStore();
     store.members.add("user_a:ws1:ws_members");
     await handlePush(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [{ opId: "d1", clientId: "c1", schemaVersion: 1, functionName: "docs:create", table: "docs", kind: "insert", localId: "d1", value: { wsId: "ws1", title: "hello" } }]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "d1",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "docs:create",
+          table: "docs",
+          kind: "insert",
+          localId: "d1",
+          value: { wsId: "ws1", title: "hello" },
+        },
+      ],
     });
     // Revoke and pull: no changes, and the scope is called out as denied.
     store.members.delete("user_a:ws1:ws_members");
     const res = await handlePull(store, config, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     expect(res.changes).toHaveLength(0);
     expect(res.deniedScopes).toEqual(["byWorkspace:ws1"]);
@@ -1401,15 +1880,23 @@ describe("server sync — row-level visibility", () => {
     ...config,
     access: {
       member: ({ userId, scopeValue, membershipTable }, store) =>
-        (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`) ? userId : null,
+        (store as MemoryServerStore).members.has(`${userId}:${scopeValue}:${membershipTable}`)
+          ? userId
+          : null,
       read: ({ userId, role, row }) => role === "member" || row.createdBy === userId,
       write: ({ userId, role, before, proposed }) =>
-        role === "member" || (before ?? proposed)?.createdBy === userId
-    }
+        role === "member" || (before ?? proposed)?.createdBy === userId,
+    },
   });
   const doc = (opId: string, localId: string, createdBy: string, title = "t"): ServerOperation => ({
-    opId, clientId: "c1", schemaVersion: 1, functionName: "docs:create", table: "docs",
-    kind: "insert", localId, value: { wsId: "ws1", title, createdBy }
+    opId,
+    clientId: "c1",
+    schemaVersion: 1,
+    functionName: "docs:create",
+    table: "docs",
+    kind: "insert",
+    localId,
+    value: { wsId: "ws1", title, createdBy },
   });
   function seededStore() {
     const store = new MemoryServerStore();
@@ -1420,17 +1907,25 @@ describe("server sync — row-level visibility", () => {
   it("bootstrap: a guest gets only rows the predicate admits", async () => {
     const store = seededStore();
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "c1", schemaVersion: 1,
-      mutations: [doc("o1", "d1", "member"), doc("o2", "d2", "guest")]
+      userId: "member",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [doc("o1", "d1", "member"), doc("o2", "d2", "guest")],
     });
     const res = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     expect(res.changes.map((c) => c.localId)).toEqual(["d2"]);
     const memberRes = await handlePull(store, guestConfig(), {
-      userId: "member", clientId: "cm", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "member",
+      clientId: "cm",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     expect(memberRes.changes.map((c) => c.localId).sort()).toEqual(["d1", "d2"]);
   });
@@ -1439,17 +1934,26 @@ describe("server sync — row-level visibility", () => {
     const store = seededStore();
     // Guest is warm at cursor 0-equivalent: bootstrap an empty scope first.
     const cold = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     const sk = "byWorkspace:ws1";
     const cursor = cold.cursors[sk]!;
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "c1", schemaVersion: 1, mutations: [doc("o1", "d1", "member")]
+      userId: "member",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [doc("o1", "d1", "member")],
     });
     const hidden = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: cursor }
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: { [sk]: cursor },
     });
     expect(hidden.changes.map((change) => change.kind)).toEqual(["delete"]);
     expect(Number(hidden.cursors[sk])).toBeGreaterThan(Number(cursor));
@@ -1457,12 +1961,28 @@ describe("server sync — row-level visibility", () => {
     // The member reassigns the doc to the guest — the guest lacks the base row, so
     // the patch must arrive as a FULL-ROW upsert.
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "c1", schemaVersion: 1,
-      mutations: [{ opId: "o2", clientId: "c1", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "guest" } }]
+      userId: "member",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "o2",
+          clientId: "c1",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { createdBy: "guest" },
+        },
+      ],
     });
     const entered = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: hidden.cursors[sk]! }
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: { [sk]: hidden.cursors[sk]! },
     });
     expect(entered.changes).toHaveLength(1);
     expect(entered.changes[0]!.kind).toBe("insert");
@@ -1473,23 +1993,41 @@ describe("server sync — row-level visibility", () => {
     const store = seededStore();
     const sk = "byWorkspace:ws1";
     const cold = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "cm", schemaVersion: 1,
-      mutations: [doc("visible", "d1", "guest", "historical secret")]
+      userId: "member",
+      clientId: "cm",
+      schemaVersion: 1,
+      mutations: [doc("visible", "d1", "guest", "historical secret")],
     });
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "cm", schemaVersion: 1,
-      mutations: [{
-        opId: "hide", clientId: "cm", schemaVersion: 1, functionName: "docs:update",
-        table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "member" }
-      }]
+      userId: "member",
+      clientId: "cm",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "hide",
+          clientId: "cm",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { createdBy: "member" },
+        },
+      ],
     });
     const res = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: cold.cursors[sk]! }
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: { [sk]: cold.cursors[sk]! },
     });
     expect(res.changes.map((change) => change.kind)).toEqual(["delete", "delete"]);
     expect(res.changes.every((change) => change.data === undefined)).toBe(true);
@@ -1498,21 +2036,43 @@ describe("server sync — row-level visibility", () => {
   it("incremental: a row leaving visibility arrives as a delete", async () => {
     const store = seededStore();
     await handlePush(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1, mutations: [doc("o1", "d1", "guest")]
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      mutations: [doc("o1", "d1", "guest")],
     });
     const sk = "byWorkspace:ws1";
     const warm = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: {}
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: {},
     });
     // The member takes the doc over; for the guest it leaves visibility.
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "cm", schemaVersion: 1,
-      mutations: [{ opId: "o2", clientId: "cm", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { createdBy: "member" } }]
+      userId: "member",
+      clientId: "cm",
+      schemaVersion: 1,
+      mutations: [
+        {
+          opId: "o2",
+          clientId: "cm",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { createdBy: "member" },
+        },
+      ],
     });
     const res = await handlePull(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
-      scopes: [{ kind: "byWorkspace", value: "ws1" }], cursors: { [sk]: warm.cursors[sk]! }
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
+      scopes: [{ kind: "byWorkspace", value: "ws1" }],
+      cursors: { [sk]: warm.cursors[sk]! },
     });
     expect(res.changes.map((c) => c.kind)).toEqual(["delete"]);
   });
@@ -1520,17 +2080,42 @@ describe("server sync — row-level visibility", () => {
   it("write side: can't see → can't touch (patch and delete of an invisible row reject)", async () => {
     const store = seededStore();
     await handlePush(store, guestConfig(), {
-      userId: "member", clientId: "cm", schemaVersion: 1, mutations: [doc("o1", "d1", "member")]
+      userId: "member",
+      clientId: "cm",
+      schemaVersion: 1,
+      mutations: [doc("o1", "d1", "member")],
     });
     const res = await handlePush(store, guestConfig(), {
-      userId: "guest", clientId: "cg", schemaVersion: 1,
+      userId: "guest",
+      clientId: "cg",
+      schemaVersion: 1,
       mutations: [
-        { opId: "o2", clientId: "cg", schemaVersion: 1, functionName: "docs:update", table: "docs", kind: "patch", localId: "d1", patch: { title: "hacked" } },
-        { opId: "o3", clientId: "cg", schemaVersion: 1, functionName: "docs:remove", table: "docs", kind: "delete", localId: "d1" }
-      ]
+        {
+          opId: "o2",
+          clientId: "cg",
+          schemaVersion: 1,
+          functionName: "docs:update",
+          table: "docs",
+          kind: "patch",
+          localId: "d1",
+          patch: { title: "hacked" },
+        },
+        {
+          opId: "o3",
+          clientId: "cg",
+          schemaVersion: 1,
+          functionName: "docs:remove",
+          table: "docs",
+          kind: "delete",
+          localId: "d1",
+        },
+      ],
     });
     expect(res.accepted).toHaveLength(0);
-    expect(res.rejected.map((r) => r.message)).toEqual(["Cannot patch docs:d1", "Cannot delete docs:d1"]);
+    expect(res.rejected.map((r) => r.message)).toEqual([
+      "Cannot patch docs:d1",
+      "Cannot delete docs:d1",
+    ]);
     const row = await store.getRow("docs", (await store.getServerId("docs", "d1"))!);
     expect(row).toMatchObject({ title: "t" });
   });
@@ -1546,13 +2131,15 @@ describe("server sync — serverStamp", () => {
         todos: {
           ...config.tables.todos!,
           serverOnlyFields: ["sequenceId"],
-          serverStamp: () => ({ sequenceId: ++seq })
-        }
-      }
+          serverStamp: () => ({ sequenceId: ++seq }),
+        },
+      },
     };
     const res = await handlePush(store, cfg, {
-      userId: "user_a", clientId: "c1", schemaVersion: 1,
-      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })]
+      userId: "user_a",
+      clientId: "c1",
+      schemaVersion: 1,
+      mutations: [insert("t1", { text: "a" }), insert("t2", { text: "b" })],
     });
     expect(res.changes.map((c) => c.data?.sequenceId)).toEqual([1, 2]);
     const row = await store.getRow("todos", (await store.getServerId("todos", "t1"))!);
@@ -1567,14 +2154,17 @@ describe("server sync — serverStamp", () => {
         todos: {
           ...config.tables.todos!,
           serverOnlyFields: ["ownerId"],
-          serverStamp: () => ({ ownerId: "someone_else" })
-        }
-      }
+          serverStamp: () => ({ ownerId: "someone_else" }),
+        },
+      },
     };
     await expect(
       handlePush(store, cfg, {
-        userId: "user_a", clientId: "c1", schemaVersion: 1, mutations: [insert("t1", { text: "a" })]
-      })
+        userId: "user_a",
+        clientId: "c1",
+        schemaVersion: 1,
+        mutations: [insert("t1", { text: "a" })],
+      }),
     ).rejects.toThrow(/serverStamp must not set the scope field/);
   });
 });

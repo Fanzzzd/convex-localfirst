@@ -1,19 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { byWorkspace, localTable } from "../../src/core";
 import type { PullResponse, PushResponse, SyncScope, SyncTransport } from "../../src/core";
-import { acceptAllTransport, createHarness, createTodoManifest, offlineTransport, serverChange } from "./helpers";
+import {
+  acceptAllTransport,
+  createHarness,
+  createTodoManifest,
+  offlineTransport,
+  serverChange,
+} from "./helpers";
 
 const scope = (key: string): SyncScope => ({ kind: "byUser", key });
 
 describe("sync protocol", () => {
   it("pushes an accepted op and marks it acked", async () => {
-    const push = vi.fn(async (request): Promise<PushResponse> => ({
-      accepted: request.mutations.map((op) => ({ opId: op.opId })),
-      rejected: [],
-      idMaps: [],
-      changes: [],
-      serverTime: 1
-    }));
+    const push = vi.fn(
+      async (request): Promise<PushResponse> => ({
+        accepted: request.mutations.map((op) => ({ opId: op.opId })),
+        rejected: [],
+        idMaps: [],
+        changes: [],
+        serverTime: 1,
+      }),
+    );
     const { engine } = createHarness({ transport: { push, pull: acceptAllTransport().pull } });
 
     const call = engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "x" });
@@ -27,7 +35,7 @@ describe("sync protocol", () => {
     const all = [
       serverChange({ id: "t1", kind: "insert", version: 1, value: { listId: "i", text: "a" } }),
       serverChange({ id: "t2", kind: "insert", version: 2, value: { listId: "i", text: "b" } }),
-      serverChange({ id: "t3", kind: "insert", version: 3, value: { listId: "i", text: "c" } })
+      serverChange({ id: "t3", kind: "insert", version: 3, value: { listId: "i", text: "c" } }),
     ];
     let pulls = 0;
     const transport: SyncTransport = {
@@ -42,9 +50,9 @@ describe("sync protocol", () => {
           changes: page,
           cursors: { [sk]: last ? last.changeId : cursor },
           hasMore: { [sk]: remaining.length > 2 },
-          serverTime: 1
+          serverTime: 1,
         };
-      }
+      },
     };
     const { engine, store } = createHarness({ transport });
     await engine.syncOnce([{ kind: "byUser", key: sk }]);
@@ -60,7 +68,7 @@ describe("sync protocol", () => {
       async pull() {
         // Pathological: always claims more, never advances. Must stop + report partial.
         return { changes: [], cursors: { [sk]: "" }, hasMore: { [sk]: true }, serverTime: 1 };
-      }
+      },
     };
     const { engine } = createHarness({ transport });
     await engine.syncOnce([{ kind: "byUser", key: sk }]);
@@ -74,7 +82,7 @@ describe("sync protocol", () => {
     let i = 0;
     const { engine, store } = createHarness({
       transport: offlineTransport(),
-      clock: () => times[Math.min(i++, times.length - 1)]
+      clock: () => times[Math.min(i++, times.length - 1)],
     });
 
     await engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "first" }).local;
@@ -88,14 +96,18 @@ describe("sync protocol", () => {
   it("rejects (and keeps owed) an op the push response neither accepts nor rejects", async () => {
     // A buggy/malicious server that ACKs nothing must not let us silently mark the op
     // acked — that strands it (no longer owed, never canonical, replayed forever).
-    const push = vi.fn(async (): Promise<PushResponse> => ({
-      accepted: [],
-      rejected: [],
-      idMaps: [],
-      changes: [],
-      serverTime: 1
-    }));
-    const { engine, store } = createHarness({ transport: { push, pull: acceptAllTransport().pull } });
+    const push = vi.fn(
+      async (): Promise<PushResponse> => ({
+        accepted: [],
+        rejected: [],
+        idMaps: [],
+        changes: [],
+        serverTime: 1,
+      }),
+    );
+    const { engine, store } = createHarness({
+      transport: { push, pull: acceptAllTransport().pull },
+    });
 
     const call = engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "x" });
     await expect(call.server).rejects.toThrow(/did not cover operation/);
@@ -114,12 +126,18 @@ describe("sync protocol", () => {
           idMaps: [],
           // Echo a confirming change so the op is pruned (won't be pushed again).
           changes: request.mutations.map((op) =>
-            serverChange({ id: op.id, kind: "insert", version: 1, opId: op.opId, value: { listId: "inbox", text: "x" } })
+            serverChange({
+              id: op.id,
+              kind: "insert",
+              version: 1,
+              opId: op.opId,
+              value: { listId: "inbox", text: "x" },
+            }),
           ),
-          serverTime: 1
+          serverTime: 1,
         };
       },
-      pull: acceptAllTransport().pull
+      pull: acceptAllTransport().pull,
     };
     const { engine, store } = createHarness({ transport });
 
@@ -151,14 +169,24 @@ describe("sync protocol", () => {
           idMaps: [],
           // retry hits the ledger dedupe path → server re-delivers the confirming change
           changes: request.mutations.map((op) =>
-            serverChange({ id: op.id, kind: "insert", version: 1, opId: op.opId, value: { listId: "inbox", text: "x" } })
+            serverChange({
+              id: op.id,
+              kind: "insert",
+              version: 1,
+              opId: op.opId,
+              value: { listId: "inbox", text: "x" },
+            }),
           ),
-          serverTime: 1
+          serverTime: 1,
         };
       },
-      pull: acceptAllTransport().pull
+      pull: acceptAllTransport().pull,
     };
-    const { engine, store } = createHarness({ transport, retry: { retries: 3, baseDelayMs: 1 }, sleep: async () => {} });
+    const { engine, store } = createHarness({
+      transport,
+      retry: { retries: 3, baseDelayMs: 1 },
+      sleep: async () => {},
+    });
 
     const call = engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "x" });
     await call.server; // RESOLVES despite the lost first ACK — a reject here would throw and fail
@@ -177,11 +205,11 @@ describe("sync protocol", () => {
             rejected: request.mutations.map((op) => ({ opId: op.opId, message: "denied" })),
             idMaps: [],
             changes: [],
-            serverTime: 1
+            serverTime: 1,
           };
         },
-        pull: acceptAllTransport().pull
-      }
+        pull: acceptAllTransport().pull,
+      },
     });
     const call = engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "x" });
     await expect(call.server).rejects.toThrow("denied");
@@ -196,7 +224,7 @@ describe("sync protocol", () => {
         seenCursors.push(request.cursors["user:user_a"]);
         const next = request.cursors["user:user_a"] === null ? "c1" : "c2";
         return { changes: [], cursors: { "user:user_a": next }, serverTime: 1 };
-      }
+      },
     };
     const { engine, store } = createHarness({ transport });
 
@@ -212,8 +240,12 @@ describe("sync protocol", () => {
     const transport: SyncTransport = {
       push: acceptAllTransport().push,
       async pull() {
-        return { changes: [], cursors: { "user:user_a": "ca", "workspace:w1": "cb" }, serverTime: 1 };
-      }
+        return {
+          changes: [],
+          cursors: { "user:user_a": "ca", "workspace:w1": "cb" },
+          serverTime: 1,
+        };
+      },
     };
     const { engine, store } = createHarness({ transport });
     await engine.syncOnce([scope("user:user_a"), { kind: "byWorkspace", key: "workspace:w1" }]);
@@ -226,12 +258,19 @@ describe("sync protocol", () => {
       push: acceptAllTransport().push,
       async pull() {
         return {
-          changes: [serverChange({ id: "t9", kind: "insert", version: 1, value: { listId: "inbox", text: "nope" } })],
+          changes: [
+            serverChange({
+              id: "t9",
+              kind: "insert",
+              version: 1,
+              value: { listId: "inbox", text: "nope" },
+            }),
+          ],
           cursors: { "user:user_a": "c1" },
           serverTime: 1,
-          schemaMismatch: true
+          schemaMismatch: true,
         };
-      }
+      },
     };
     const { engine, store } = createHarness({ transport });
     await engine.syncOnce([scope("user:user_a")]);
@@ -256,14 +295,14 @@ describe("sync protocol", () => {
           throw new Error("network down");
         }
         return { changes: [], cursors: { "user:user_a": "c1" }, serverTime: 1 };
-      }
+      },
     };
     const { engine, store } = createHarness({
       transport,
       retry: { retries: 3, baseDelayMs: 10 },
       sleep: async (ms) => {
         delays.push(ms);
-      }
+      },
     });
 
     await engine.syncOnce([scope("user:user_a")]);
@@ -277,9 +316,13 @@ describe("sync protocol", () => {
       push: acceptAllTransport().push,
       async pull() {
         throw new Error("always down");
-      }
+      },
     };
-    const { engine } = createHarness({ transport, retry: { retries: 2, baseDelayMs: 1 }, sleep: async () => {} });
+    const { engine } = createHarness({
+      transport,
+      retry: { retries: 2, baseDelayMs: 1 },
+      sleep: async () => {},
+    });
     await expect(engine.syncOnce([scope("user:user_a")])).rejects.toThrow("always down");
     expect(engine.getStatus().lastError).toContain("always down");
   });
@@ -294,17 +337,32 @@ describe("snapshot bootstrap", () => {
         return {
           // Single-page bootstrap: the server snapshot has only t2 — t1 was
           // deleted while this client was behind the GC horizon.
-          changes: [serverChange({ id: "t2", kind: "insert", version: 5, scopeKey: sk, value: { ownerId: "user_a", listId: "i", text: "kept" } })],
+          changes: [
+            serverChange({
+              id: "t2",
+              kind: "insert",
+              version: 5,
+              scopeKey: sk,
+              value: { ownerId: "user_a", listId: "i", text: "kept" },
+            }),
+          ],
           cursors: { [sk]: "000000000009" },
           hasMore: { [sk]: false },
           snapshotScopes: [sk],
-          serverTime: 1
+          serverTime: 1,
         } satisfies PullResponse;
-      }
+      },
     };
     const { engine, store } = createHarness({ transport, userId: "user_a" });
     // Ghost: a canonical row whose delete change was GC'd server-side.
-    await store.applyServerChange(serverChange({ id: "t1", kind: "insert", version: 1, value: { ownerId: "user_a", listId: "i", text: "ghost" } }));
+    await store.applyServerChange(
+      serverChange({
+        id: "t1",
+        kind: "insert",
+        version: 1,
+        value: { ownerId: "user_a", listId: "i", text: "ghost" },
+      }),
+    );
 
     await engine.syncOnce([{ kind: "byUser", key: sk }]);
     const rows = await store.getRows("todos");
@@ -320,17 +378,32 @@ describe("snapshot bootstrap", () => {
         // Always mid-bootstrap: continuation token, no cursor, hasMore — but the
         // token never advances, so the drain gives up (partial).
         return {
-          changes: [serverChange({ id: "t2", kind: "insert", version: 5, scopeKey: sk, value: { ownerId: "user_a", listId: "i", text: "page1" } })],
+          changes: [
+            serverChange({
+              id: "t2",
+              kind: "insert",
+              version: 5,
+              scopeKey: sk,
+              value: { ownerId: "user_a", listId: "i", text: "page1" },
+            }),
+          ],
           cursors: {},
           hasMore: { [sk]: true },
           snapshotScopes: [sk],
           bootstrapCursors: { [sk]: "tok" },
-          serverTime: 1
+          serverTime: 1,
         } satisfies PullResponse;
-      }
+      },
     };
     const { engine, store } = createHarness({ transport, userId: "user_a" });
-    await store.applyServerChange(serverChange({ id: "t1", kind: "insert", version: 1, value: { ownerId: "user_a", listId: "i", text: "old" } }));
+    await store.applyServerChange(
+      serverChange({
+        id: "t1",
+        kind: "insert",
+        version: 1,
+        value: { ownerId: "user_a", listId: "i", text: "old" },
+      }),
+    );
 
     await engine.syncOnce([{ kind: "byUser", key: sk }]);
     // t1 must NOT be evicted: the bootstrap never completed. t2 (page 1) applied.
@@ -352,9 +425,9 @@ describe("membership revocation", () => {
           cursors: {},
           hasMore: {},
           deniedScopes: [sk],
-          serverTime: 1
+          serverTime: 1,
         } satisfies PullResponse;
-      }
+      },
     };
     const manifest = createTodoManifest();
     const wsManifest = {
@@ -365,13 +438,19 @@ describe("membership revocation", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
-          indexes: {}
-        })
-      }
+          indexes: {},
+        }),
+      },
     };
     const { engine, store } = createHarness({ transport, userId: "user_a", manifest: wsManifest });
     await store.applyServerChange(
-      serverChange({ table: "issues", id: "i1", kind: "insert", version: 1, value: { workspaceId: "w1", title: "secret" } })
+      serverChange({
+        table: "issues",
+        id: "i1",
+        kind: "insert",
+        version: 1,
+        value: { workspaceId: "w1", title: "secret" },
+      }),
     );
     await store.setCursor(sk, "000000000007");
 

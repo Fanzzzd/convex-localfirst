@@ -26,7 +26,7 @@ class FakeDb {
           eq: (field: string, value: unknown) => {
             filter = { field, op: "eq", value };
             return q;
-          }
+          },
         };
         build(q);
         const rows = () => {
@@ -34,7 +34,7 @@ class FakeDb {
           if (!filter) return [...all];
           const { field, op, value } = filter;
           return all.filter((row) =>
-            op === "eq" ? row[field] === value : Number(row[field]) < Number(value)
+            op === "eq" ? row[field] === value : Number(row[field]) < Number(value),
           );
         };
         return {
@@ -49,11 +49,11 @@ class FakeDb {
             return {
               page,
               isDone: page.length === remaining.length,
-              continueCursor: String(page.at(-1)?.[timeField] ?? after)
+              continueCursor: String(page.at(-1)?.[timeField] ?? after),
             };
-          }
+          },
         };
-      }
+      },
     };
   }
 
@@ -86,7 +86,7 @@ describe("component GC", () => {
       "opId",
       "schemaVersion",
       "status",
-      "userId"
+      "userId",
     ]);
   });
 

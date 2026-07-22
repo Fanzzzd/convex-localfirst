@@ -14,7 +14,7 @@ import {
   defineLocalFirstManifest,
   localMutation,
   localQuery,
-  localTable
+  localTable,
 } from "convex-localfirst/core";
 // The engine is internal (I13); this diagnostic script drives it directly.
 import { LocalFirstEngine } from "convex-localfirst/core/internal";
@@ -32,8 +32,8 @@ function manifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        indexes: { byList: ["ownerId", "listId", "createdAt"] }
-      })
+        indexes: { byList: ["ownerId", "listId", "createdAt"] },
+      }),
     },
     queries: {
       "todos:list": localQuery({
@@ -41,8 +41,8 @@ function manifest() {
         name: "todos:list",
         table: "todos",
         initial: [],
-        run: (rows, args) => rows.filter((r) => r.listId === args.listId)
-      })
+        run: (rows, args) => rows.filter((r) => r.listId === args.listId),
+      }),
     },
     mutations: {
       "todos:create": localMutation({
@@ -59,11 +59,11 @@ function manifest() {
             text: args.text,
             done: false,
             createdAt: ctx.now,
-            updatedAt: ctx.now
-          }
-        })
-      })
-    }
+            updatedAt: ctx.now,
+          },
+        }),
+      }),
+    },
   });
 }
 
@@ -76,7 +76,13 @@ function engine(clientId) {
     userId: user,
     nameOf: (r) => String(r),
     idFactory: () => `${clientId}_${++n}`,
-    transport: createConvexTransport({ client: new ConvexHttpClient(url), push: api.sync.push, pull: api.sync.pull, clientId, userId: user })
+    transport: createConvexTransport({
+      client: new ConvexHttpClient(url),
+      push: api.sync.push,
+      pull: api.sync.pull,
+      clientId,
+      userId: user,
+    }),
   });
 }
 

@@ -49,7 +49,7 @@ export function IssueDocEditor({ workspace, issueId, user }: IssueDocEditorProps
     append: (update) => append({ workspace, doc: issueId, update }),
     prune: (id) => remove({ id }),
     // Snapshot + prune once ~200 update rows accumulate for this document.
-    compaction: { everyUpdates: 200 }
+    compaction: { everyUpdates: 200 },
   });
 
   // Cursor/selection presence over the package's presence transport. Low heartbeat so
@@ -58,7 +58,7 @@ export function IssueDocEditor({ workspace, issueId, user }: IssueDocEditorProps
     docId: issueId,
     scope: { workspace },
     state: { user },
-    heartbeatMs: 200
+    heartbeatMs: 200,
   });
 
   const editor = useEditor(
@@ -69,10 +69,10 @@ export function IssueDocEditor({ workspace, issueId, user }: IssueDocEditorProps
         // Content <-> Y.Doc. The XML fragment name must match across all clients.
         Collaboration.configure({ fragment: doc.getXmlFragment("prosemirror") }),
         // Remote carets/selections, driven by our awareness instance.
-        CollaborationCaret.configure({ provider: { awareness }, user })
-      ]
+        CollaborationCaret.configure({ provider: { awareness }, user }),
+      ],
     },
-    [doc, awareness]
+    [doc, awareness],
   );
 
   return (

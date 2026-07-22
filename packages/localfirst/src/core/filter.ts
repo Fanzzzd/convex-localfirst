@@ -1,11 +1,12 @@
 import { compareValues } from "./ordering.js";
 
 type Defined<Value> = Exclude<Value, undefined>;
-type ElementOf<Value> = NonNullable<Value> extends readonly (infer Element)[]
-  ? Element
-  : NonNullable<Value> extends ReadonlySet<infer Element>
+type ElementOf<Value> =
+  NonNullable<Value> extends readonly (infer Element)[]
     ? Element
-    : never;
+    : NonNullable<Value> extends ReadonlySet<infer Element>
+      ? Element
+      : never;
 type EqualitySugar<Value> = Defined<Value>;
 
 export type FilterOperators<Value> = {
@@ -44,7 +45,18 @@ export type FilterParseResult<Shape extends Record<string, unknown> = Record<str
   | { readonly ok: true; readonly value: FilterSpec<Shape> }
   | { readonly ok: false; readonly error: FilterParseError };
 
-const OPERATORS = new Set(["eq", "ne", "in", "nin", "lt", "lte", "gt", "gte", "contains", "overlaps"]);
+const OPERATORS = new Set([
+  "eq",
+  "ne",
+  "in",
+  "nin",
+  "lt",
+  "lte",
+  "gt",
+  "gte",
+  "contains",
+  "overlaps",
+]);
 const ARRAY_OPERATORS = new Set(["in", "nin", "overlaps"]);
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -75,8 +87,16 @@ function matchesCondition(value: unknown, condition: unknown): boolean {
   for (const [operator, operand] of entries) {
     if (operator === "eq" && !sameValue(value, operand)) return false;
     if (operator === "ne" && sameValue(value, operand)) return false;
-    if (operator === "in" && (!Array.isArray(operand) || !operand.some((item) => sameValue(value, item)))) return false;
-    if (operator === "nin" && (!Array.isArray(operand) || operand.some((item) => sameValue(value, item)))) return false;
+    if (
+      operator === "in" &&
+      (!Array.isArray(operand) || !operand.some((item) => sameValue(value, item)))
+    )
+      return false;
+    if (
+      operator === "nin" &&
+      (!Array.isArray(operand) || operand.some((item) => sameValue(value, item)))
+    )
+      return false;
     if (operator === "lt" && compareValues(value, operand) >= 0) return false;
     if (operator === "lte" && compareValues(value, operand) > 0) return false;
     if (operator === "gt" && compareValues(value, operand) <= 0) return false;
@@ -85,19 +105,35 @@ function matchesCondition(value: unknown, condition: unknown): boolean {
     if (
       operator === "overlaps" &&
       (!Array.isArray(operand) || !operand.some((item) => collectionHas(value, item)))
-    ) return false;
+    )
+      return false;
   }
   return true;
 }
 
 /** Evaluate a filter with the same JS equality and shared Convex-style ordering used
  * by local `.where()` predicates and `.order()`. Malformed clauses fail closed. */
-export function matchesFilter<Row extends Record<string, unknown>>(row: Row, filter: FilterSpec<Row>): boolean {
+export function matchesFilter<Row extends Record<string, unknown>>(
+  row: Row,
+  filter: FilterSpec<Row>,
+): boolean {
   for (const [field, condition] of Object.entries(filter)) {
     if (field === "OR") {
-      if (!Array.isArray(condition) || !condition.some((child) => plainObject(child) && matchesFilter(row, child as FilterSpec<Row>))) return false;
+      if (
+        !Array.isArray(condition) ||
+        !condition.some(
+          (child) => plainObject(child) && matchesFilter(row, child as FilterSpec<Row>),
+        )
+      )
+        return false;
     } else if (field === "AND") {
-      if (!Array.isArray(condition) || !condition.every((child) => plainObject(child) && matchesFilter(row, child as FilterSpec<Row>))) return false;
+      if (
+        !Array.isArray(condition) ||
+        !condition.every(
+          (child) => plainObject(child) && matchesFilter(row, child as FilterSpec<Row>),
+        )
+      )
+        return false;
     } else if (field === "NOT") {
       if (!plainObject(condition) || matchesFilter(row, condition as FilterSpec<Row>)) return false;
     } else if (!matchesCondition(row[field], condition)) {
@@ -110,12 +146,16 @@ export function matchesFilter<Row extends Record<string, unknown>>(row: Row, fil
 function error(
   code: FilterParseError["code"],
   path: string,
-  message: string
+  message: string,
 ): { readonly ok: false; readonly error: FilterParseError } {
   return { ok: false, error: { code, path, message } };
 }
 
-function validateJsonValue(value: unknown, path: string, seen?: WeakSet<object>): FilterParseError | null {
+function validateJsonValue(
+  value: unknown,
+  path: string,
+  seen?: WeakSet<object>,
+): FilterParseError | null {
   if (value === null || typeof value === "string" || typeof value === "boolean") return null;
   if (typeof value === "number") {
     return Number.isFinite(value)
@@ -126,7 +166,8 @@ function validateJsonValue(value: unknown, path: string, seen?: WeakSet<object>)
     return { code: "invalid_operand", path, message: "Filter operands must be JSON values." };
   }
   if (seen) {
-    if (seen.has(value)) return { code: "invalid_operand", path, message: "Filter values must not be circular." };
+    if (seen.has(value))
+      return { code: "invalid_operand", path, message: "Filter values must not be circular." };
     seen.add(value);
   }
   if (Array.isArray(value)) {
@@ -146,17 +187,27 @@ function validateJsonValue(value: unknown, path: string, seen?: WeakSet<object>)
   return null;
 }
 
-function validateFilter(value: unknown, path = "$", seen?: WeakSet<object>): FilterParseError | null {
-  if (!plainObject(value)) return { code: "invalid_filter", path, message: "Expected a filter object." };
+function validateFilter(
+  value: unknown,
+  path = "$",
+  seen?: WeakSet<object>,
+): FilterParseError | null {
+  if (!plainObject(value))
+    return { code: "invalid_filter", path, message: "Expected a filter object." };
   if (seen) {
-    if (seen.has(value)) return { code: "invalid_operand", path, message: "Filter values must not be circular." };
+    if (seen.has(value))
+      return { code: "invalid_operand", path, message: "Filter values must not be circular." };
     seen.add(value);
   }
   for (const [field, condition] of Object.entries(value)) {
     const fieldPath = `${path}.${field}`;
     if (field === "OR" || field === "AND") {
       if (!Array.isArray(condition)) {
-        return { code: "invalid_operand", path: fieldPath, message: `${field} must be an array of filters.` };
+        return {
+          code: "invalid_operand",
+          path: fieldPath,
+          message: `${field} must be an array of filters.`,
+        };
       }
       for (let index = 0; index < condition.length; index++) {
         const childError = validateFilter(condition[index], `${fieldPath}[${index}]`, seen);
@@ -176,15 +227,27 @@ function validateFilter(value: unknown, path = "$", seen?: WeakSet<object>): Fil
     }
     const entries = Object.entries(condition);
     if (entries.length === 0) {
-      return { code: "invalid_operand", path: fieldPath, message: "An operator object must not be empty." };
+      return {
+        code: "invalid_operand",
+        path: fieldPath,
+        message: "An operator object must not be empty.",
+      };
     }
     for (const [operator, operand] of entries) {
       const operatorPath = `${fieldPath}.${operator}`;
       if (!OPERATORS.has(operator)) {
-        return { code: "invalid_operator", path: operatorPath, message: `Unknown filter operator "${operator}".` };
+        return {
+          code: "invalid_operator",
+          path: operatorPath,
+          message: `Unknown filter operator "${operator}".`,
+        };
       }
       if (ARRAY_OPERATORS.has(operator) && !Array.isArray(operand)) {
-        return { code: "invalid_operand", path: operatorPath, message: `${operator} must be an array.` };
+        return {
+          code: "invalid_operand",
+          path: operatorPath,
+          message: `${operator} must be an array.`,
+        };
       }
       const operandError = validateJsonValue(operand, operatorPath, seen);
       if (operandError) return operandError;
@@ -197,7 +260,7 @@ function validateFilter(value: unknown, path = "$", seen?: WeakSet<object>): Fil
 /** Parse untrusted saved-filter JSON without throwing. The discriminated result keeps
  * syntax/shape/operator failures typed and safe to surface in application UI. */
 export function parseFilter<Shape extends Record<string, unknown> = Record<string, unknown>>(
-  json: string
+  json: string,
 ): FilterParseResult<Shape> {
   let value: unknown;
   try {
@@ -212,7 +275,9 @@ export function parseFilter<Shape extends Record<string, unknown> = Record<strin
 }
 
 /** Validate and serialize a filter for storage as a saved view. */
-export function serializeFilter<Shape extends Record<string, unknown>>(filter: FilterSpec<Shape>): string {
+export function serializeFilter<Shape extends Record<string, unknown>>(
+  filter: FilterSpec<Shape>,
+): string {
   const validationError = validateFilter(filter, "$", new WeakSet());
   if (validationError) throw new TypeError(`${validationError.path}: ${validationError.message}`);
   const json = JSON.stringify(filter);

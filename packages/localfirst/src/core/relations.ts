@@ -33,7 +33,10 @@ export type RelationSpec<_Target = unknown, _Many extends boolean = boolean> = {
 /** Pure relation descriptors stored by `lf.table({ relations })`. Target row
  * types are intentionally resolved later by `createLocalDb`, once every module
  * (and therefore every target table) is present. */
-export type OneRelationDescriptor<Table extends string = string, ForeignKey extends string = string> = {
+export type OneRelationDescriptor<
+  Table extends string = string,
+  ForeignKey extends string = string,
+> = {
   readonly kind: "one";
   readonly table: Table;
   readonly foreignKey: ForeignKey;
@@ -45,7 +48,10 @@ export type ManyRelationDescriptor<Table extends string = string, Via extends st
   readonly via: Via;
 };
 
-export type BackrefRelationDescriptor<Table extends string = string, ForeignKey extends string = string> = {
+export type BackrefRelationDescriptor<
+  Table extends string = string,
+  ForeignKey extends string = string,
+> = {
   readonly kind: "backref";
   readonly table: Table;
   readonly foreignKey: ForeignKey;
@@ -61,7 +67,7 @@ export type DeclaredRelations = Readonly<Record<string, DeclaredRelationDescript
 /** base[foreignKey] === target._id. Returns the single target (or undefined). */
 export function one<Target extends Record<string, unknown> = RowValue>(
   table: string,
-  foreignKey: string
+  foreignKey: string,
 ): RelationSpec<Target, false> {
   return { kind: "one", table, foreignKey };
 }
@@ -69,7 +75,7 @@ export function one<Target extends Record<string, unknown> = RowValue>(
 /** target[foreignKey] === base._id. Returns the matching targets as an array. */
 export function many<Target extends Record<string, unknown> = RowValue>(
   table: string,
-  foreignKey: string
+  foreignKey: string,
 ): RelationSpec<Target, true> {
   return { kind: "many", table, foreignKey };
 }
@@ -79,7 +85,7 @@ export function manyToMany<Target extends Record<string, unknown> = RowValue>(
   table: string,
   through: string,
   localKey: string,
-  targetKey: string
+  targetKey: string,
 ): RelationSpec<Target, true> {
   return { kind: "manyToMany", table, through, localKey, targetKey, foreignKey: "" };
 }
@@ -88,7 +94,7 @@ export function manyToMany<Target extends Record<string, unknown> = RowValue>(
  *  The natural join for a `setFields` id-array (e.g. `label_ids`). */
 export function viaIds<Target extends Record<string, unknown> = RowValue>(
   table: string,
-  idsField: string
+  idsField: string,
 ): RelationSpec<Target, true> {
   return { kind: "viaIds", table, foreignKey: idsField };
 }
@@ -115,7 +121,7 @@ export function relationTables(relations: readonly RelationEntry[]): string[] {
 export function attachRelations(
   baseRows: readonly Record<string, unknown>[],
   relations: readonly RelationEntry[],
-  rowsByTable: Record<string, readonly RowValue[]>
+  rowsByTable: Record<string, readonly RowValue[]>,
 ): Record<string, unknown>[] {
   if (relations.length === 0) {
     // No relations: hand back the same rows (and their identities) so the React
@@ -130,7 +136,7 @@ export function attachRelations(
       return {
         name,
         resolve: (row: Record<string, unknown>) =>
-          byId.get(row[spec.foreignKey] as string) ?? (spec.nullWhenMissing ? null : undefined)
+          byId.get(row[spec.foreignKey] as string) ?? (spec.nullWhenMissing ? null : undefined),
       };
     }
     if (spec.kind === "many") {
@@ -144,8 +150,10 @@ export function attachRelations(
         resolve: (row: Record<string, unknown>) => {
           const ids = row[spec.foreignKey];
           if (!Array.isArray(ids)) return [];
-          return ids.map((id) => byId.get(id as string)).filter((t): t is RowValue => t !== undefined);
-        }
+          return ids
+            .map((id) => byId.get(id as string))
+            .filter((t): t is RowValue => t !== undefined);
+        },
       };
     }
     // manyToMany
@@ -168,8 +176,10 @@ export function attachRelations(
         if (!ids) {
           return [];
         }
-        return [...ids].map((id) => byId.get(id as string)).filter((t): t is RowValue => t !== undefined);
-      }
+        return [...ids]
+          .map((id) => byId.get(id as string))
+          .filter((t): t is RowValue => t !== undefined);
+      },
     };
   });
 
@@ -182,7 +192,10 @@ export function attachRelations(
   });
 }
 
-function groupBy(rows: readonly RowValue[], key: (row: RowValue) => unknown): Map<unknown, RowValue[]> {
+function groupBy(
+  rows: readonly RowValue[],
+  key: (row: RowValue) => unknown,
+): Map<unknown, RowValue[]> {
   const map = new Map<unknown, RowValue[]>();
   for (const row of rows) {
     const k = key(row);

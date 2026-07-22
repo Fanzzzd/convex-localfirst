@@ -7,11 +7,11 @@ export const comments = lf.table("comments", {
     workspaceId: v.string(),
     issueId: v.string(), // FK -> issues.localId (relation: issue.comments, one-to-many)
     author: v.string(),
-    body: v.string()
+    body: v.string(),
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
-  indexes: { byWorkspace: ["workspaceId", "createdAt"] }
+  indexes: { byWorkspace: ["workspaceId", "createdAt"] },
 });
 
 export const add = comments.insert();

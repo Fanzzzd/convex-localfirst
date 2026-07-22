@@ -34,7 +34,7 @@ export default defineSchema({
     last_name: v.string(),
     avatar_url: v.string(),
     is_active: v.boolean(),
-    is_bot: v.boolean()
+    is_bot: v.boolean(),
   }).index("byId", ["id"]),
 
   workspaces: defineTable({
@@ -48,7 +48,7 @@ export default defineSchema({
     organization_size: v.optional(v.string()),
     timezone: v.optional(v.string()),
     created_at: v.number(),
-    created_by: v.optional(v.string())
+    created_by: v.optional(v.string()),
   })
     .index("byId", ["id"])
     .index("by_slug", ["slug"]),
@@ -56,7 +56,7 @@ export default defineSchema({
   ws_members: defineTable({
     user_id: v.string(),
     workspace_id: v.string(),
-    role: v.number() // EUserWorkspaceRoles: 20 admin / 15 member / 10 viewer / 5 guest
+    role: v.number(), // EUserWorkspaceRoles: 20 admin / 15 member / 10 viewer / 5 guest
   })
     .index("by_user_ws", ["user_id", "workspace_id"])
     .index("by_ws", ["workspace_id"]),
@@ -65,7 +65,7 @@ export default defineSchema({
   // serverStamp hook in sync.ts (race-free under Convex OCC) — Plane's PROJ-123.
   counters: defineTable({
     key: v.string(),
-    value: v.number()
+    value: v.number(),
   }).index("by_key", ["key"]),
 
   // --- local-first byWorkspace (idField "id"); scope field per Plane's type ----
@@ -93,5 +93,5 @@ export default defineSchema({
   doc_updates: docUpdates.table(),
   // attachments: scope field = "workspace_id". Offline-capable file metadata; the blob
   // uploads in the background and finalize stamps storageId (see sync.ts + attachments.ts).
-  attachments: attachments.table()
+  attachments: attachments.table(),
 });

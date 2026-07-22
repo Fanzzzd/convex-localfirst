@@ -4,7 +4,10 @@ import { chromium } from "@playwright/test";
 
 const URL = process.env.URL ?? "http://localhost:5173";
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 });
+const ctx = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  deviceScaleFactor: 2,
+});
 const page = await ctx.newPage();
 await page.goto(URL);
 await page.waitForSelector('[data-testid="sync-status"]');
@@ -15,7 +18,7 @@ const seed = [
   { title: "Investigate flaky sync test", priority: "High", move: 0 },
   { title: "Fix auth redirect loop", priority: "Urgent", move: 1 },
   { title: "Optimistic UI for comments", priority: "Medium", move: 1 },
-  { title: "Ship local-first docs", priority: "High", move: 2 }
+  { title: "Ship local-first docs", priority: "High", move: 2 },
 ];
 
 const cardSel = (t) => `[data-testid=issue-card][data-title="${t}"]`;
@@ -33,7 +36,11 @@ for (const it of seed) {
 }
 
 await page
-  .waitForFunction(() => document.querySelector("[data-testid=pending]")?.textContent?.trim() === "0", null, { timeout: 15000 })
+  .waitForFunction(
+    () => document.querySelector("[data-testid=pending]")?.textContent?.trim() === "0",
+    null,
+    { timeout: 15000 },
+  )
   .catch(() => {});
 await page.waitForTimeout(300);
 await page.screenshot({ path: "/tmp/lf-shots/board-shadcn.png", fullPage: true });

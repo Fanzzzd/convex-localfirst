@@ -3,12 +3,11 @@ import type { RegisteredMutation } from "convex/server";
 import { buildSyncCore, type CreateSyncFunctionsOptions } from "./createSyncFunctions.js";
 import { authorizeRowWrite } from "./serverSync.js";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type AnyCtx = any;
 
 export type CreateAttachmentFunctionsOptions<
   Role = unknown,
-  Row extends Record<string, unknown> = Record<string, unknown>
+  Row extends Record<string, unknown> = Record<string, unknown>,
 > = CreateSyncFunctionsOptions<Role, Row> & {
   /** The attachment metadata table (must be one of the local-first `tables`). Its
    *  rows sync like any other; `storageIdField` is patched server-side on finalize. */
@@ -44,7 +43,7 @@ export type AttachmentFunctions = {
  */
 export function createAttachmentFunctions<
   Role = unknown,
-  Row extends Record<string, unknown> = Record<string, unknown>
+  Row extends Record<string, unknown> = Record<string, unknown>,
 >(options: CreateAttachmentFunctionsOptions<Role, Row>): AttachmentFunctions {
   const core = buildSyncCore(options);
   const table = options.table;
@@ -52,12 +51,12 @@ export function createAttachmentFunctions<
   const tableConfig = core.config.tables[table];
   if (!tableConfig) {
     throw new Error(
-      `createAttachmentFunctions: "${table}" is not a configured local-first table. Add it to \`tables\` (collectTables).`
+      `createAttachmentFunctions: "${table}" is not a configured local-first table. Add it to \`tables\` (collectTables).`,
     );
   }
   if (tableConfig.syncedFields && !tableConfig.syncedFields.includes(storageIdField)) {
     throw new Error(
-      `createAttachmentFunctions: storageIdField "${storageIdField}" must be part of the "${table}" table shape so it syncs to clients.`
+      `createAttachmentFunctions: storageIdField "${storageIdField}" must be part of the "${table}" table shape so it syncs to clients.`,
     );
   }
   // storageId is SERVER-controlled: it must not be writable by any client mutation
@@ -65,7 +64,7 @@ export function createAttachmentFunctions<
   for (const [fn, mutation] of Object.entries(tableConfig.mutations ?? {})) {
     if (mutation.kind !== "delete" && mutation.fields.includes(storageIdField)) {
       throw new Error(
-        `createAttachmentFunctions: mutation "${fn}" of "${table}" exposes the server-controlled field "${storageIdField}". Omit it from the client insert/patch args.`
+        `createAttachmentFunctions: mutation "${fn}" of "${table}" exposes the server-controlled field "${storageIdField}". Omit it from the client insert/patch args.`,
       );
     }
   }
@@ -74,30 +73,41 @@ export function createAttachmentFunctions<
     args: { table: v.string(), localId: v.string(), userId: v.string() },
     handler: async (ctx: AnyCtx, args: any) => {
       if (args.table !== table) {
-        throw new Error(`createAttachmentFunctions: getUploadUrl called for unknown table "${args.table}"`);
+        throw new Error(
+          `createAttachmentFunctions: getUploadUrl called for unknown table "${args.table}"`,
+        );
       }
       const userId = await core.resolveUserId(ctx, args.userId);
-      const authorized = await authorizeRowWrite(core.pushStore(ctx), core.configFor(ctx), userId, table, args.localId, {
-        [storageIdField]: null
-      });
+      const authorized = await authorizeRowWrite(
+        core.pushStore(ctx),
+        core.configFor(ctx),
+        userId,
+        table,
+        args.localId,
+        {
+          [storageIdField]: null,
+        },
+      );
       if (!authorized) {
         throw new Error("convex-localfirst: not authorized to upload an attachment for this row.");
       }
       return await options.generateUploadUrl(ctx);
-    }
+    },
   });
 
   const finalize = options.mutation({
     args: { table: v.string(), localId: v.string(), storageId: v.string(), userId: v.string() },
     handler: async (ctx: AnyCtx, args: any) => {
       if (args.table !== table) {
-        throw new Error(`createAttachmentFunctions: finalize called for unknown table "${args.table}"`);
+        throw new Error(
+          `createAttachmentFunctions: finalize called for unknown table "${args.table}"`,
+        );
       }
       const userId = await core.resolveUserId(ctx, args.userId);
       const config = core.configFor(ctx);
       const store = core.pushStore(ctx);
       const authorized = await authorizeRowWrite(store, config, userId, table, args.localId, {
-        [storageIdField]: args.storageId
+        [storageIdField]: args.storageId,
       });
       if (!authorized) {
         throw new Error("convex-localfirst: not authorized to finalize this attachment.");
@@ -110,11 +120,12 @@ export function createAttachmentFunctions<
         return { ok: true, storageId: args.storageId };
       }
       // Patch storageId through the trusted serverWriter so every client syncs it.
-      await core.serverWriter(ctx, userId).patch(table, args.localId, { [storageIdField]: args.storageId });
+      await core
+        .serverWriter(ctx, userId)
+        .patch(table, args.localId, { [storageIdField]: args.storageId });
       return { ok: true, storageId: args.storageId };
-    }
+    },
   });
 
   return { getUploadUrl, finalize } as AttachmentFunctions;
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */

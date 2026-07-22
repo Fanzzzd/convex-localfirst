@@ -9,7 +9,7 @@ import { createLocalFirst } from "../../src/server/index";
 
 const lf = createLocalFirst();
 
-const todos = lf.table("todos", { shape: {}, scope: lf.byUser("ownerId") });
+const baseTodos = lf.table("todos", { shape: {}, scope: lf.byUser("ownerId") });
 
 /** Convex's registered query/mutation keeps the handler on `_handler`. */
 function handlerOf(fn: unknown): (ctx: unknown, args: unknown) => Promise<unknown> {
@@ -25,7 +25,7 @@ describe("lf.table(...).table() — the derived Convex table definition", () => 
     const issues = lf.table("issues", {
       shape: { workspaceId: v.string(), title: v.string(), createdAt: v.number() },
       scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "members" }),
-      indexes: { byWorkspace: ["workspaceId", "createdAt"] }
+      indexes: { byWorkspace: ["workspaceId", "createdAt"] },
     });
     const exported = (
       issues.table({ extra: { serverNote: v.optional(v.string()) } }) as unknown as {
@@ -35,20 +35,22 @@ describe("lf.table(...).table() — the derived Convex table definition", () => 
         };
       }
     ).export();
-    expect(exported.indexes).toEqual([{ indexDescriptor: "byWorkspace", fields: ["workspaceId", "createdAt"] }]);
+    expect(exported.indexes).toEqual([
+      { indexDescriptor: "byWorkspace", fields: ["workspaceId", "createdAt"] },
+    ]);
     expect(Object.keys(exported.documentType.value).sort()).toEqual([
       "createdAt",
       "localId",
       "serverNote",
       "title",
-      "workspaceId"
+      "workspaceId",
     ]);
   });
 });
 
 describe("local-first DSL handlers", () => {
   it("attach introspectable metadata (kind, table, scope)", () => {
-    const q = todos.query({ args: {}, index: "by", key: () => [], order: "asc" });
+    const q = baseTodos.query({ args: {}, index: "by", key: () => [], order: "asc" });
     const meta = (q as { __convexLocalFirst?: Record<string, unknown> }).__convexLocalFirst;
     expect(meta?.kind).toBe("query");
     expect(meta?.tableName).toBe("todos");
@@ -56,13 +58,13 @@ describe("local-first DSL handlers", () => {
   });
 
   it("writes refuse direct invocation instead of returning fabricated success", async () => {
-    const ins = todos.insert({ args: {}, value: () => ({}) });
-    const pat = todos.patch({ args: {}, id: () => "x", patch: () => ({}) });
-    const rem = todos.remove({ args: {}, id: () => "x" });
+    const ins = baseTodos.insert({ args: {}, value: () => ({}) });
+    const pat = baseTodos.patch({ args: {}, id: () => "x", patch: () => ({}) });
+    const rem = baseTodos.remove({ args: {}, id: () => "x" });
     for (const [name, fn] of [
       ["insert", ins],
       ["patch", pat],
-      ["remove", rem]
+      ["remove", rem],
     ] as const) {
       await expect(handlerOf(fn)({}, {}), name).rejects.toThrow(/not directly callable/);
     }
@@ -74,7 +76,7 @@ describe("derived specs + auto timestamps", () => {
     shape: { ownerId: v.string(), text: v.string(), done: v.boolean() },
     scope: lf.byUser("ownerId"),
     timestamps: true,
-    indexes: { byOwner: ["ownerId", "createdAt"] }
+    indexes: { byOwner: ["ownerId", "createdAt"] },
   });
   const create = todos.insert();
   const update = todos.patch();
@@ -82,22 +84,42 @@ describe("derived specs + auto timestamps", () => {
   const mutationCtx = (now: number) => ({ now, clientId: "c1", userId: "u1", localId: () => "t1" });
 
   it("table() adds the timestamp columns (true → createdAt/updatedAt; tuple → named)", () => {
-    const exported = (todos.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }).export();
-    expect(Object.keys(exported.documentType.value).sort()).toEqual(["createdAt", "done", "localId", "ownerId", "text", "updatedAt"]);
+    const exported = (
+      todos.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }
+    ).export();
+    expect(Object.keys(exported.documentType.value).sort()).toEqual([
+      "createdAt",
+      "done",
+      "localId",
+      "ownerId",
+      "text",
+      "updatedAt",
+    ]);
 
     const snake = lf.table("snake", {
       shape: { ownerId: v.string() },
       scope: lf.byUser("ownerId"),
-      timestamps: ["created_at", "updated_at"]
+      timestamps: ["created_at", "updated_at"],
     });
-    const snakeExport = (snake.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }).export();
-    expect(Object.keys(snakeExport.documentType.value).sort()).toEqual(["created_at", "localId", "ownerId", "updated_at"]);
+    const snakeExport = (
+      snake.table() as unknown as { export(): { documentType: { value: Record<string, unknown> } } }
+    ).export();
+    expect(Object.keys(snakeExport.documentType.value).sort()).toEqual([
+      "created_at",
+      "localId",
+      "ownerId",
+      "updated_at",
+    ]);
   });
 
   it("derived insert args = shape minus owner + timestamps; derived patch args = id + optionalized shape", () => {
-    const insertArgs = (create as { __convexLocalFirst?: { spec: { args: Record<string, unknown> } } }).__convexLocalFirst!.spec.args;
+    const insertArgs = (
+      create as { __convexLocalFirst?: { spec: { args: Record<string, unknown> } } }
+    ).__convexLocalFirst!.spec.args;
     expect(Object.keys(insertArgs).sort()).toEqual(["done", "text"]);
-    const patchArgs = (update as { __convexLocalFirst?: { spec: { args: Record<string, { isOptional: string }> } } }).__convexLocalFirst!.spec.args;
+    const patchArgs = (
+      update as { __convexLocalFirst?: { spec: { args: Record<string, { isOptional: string }> } } }
+    ).__convexLocalFirst!.spec.args;
     expect(Object.keys(patchArgs).sort()).toEqual(["done", "id", "text"]);
     expect(patchArgs.text!.isOptional).toBe("optional"); // shape fields optionalized
     expect(patchArgs.id!.isOptional).toBe("required"); // the id itself stays required
@@ -105,15 +127,26 @@ describe("derived specs + auto timestamps", () => {
 
   it("derived insert stamps owner + timestamps; derived patch forwards present args + stamps updatedAt", () => {
     const manifest = collectManifest({ todos: { todos, create, update, del } });
-    const insertPlan = manifest.mutations["todos:create"]!.plan({ text: "hi", done: false }, mutationCtx(111));
+    const insertPlan = manifest.mutations["todos:create"]!.plan(
+      { text: "hi", done: false },
+      mutationCtx(111),
+    );
     expect(insertPlan).toEqual({
       kind: "insert",
       table: "todos",
       id: "t1",
-      value: { text: "hi", done: false, ownerId: "u1", createdAt: 111, updatedAt: 111 }
+      value: { text: "hi", done: false, ownerId: "u1", createdAt: 111, updatedAt: 111 },
     });
-    const patchPlan = manifest.mutations["todos:update"]!.plan({ id: "t1", text: "yo" }, mutationCtx(222));
-    expect(patchPlan).toEqual({ kind: "patch", table: "todos", id: "t1", patch: { text: "yo", updatedAt: 222 } });
+    const patchPlan = manifest.mutations["todos:update"]!.plan(
+      { id: "t1", text: "yo" },
+      mutationCtx(222),
+    );
+    expect(patchPlan).toEqual({
+      kind: "patch",
+      table: "todos",
+      id: "t1",
+      patch: { text: "yo", updatedAt: 222 },
+    });
     const removePlan = manifest.mutations["todos:del"]!.plan({ id: "t1" }, mutationCtx(333));
     expect(removePlan).toEqual({ kind: "delete", table: "todos", id: "t1" });
   });
@@ -123,7 +156,7 @@ describe("derived specs + auto timestamps", () => {
       shape: { workspaceId: v.string(), name: v.string(), description_html: v.string() },
       scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
       indexes: { by: ["workspaceId"] },
-      searchFields: ["name", "description_html"]
+      searchFields: ["name", "description_html"],
     });
     const list = search.query({ args: {}, index: "by", key: () => [] });
     const manifest = collectManifest({ issues: { list } });
@@ -137,17 +170,18 @@ describe("server-side query execution (SSR / scripts)", () => {
   const owned = lf.table("notes", {
     shape: { ownerId: v.string(), listId: v.string(), text: v.string() },
     scope: lf.byUser("ownerId"),
-    indexes: { byList: ["ownerId", "listId"] }
+    indexes: { byList: ["ownerId", "listId"] },
   });
 
   /** A minimal ctx: auth returns `tokenIdentifier`, db records the index walk. */
   function fakeCtx(subject: string | undefined, rows: unknown[] = []) {
-    const calls: { table?: string; index?: string; eqs: Array<[string, unknown]>; order?: string } = { eqs: [] };
+    const calls: { table?: string; index?: string; eqs: Array<[string, unknown]>; order?: string } =
+      { eqs: [] };
     const range = {
       eq(field: string, value: unknown) {
         calls.eqs.push([field, value]);
         return range;
-      }
+      },
     };
     const ctx = {
       auth: { getUserIdentity: async () => (subject ? { tokenIdentifier: subject } : null) },
@@ -162,12 +196,12 @@ describe("server-side query execution (SSR / scripts)", () => {
                 order(o: string) {
                   calls.order = o;
                   return { collect: async () => rows };
-                }
+                },
               };
-            }
+            },
           };
-        }
-      }
+        },
+      },
     };
     return { ctx, calls };
   }
@@ -178,7 +212,7 @@ describe("server-side query execution (SSR / scripts)", () => {
       index: "byList",
       key: ({ auth, args }) => [auth.userId, args.listId],
       order: "desc",
-      initial: []
+      initial: [],
     });
     const { ctx, calls } = fakeCtx("user-1", [{ text: "hi" }]);
     const result = await handlerOf(list)(ctx, { listId: "inbox" });
@@ -189,32 +223,51 @@ describe("server-side query execution (SSR / scripts)", () => {
       order: "desc",
       eqs: [
         ["ownerId", "user-1"],
-        ["listId", "inbox"]
-      ]
+        ["listId", "inbox"],
+      ],
     });
   });
 
   it("fails closed without an authenticated identity", async () => {
-    const list = owned.query({ args: {}, index: "byList", key: ({ auth }) => [auth.userId], initial: [] });
+    const list = owned.query({
+      args: {},
+      index: "byList",
+      key: ({ auth }) => [auth.userId],
+      initial: [],
+    });
     const { ctx } = fakeCtx(undefined);
     await expect(handlerOf(list)(ctx, {})).rejects.toThrow(/authenticated caller/);
   });
 
   it("fails closed when the key does not pin the walk to the caller", async () => {
     // A key that ignores auth.userId could read any owner's rows — refuse.
-    const sloppy = owned.query({ args: { who: v.string() }, index: "byList", key: ({ args }) => [args.who], initial: [] });
+    const sloppy = owned.query({
+      args: { who: v.string() },
+      index: "byList",
+      key: ({ args }) => [args.who],
+      initial: [],
+    });
     const { ctx } = fakeCtx("user-1", [{ text: "leak" }]);
-    await expect(handlerOf(sloppy)(ctx, { who: "user-2" })).rejects.toThrow(/not directly callable/);
+    await expect(handlerOf(sloppy)(ctx, { who: "user-2" })).rejects.toThrow(
+      /not directly callable/,
+    );
   });
 
   it("byWorkspace queries still refuse (membership lives in the sync config)", async () => {
     const issues = lf.table("issues", {
       shape: { workspaceId: v.string() },
       scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "members" }),
-      indexes: { byWs: ["workspaceId"] }
+      indexes: { byWs: ["workspaceId"] },
     });
-    const list = issues.query({ args: { workspaceId: v.string() }, index: "byWs", key: ({ args }) => [args.workspaceId], initial: [] });
+    const list = issues.query({
+      args: { workspaceId: v.string() },
+      index: "byWs",
+      key: ({ args }) => [args.workspaceId],
+      initial: [],
+    });
     const { ctx } = fakeCtx("user-1", [{ leak: true }]);
-    await expect(handlerOf(list)(ctx, { workspaceId: "w1" })).rejects.toThrow(/not directly callable/);
+    await expect(handlerOf(list)(ctx, { workspaceId: "w1" })).rejects.toThrow(
+      /not directly callable/,
+    );
   });
 });

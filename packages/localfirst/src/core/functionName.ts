@@ -18,6 +18,6 @@ export function defaultFunctionName(reference: unknown): FunctionName {
   }
 
   throw new Error(
-    "Unable to resolve Convex function name. Inject the official getFunctionName resolver in the React adapter."
+    "Unable to resolve Convex function name. Inject the official getFunctionName resolver in the React adapter.",
   );
 }

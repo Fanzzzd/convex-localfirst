@@ -6,7 +6,7 @@ import type {
   LocalId,
   LocalOperation,
   RowDelta,
-  TableName
+  TableName,
 } from "./types.js";
 
 /**
@@ -41,7 +41,11 @@ export type XhrLike = {
   abort(): void;
   status: number;
   responseText: string;
-  upload: { onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null };
+  upload: {
+    onprogress:
+      | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void)
+      | null;
+  };
   onload: (() => void) | null;
   onerror: (() => void) | null;
   onabort: (() => void) | null;
@@ -73,7 +77,11 @@ export type AttachmentHost = {
   resolveInsertTable(reference: unknown): TableName | null;
   /** Insert the metadata row through the NORMAL local-first path, forcing the row's
    *  id to `localId` (so it matches the blob key). Resolves the durable local commit. */
-  mutateInsert(reference: unknown, args: Record<string, unknown>, localId: LocalId): Promise<LocalCommit>;
+  mutateInsert(
+    reference: unknown,
+    args: Record<string, unknown>,
+    localId: LocalId,
+  ): Promise<LocalCommit>;
   getOperation(opId: string): Promise<LocalOperation | null>;
   /** Publish the current failed-attachment set into the recovery status channel. */
   onRecoveryChange(list: readonly AttachmentRecovery[]): void;
@@ -182,13 +190,13 @@ export class AttachmentManager {
   }): Promise<{ localId: LocalId }> {
     if (!this.backend) {
       throw new Error(
-        "convex-localfirst: attachments are not configured. Pass `attachments` to the ConvexProvider / createConvexLocalFirst (getUploadUrl + finalize function refs)."
+        "convex-localfirst: attachments are not configured. Pass `attachments` to the ConvexProvider / createConvexLocalFirst (getUploadUrl + finalize function refs).",
       );
     }
     const table = this.host.resolveInsertTable(input.insert);
     if (!table) {
       throw new Error(
-        "convex-localfirst: createAttachment needs a local-first INSERT mutation reference (from an lf.table) whose table is in the manifest."
+        "convex-localfirst: createAttachment needs a local-first INSERT mutation reference (from an lf.table) whose table is in the manifest.",
       );
     }
     const localId = this.host.newLocalId(table);
@@ -290,6 +298,7 @@ export class AttachmentManager {
       do {
         this.rerun = false;
         // Snapshot: uploadOne mutates the queue, and a delta/cancel may too.
+        // oxlint-disable-next-line no-useless-spread -- the copy is the snapshot the comment describes
         for (const localId of [...this.queue]) {
           if (!this.host.isLeader() || !this.host.isOnline()) return;
           if (!this.queue.includes(localId)) continue; // cancelled mid-pass
@@ -305,7 +314,11 @@ export class AttachmentManager {
             const op = await this.host.getOperation(record.opId);
             if (op && (op.status === "pending" || op.status === "pushing")) continue;
             if (op && op.status === "rejected") {
-              this.markFailed(localId, record.table, `Attachment metadata was rejected: ${op.error ?? "rejected"}`);
+              this.markFailed(
+                localId,
+                record.table,
+                `Attachment metadata was rejected: ${op.error ?? "rejected"}`,
+              );
               this.removeFromQueue(localId);
               this.tracked.delete(localId);
               await this.store.deleteBlob(localId).catch(() => {});
@@ -356,7 +369,7 @@ export class AttachmentManager {
     url: string,
     blob: Blob,
     localId: LocalId,
-    control: { cancelled: boolean; xhr?: XhrLike }
+    control: { cancelled: boolean; xhr?: XhrLike },
   ): Promise<{ storageId: string }> {
     const backend = this.backend!;
     if (backend.upload) {
@@ -364,15 +377,20 @@ export class AttachmentManager {
         url,
         blob,
         onProgress: (fraction) => {
-          if (!control.cancelled) this.setState(localId, { state: "uploading", progress: fraction });
-        }
+          if (!control.cancelled)
+            this.setState(localId, { state: "uploading", progress: fraction });
+        },
       });
     }
     const factory =
       this.createXhr ??
-      (typeof XMLHttpRequest !== "undefined" ? () => new XMLHttpRequest() as unknown as XhrLike : undefined);
+      (typeof XMLHttpRequest !== "undefined"
+        ? () => new XMLHttpRequest() as unknown as XhrLike
+        : undefined);
     if (!factory) {
-      throw new Error("convex-localfirst: no XMLHttpRequest available for attachment upload; provide attachments.createXhr or backend.upload.");
+      throw new Error(
+        "convex-localfirst: no XMLHttpRequest available for attachment upload; provide attachments.createXhr or backend.upload.",
+      );
     }
     return new Promise<{ storageId: string }>((resolve, reject) => {
       const xhr = factory();
