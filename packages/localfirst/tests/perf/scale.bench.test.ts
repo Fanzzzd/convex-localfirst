@@ -211,49 +211,47 @@ function ms(fn: () => void): number {
         expect(scan).toBeLessThan(N >= 50_000 ? 4000 : 2000);
       });
 
-      if (N === 50_000) {
-        it("maintains a four-column grouped board incrementally", async () => {
-          const store = await seededStore(N);
-          const cache = new LocalCache(hostEngine(), store);
-          await cache.hydrate();
-          const plan = collection<RowValue>("issues")
-            .scope({ workspaceId: WORKSPACE })
-            .groupBy("status")
-            .order("rank");
-          let sub!: ReturnType<typeof cache.subscribeQuery<RowValue, unknown, "status">>;
-          const initMs = ms(() => {
-            sub = cache.subscribeQuery(plan, () => {});
-          });
-          const before = sub.current();
-          const untouched = before.get("in_progress");
-          expect([...before.values()].reduce((total, rows) => total + rows.length, 0)).toBe(N);
-
-          const moveMs = ms(() =>
-            cache.applyServerChanges([
-              {
-                changeId: "board-move",
-                scopeKey: `byWorkspace:${WORKSPACE}`,
-                table: "issues",
-                id: "i0",
-                kind: "patch",
-                patch: { status: "closed", rank: "000000010" },
-                version: 2,
-                serverTime: 2,
-              },
-            ]),
-          );
-          const after = sub.current();
-          console.log(
-            `[bench] grouped-board at ${N}: init=${initMs.toFixed(1)}ms  move=${moveMs.toFixed(2)}ms`,
-          );
-          expect(after.get("open")).toHaveLength(N / 4 - 1);
-          expect(after.get("closed")).toHaveLength(N / 4 + 1);
-          expect(after.get("in_progress")).toBe(untouched);
-          expect(initMs).toBeLessThan(3000);
-          expect(moveMs).toBeLessThan(50);
-          sub.dispose();
+      it.runIf(N === 50_000)("maintains a four-column grouped board incrementally", async () => {
+        const store = await seededStore(N);
+        const cache = new LocalCache(hostEngine(), store);
+        await cache.hydrate();
+        const plan = collection<RowValue>("issues")
+          .scope({ workspaceId: WORKSPACE })
+          .groupBy("status")
+          .order("rank");
+        let sub!: ReturnType<typeof cache.subscribeQuery<RowValue, unknown, "status">>;
+        const initMs = ms(() => {
+          sub = cache.subscribeQuery(plan, () => {});
         });
-      }
+        const before = sub.current();
+        const untouched = before.get("in_progress");
+        expect([...before.values()].reduce((total, rows) => total + rows.length, 0)).toBe(N);
+
+        const moveMs = ms(() =>
+          cache.applyServerChanges([
+            {
+              changeId: "board-move",
+              scopeKey: `byWorkspace:${WORKSPACE}`,
+              table: "issues",
+              id: "i0",
+              kind: "patch",
+              patch: { status: "closed", rank: "000000010" },
+              version: 2,
+              serverTime: 2,
+            },
+          ]),
+        );
+        const after = sub.current();
+        console.log(
+          `[bench] grouped-board at ${N}: init=${initMs.toFixed(1)}ms  move=${moveMs.toFixed(2)}ms`,
+        );
+        expect(after.get("open")).toHaveLength(N / 4 - 1);
+        expect(after.get("closed")).toHaveLength(N / 4 + 1);
+        expect(after.get("in_progress")).toBe(untouched);
+        expect(initMs).toBeLessThan(3000);
+        expect(moveMs).toBeLessThan(50);
+        sub.dispose();
+      });
     });
   }
 });

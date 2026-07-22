@@ -411,6 +411,7 @@ export class IndexedDbStore implements LocalStore {
       };
       await transactionDone(tx);
       if (applied) this.notify();
+      return;
     });
     this.writeChain = run.then(
       () => undefined,

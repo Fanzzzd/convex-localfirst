@@ -248,14 +248,12 @@ export function createTestHarness<Modules extends Record<string, unknown>>(
         () => engine,
         () => engine,
       );
-      return React.createElement(
-        ConvexReact.ConvexProvider,
-        { client: convexClient },
-        React.createElement(LocalFirstEngineProvider, {
-          engine: active,
-          userId: currentUserId,
-          children,
-        }),
+      return (
+        <ConvexReact.ConvexProvider client={convexClient}>
+          <LocalFirstEngineProvider engine={active} userId={currentUserId}>
+            {children}
+          </LocalFirstEngineProvider>
+        </ConvexReact.ConvexProvider>
       );
     },
     server: {

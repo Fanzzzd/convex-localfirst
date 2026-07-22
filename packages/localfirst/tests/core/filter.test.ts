@@ -145,14 +145,11 @@ describe("serializable filter AST", () => {
     };
     const parsed = parseFilter<TestRow>(serializeFilter(filter));
     expect(parsed).toEqual({ ok: true, value: filter });
-    if (parsed.ok) {
-      expect(matchesFilter({ n: null, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(
-        false,
-      );
-      expect(matchesFilter({ n: 1, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(
-        true,
-      );
-    }
+    if (!parsed.ok) throw new Error("expected the round-tripped filter to parse");
+    expect(matchesFilter({ n: null, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(
+      false,
+    );
+    expect(matchesFilter({ n: 1, text: "alpha", flag: false, tags: [] }, parsed.value)).toBe(true);
   });
 
   it.each([
@@ -165,7 +162,8 @@ describe("serializable filter AST", () => {
   ] as const)("rejects malformed input: %s", (json, code) => {
     const parsed = parseFilter(json);
     expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.error.code).toBe(code);
+    if (parsed.ok) throw new Error("expected malformed input to be rejected");
+    expect(parsed.error.code).toBe(code);
   });
 
   it("rejects non-JSON and circular values before serialization", () => {

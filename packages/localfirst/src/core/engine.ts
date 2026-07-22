@@ -370,6 +370,7 @@ export class LocalFirstEngine {
     this.rolesSeed = this.seedRoles();
     void this.store.getEpoch().then((epoch) => {
       this.knownEpoch = epoch;
+      return;
     });
     this.cache = new LocalCache(this, this.store);
     void this.cache.hydrate();
@@ -808,6 +809,7 @@ export class LocalFirstEngine {
             refireQueued = false;
             onDoorbell();
           }
+          return;
         });
     };
 
@@ -817,6 +819,7 @@ export class LocalFirstEngine {
       }
       cursor = c;
       subscribeAt(cursor);
+      return;
     });
 
     return () => {
@@ -2511,6 +2514,7 @@ export class LocalFirstEngine {
                 `Timed out waiting for the leader to acknowledge local-first operation ${opId}; it remains pending.`,
               ),
             );
+            return;
           });
         },
         this.syncTimeoutMs > 0 ? this.syncTimeoutMs : 15000,
@@ -2885,6 +2889,7 @@ export class LocalFirstEngine {
         (value) => {
           clearTimeout(timer);
           resolve(value);
+          return;
         },
         (error) => {
           clearTimeout(timer);

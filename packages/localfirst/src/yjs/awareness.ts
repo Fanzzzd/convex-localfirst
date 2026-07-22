@@ -168,6 +168,7 @@ export function useDocAwareness(
   const docAwareness = useMemo(
     () => createDocAwareness(doc, { state: state ?? null, onBroadcast: setPayload }),
     // state is read once at creation; changes flow through setLocalState below.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: one DocAwareness per Y.Doc; `state` is the initial value captured at creation and later changes flow through setLocalState (a separate effect), so rebuilding on it would drop live awareness
     [doc],
   );
   useEffect(() => () => docAwareness.destroy(), [docAwareness]);

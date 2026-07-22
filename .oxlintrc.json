@@ -13,7 +13,9 @@
     "unicorn/prefer-add-event-listener": "off",
     "unicorn/no-array-sort": "off",
     "unicorn/no-array-reverse": "off",
-    "unicorn/consistent-function-scoping": "off"
+    "unicorn/consistent-function-scoping": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "import/no-unassigned-import": "off"
   },
   "env": {
     "builtin": true,

@@ -61,12 +61,8 @@ describe("local-first DSL handlers", () => {
     const ins = baseTodos.insert({ args: {}, value: () => ({}) });
     const pat = baseTodos.patch({ args: {}, id: () => "x", patch: () => ({}) });
     const rem = baseTodos.remove({ args: {}, id: () => "x" });
-    for (const [name, fn] of [
-      ["insert", ins],
-      ["patch", pat],
-      ["remove", rem],
-    ] as const) {
-      await expect(handlerOf(fn)({}, {}), name).rejects.toThrow(/not directly callable/);
+    for (const fn of [ins, pat, rem]) {
+      await expect(handlerOf(fn)({}, {})).rejects.toThrow(/not directly callable/);
     }
   });
 });

@@ -114,6 +114,7 @@ export function useCollaborativeDoc(
       ),
     // docId identifies the document; callbacks flow through the ref. resolvedCompaction /
     // flushDebounceMs are construction-time config, captured once per doc.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: the provider is built once per docId; resolvedCompaction/flushDebounceMs/backoffMs are construction-time config captured at that point (changing them mid-doc must not rebuild the live provider)
     [docId],
   );
   useEffect(() => () => provider.destroy(), [provider]);

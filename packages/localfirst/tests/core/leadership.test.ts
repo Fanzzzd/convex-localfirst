@@ -27,6 +27,7 @@ function makeFakeLockManager(): LockManagerLike {
         active.set(name, false);
         next.resolve();
         pump(name);
+        return;
       });
   };
   return {

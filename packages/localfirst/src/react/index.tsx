@@ -449,6 +449,7 @@ function LocalFirstProvider(
             namespace: props.namespace ?? defaultNamespace(userId, manifest.schemaVersion),
           })
         : new MemoryLocalStore()),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- deliberate: props.store/databaseName/namespace are excluded so an app that inlines a fresh store each render never thrashes the engine; the store's lifecycle mirrors the engine's deps (transport/nameOf) so they never diverge
     [manifest, userId, transport, props.nameOf],
   );
   // Attachment upload backend (P5): the conventional endpoints over the SAME Convex
@@ -477,8 +478,18 @@ function LocalFirstProvider(
       nameOf: props.nameOf ?? reactDefaultFunctionName,
       attachments: { backend: attachmentBackend, storageIdField },
     });
-    // clientId is intentionally captured once; store moves in lockstep (same deps).
-  }, [manifest, userId, transport, props.nameOf, store, attachmentBackend, storageIdField]);
+    // clientId is stable (useState, set once) — listed to satisfy the lint though it
+    // never changes; store moves in lockstep (same deps).
+  }, [
+    manifest,
+    userId,
+    clientId,
+    transport,
+    props.nameOf,
+    store,
+    attachmentBackend,
+    storageIdField,
+  ]);
 
   // The engine self-wires browser connectivity in its constructor — reflecting
   // navigator.onLine into the sync status and flushing the offline outbox on reconnect
@@ -533,6 +544,7 @@ function LocalFirstProvider(
     void Promise.all(reads)
       .then((operations) => {
         if (alive) engine.setOlderSchemaOperations(operations.flat());
+        return;
       })
       .catch((error) => {
         if (alive) {
@@ -730,6 +742,7 @@ function useLocalQuery<TArgs, TResult>(
         if (alive) {
           setValue((result as TResult) ?? options?.initial);
         }
+        return;
       });
     };
     run();
@@ -752,6 +765,7 @@ function useLocalQuery<TArgs, TResult>(
     };
     // refKey/argsKey are the stable identity of (function, args); reference and
     // options are read at effect time.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation keys: refKey/argsKey are the stable identity of (function, args); reference/options.* are read at effect time
   }, [engine, refKey, argsKey]);
 
   // "skip" must read as no data SYNCHRONOUSLY (Convex returns undefined): the
@@ -849,6 +863,7 @@ export function useLiveQuery<
       if (timer) clearInterval(timer);
     };
     // query is read at effect time; structuralKey is the stable identity of its shape.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: structuralKey is the stable identity of the query shape; query/options.pollMs are read at effect time (resubscribing on their per-render identity would thrash the incremental view)
   }, [engine, structuralKey]);
 
   if (query === "skip" || !engine) return undefined;
@@ -905,6 +920,8 @@ export function useLiveCounts<
       unwatch?.();
       if (timer) clearInterval(timer);
     };
+    // query is read at effect time; structuralKey is the stable identity of its shape.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: structuralKey is the stable identity of the query shape; query/options.pollMs are read at effect time (resubscribing on their per-render identity would thrash the incremental view)
   }, [engine, structuralKey]);
 
   if (query === "skip" || !engine) return undefined;
@@ -976,6 +993,7 @@ export function useSearch<Row extends Record<string, unknown> = RowValue>(
       subRef.current = null;
     };
     // query/scope/limit are read at effect time; structuralKey is their stable identity.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: structuralKey is the stable identity of table/query/scope/limit, which are read at effect time (resubscribing on their per-render identity would thrash the search view)
   }, [engine, structuralKey]);
 
   if (!engine || trimmed === "") return EMPTY_SEARCH as UseSearchResult<Row>;
@@ -1031,6 +1049,7 @@ export function useMutation<Mutation extends FunctionReference<"mutation">>(
         convexMutation((args[0] ?? {}) as TArgs),
       )) as LocalFirstMutator<Mutation>;
     // reference is read at call time; refKey is its stable identity.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: reference is a fresh api.* proxy each render, so refKey (its resolved function name) is the stable identity depended on; reference itself is read at call time
   }, [engine, convexMutation, isLocal, refKey]);
 }
 
@@ -1146,6 +1165,7 @@ export function useScopeStatus(scope: Record<string, unknown> | null | undefined
       unsubRoles();
     };
     // scope is read at effect time; scopeKey is its stable identity.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: scopeKey (JSON of scope) is the stable identity; the scope object is read at effect time (keying on its per-render identity would resubscribe every render)
   }, [engine, scopeKey]);
   return status;
 }
@@ -1182,6 +1202,7 @@ export function useRole<Role = unknown>(
     void engine.syncRoleScope(scope);
     return engine.subscribeRoles(read);
     // scope is read at effect time; scopeKey is its stable identity.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: scopeKey (JSON of scope) is the stable identity; the scope object is read at effect time (keying on its per-render identity would resubscribe every render)
   }, [engine, scopeKey]);
   return role;
 }
@@ -1222,6 +1243,7 @@ export function useCan<Modules extends Record<string, unknown> = never>(): CanCh
           engine ? engine.can(table, "delete", { before: row, proposed: null }) : true,
       }) as CanChecker<Modules>,
     // tick refreshes the checker identity when roles change, so consumers re-evaluate.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation key: tick is a counter bumped on role changes to force the checker to re-derive; it is not read inside the memo
     [engine, tick],
   );
 }
@@ -1258,6 +1280,7 @@ export function useUndo(scope?: Record<string, unknown> | null): {
       canRedo: engine ? engine.canRedo(scope) : false,
     }),
     // scope is read at call time; scopeKey + tick are the stable identity + change signal.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- invalidation keys: scopeKey (JSON of scope) is the stable identity and tick forces re-derive on undo-stack changes; the scope object itself is read at call time
     [engine, scopeKey, tick],
   );
 }
@@ -1286,7 +1309,12 @@ export function useCreateAttachment(
   insert: FunctionReference<"mutation">,
 ): (input: CreateAttachmentInput) => Promise<{ localId: string }> {
   const engine = useLocalFirstEngine();
-  const refKey = useMemo(() => (engine ? engine.functionName(insert) : null), [engine, insert]);
+  // Read the latest `insert` through a ref: the caller passes a fresh `api.*` proxy object
+  // every render, so depending on its identity would recreate the trigger each render (and
+  // re-run any consumer effect that keys on it). The engine resolves `insert` to its
+  // function NAME internally, so reading the current ref is always correct.
+  const insertRef = useRef(insert);
+  insertRef.current = insert;
   return useCallback(
     (input: CreateAttachmentInput) => {
       if (!engine) {
@@ -1296,10 +1324,13 @@ export function useCreateAttachment(
           ),
         );
       }
-      return engine.createAttachment({ insert, metadata: input.metadata, blob: input.blob });
+      return engine.createAttachment({
+        insert: insertRef.current,
+        metadata: input.metadata,
+        blob: input.blob,
+      });
     },
-    // insert is read at call time; refKey is its stable identity.
-    [engine, refKey],
+    [engine],
   );
 }
 

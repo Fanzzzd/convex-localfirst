@@ -13,8 +13,12 @@ type DocRow = Doc<"documents"> & { _conflict?: unknown };
 const ICONS = ["📄", "📝", "📊", "🚀", "🐛", "💡", "📌", "🎯", "🔖", "📚"];
 
 export function DocsView({ workspaceId, user }: { workspaceId: string; user: string }) {
-  const docs =
-    useLiveQuery(collection<DocRow>("documents").scope({ workspaceId }).order("position")) ?? [];
+  const liveDocs = useLiveQuery(
+    collection<DocRow>("documents").scope({ workspaceId }).order("position"),
+  );
+  // useLiveQuery returns a stable reference while unchanged; the `?? []` fallback would be
+  // a fresh array each render, so memoize to keep `docs` identity stable for the deps below.
+  const docs = useMemo(() => liveDocs ?? [], [liveDocs]);
   const createDocument = useMutation(api.documents.create);
   const renameDocument = useMutation(api.documents.rename);
   const setIcon = useMutation(api.documents.setIcon);

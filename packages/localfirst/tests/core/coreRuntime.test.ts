@@ -188,7 +188,7 @@ describe("core runtime", () => {
     expect(engine.hasLocalMutation("server:doDangerousThing")).toBe(false);
     // The engine refuses to run a non-manifest function locally; React routes it
     // to the official Convex client instead, so nothing is ever enqueued.
-    expect(() => engine.mutate("server:doDangerousThing", {})).toThrow();
+    expect(() => engine.mutate("server:doDangerousThing", {})).toThrow(/not in the manifest/);
     expect((await store.getPendingOperations()).length).toBe(0);
   });
 

@@ -333,8 +333,12 @@ function QueriesTab(props: { queries: QueryRow[] }): React.ReactElement {
   if (queries.length === 0) return <Empty>no live queries mounted</Empty>;
   return (
     <div>
-      {queries.map((query, index) => (
-        <div key={index} data-testid="lf-devtools-query" style={cardStyle}>
+      {queries.map((query) => (
+        <div
+          key={`${query.kind}:${JSON.stringify(query.explain)}`}
+          data-testid="lf-devtools-query"
+          style={cardStyle}
+        >
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span
               style={{

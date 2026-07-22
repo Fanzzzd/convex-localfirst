@@ -111,6 +111,7 @@ function Harness({ localIdRef }: { localIdRef: { current: string | null } }) {
           }).then((r) => {
             localIdRef.current = r.localId;
             setLocalId(r.localId);
+            return;
           })
         }
       >
