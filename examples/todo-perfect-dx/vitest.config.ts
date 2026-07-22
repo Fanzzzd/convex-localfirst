@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 // Unit tests only (the Playwright e2e lives in tests/e2e/*.spec.ts and runs via
-// `playwright test`, not vitest).
+// vitest).
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],

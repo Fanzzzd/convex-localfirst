@@ -31,3 +31,6 @@ coverage/
 
 # playwright artifacts
 test-results/
+
+# never commit key material
+*.pem

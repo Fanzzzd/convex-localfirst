@@ -1,12 +1,13 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc"],
+  "plugins": ["typescript", "unicorn", "oxc", "react", "import", "promise", "vitest", "node"],
   "categories": {
     "correctness": "error",
     "suspicious": "error",
     "perf": "error"
   },
   "rules": {
+    "react/react-in-jsx-scope": "off",
     "no-underscore-dangle": "off",
     "no-await-in-loop": "off",
     "unicorn/prefer-add-event-listener": "off",
