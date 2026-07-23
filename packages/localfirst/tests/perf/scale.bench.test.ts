@@ -389,10 +389,12 @@ function searchHost() {
       expect(issueTraTotal).toBeGreaterThan(0);
       expect(issueTraTotal).toBeLessThan(N);
       // The real regression gate: "iss" is the worst REALISTIC keystroke (matches all N rows
-      // → rank+sort N) and stays well under 20ms even at 50k; "issue tra" narrows further. A
-      // genuine regression in the rank/sort path trips these (median-of-3 keeps them stable).
-      expect(issMs).toBeLessThan(20);
-      expect(issueTraMs).toBeLessThan(20);
+      // → rank+sort N); "issue tra" narrows further. ~13ms on a dev machine, ~22ms on shared
+      // GitHub runners (≈2x slower) — the 45ms bound absorbs runner variance while a genuine
+      // rank/sort regression (accidental O(n²) is 100ms+) still trips it. Actuals are logged
+      // above so drift stays visible; median-of-3 keeps single-run spikes out.
+      expect(issMs).toBeLessThan(45);
+      expect(issueTraMs).toBeLessThan(45);
       // Whole-sequence blow-up guard. The broadest keystroke here is a bare 1-char prefix —
       // pathological (not a realistic first keystroke to a search box) and inherently noisy
       // under load, so it gets the looser 75ms bound: median-of-3 removes single-run spikes,
