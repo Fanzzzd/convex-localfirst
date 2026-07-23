@@ -130,7 +130,7 @@ export const { push, pull } = createSyncFunctions({
   mutation,
   query,
   tables: collectTables({ todos })
-  // For byWorkspace / byProject tables, add an `isMember` callback — see Syncing.
+  // For byWorkspace / byProject tables, add an `access: { member }` callback — see Syncing.
 });
 ```
 

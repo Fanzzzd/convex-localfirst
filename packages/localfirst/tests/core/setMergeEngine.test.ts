@@ -5,7 +5,7 @@ import {
   defineLocalFirstManifest,
   localMutation,
   localTable,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core";
 import { LocalFirstEngine } from "../../src/core/internal";
 
@@ -20,8 +20,8 @@ function manifest() {
         scope: byUser("ownerId"),
         indexes: { byOwner: ["ownerId", "createdAt"] },
         setFields: ["labels"],
-        counterFields: ["votes"]
-      })
+        counterFields: ["votes"],
+      }),
     },
     queries: {},
     mutations: {
@@ -33,7 +33,7 @@ function manifest() {
           // The app patches with the WHOLE intended array (as Plane's UI does); the engine
           // turns it into a set DELTA vs the current value.
           return { kind: "patch", table: "issues", id: args.id, patch: { labels: args.labels } };
-        }
+        },
       }),
       "issues:setVotes": localMutation<{ id: string; votes: number }>({
         kind: "mutation",
@@ -43,19 +43,25 @@ function manifest() {
           // The app patches with the WHOLE intended number; the engine turns it into a
           // counter DELTA vs the current value so concurrent increments accumulate.
           return { kind: "patch", table: "issues", id: args.id, patch: { votes: args.votes } };
-        }
-      })
-    }
+        },
+      }),
+    },
   });
 }
 
 const okTransport: SyncTransport = {
   async push(request) {
-    return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+    return {
+      accepted: request.mutations.map((o) => ({ opId: o.opId })),
+      rejected: [],
+      idMaps: [],
+      changes: [],
+      serverTime: 1,
+    };
   },
   async pull() {
     return { changes: [], cursors: {}, serverTime: 1 };
-  }
+  },
 };
 
 function makeEngine(store: MemoryLocalStore) {
@@ -67,7 +73,7 @@ function makeEngine(store: MemoryLocalStore) {
     transport: okTransport,
     nameOf: (r) => String(r),
     idFactory: () => "issues_1",
-    clock: () => 100
+    clock: () => 100,
   });
 }
 
@@ -84,11 +90,12 @@ describe("set-field merge through the engine", () => {
       kind: "insert",
       value: { localId: "issues_1", ownerId: "u", labels: ["a"], createdAt: 1 },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
 
     // The app patches with the whole new array ["a","b"]; the engine stores a DELTA {add:["b"]}.
-    const commit = await engine.mutate("issues:setLabels", { id: "issues_1", labels: ["a", "b"] }).local;
+    const commit = await engine.mutate("issues:setLabels", { id: "issues_1", labels: ["a", "b"] })
+      .local;
     const patchOp = (await store.getAllOperations()).find((o) => o.kind === "patch");
     expect(patchOp?.patch?.labels).toEqual({ __lfSet: { add: ["b"], remove: [] } });
 
@@ -114,12 +121,15 @@ describe("set-field merge through the engine", () => {
       kind: "insert",
       value: { localId: "issues_1", ownerId: "u", labels: ["a"], createdAt: 1 },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
 
     // Local user adds "b" (pending delta {add:["b"]} computed against current ["a"]).
     await engine.mutate("issues:setLabels", { id: "issues_1", labels: ["a", "b"] }).local;
-    expect((await engine.getRow<Record<string, unknown>>("issues", "issues_1"))?.labels).toEqual(["a", "b"]);
+    expect((await engine.getRow<Record<string, unknown>>("issues", "issues_1"))?.labels).toEqual([
+      "a",
+      "b",
+    ]);
 
     // CONCURRENTLY another client added "x" → its materialized change ["a","x"] pulls in.
     await store.applyServerChange({
@@ -130,13 +140,13 @@ describe("set-field merge through the engine", () => {
       kind: "patch",
       patch: { labels: ["a", "x"] },
       version: 2,
-      serverTime: 2
+      serverTime: 2,
     });
 
     // The still-pending local delta {add:["b"]} replays OVER the new canonical ["a","x"]
     // → ["a","x","b"]: BOTH adds survive. With whole-array LWW, "b" would have been lost.
     const row = await engine.getRow<Record<string, unknown>>("issues", "issues_1");
-    expect((row?.labels as string[]).slice().sort()).toEqual(["a", "b", "x"]);
+    expect(((row?.labels ?? []) as string[]).slice().sort()).toEqual(["a", "b", "x"]);
   });
 
   it("a patch on a declared counter field is recorded as a numeric DELTA, and the optimistic view adds it", async () => {
@@ -151,7 +161,7 @@ describe("set-field merge through the engine", () => {
       kind: "insert",
       value: { localId: "issues_1", ownerId: "u", votes: 3, createdAt: 1 },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
 
     // The app patches with the whole new number 5; the engine stores a DELTA {__lfCounter:+2}.
@@ -176,7 +186,7 @@ describe("set-field merge through the engine", () => {
       kind: "insert",
       value: { localId: "issues_1", ownerId: "u", votes: 3, createdAt: 1 },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
 
     // Local user sets votes 5 (pending delta {+2} vs current 3).
@@ -192,7 +202,7 @@ describe("set-field merge through the engine", () => {
       kind: "patch",
       patch: { votes: 4 },
       version: 2,
-      serverTime: 2
+      serverTime: 2,
     });
 
     // The still-pending local delta {+2} replays OVER the new canonical 4 → 6: BOTH increments

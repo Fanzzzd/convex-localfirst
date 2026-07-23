@@ -6,7 +6,7 @@ import {
   computeSetDelta,
   isCounterDelta,
   isSetDelta,
-  mergePatch
+  mergePatch,
 } from "../../src/core/setMerge.js";
 
 describe("set-field merge primitives", () => {
@@ -16,6 +16,11 @@ describe("set-field merge primitives", () => {
     expect(computeSetDelta(["a", "b"], ["b", "c"])).toEqual({ add: ["c"], remove: ["a"] });
     expect(computeSetDelta(undefined, ["x"])).toEqual({ add: ["x"], remove: [] }); // first set on an absent field
     expect(computeSetDelta(["a"], ["a"])).toEqual({ add: [], remove: [] }); // no-op
+  });
+
+  it('keeps string and non-string elements distinct (["1"] vs [1])', () => {
+    expect(computeSetDelta(["1"], [1])).toEqual({ add: [1], remove: ["1"] });
+    expect(applySetDelta(["1"], { add: [1], remove: [] })).toEqual(["1", 1]);
   });
 
   it("applySetDelta keeps order, drops removes, appends new adds, idempotent", () => {
@@ -54,7 +59,7 @@ describe("set-field merge primitives", () => {
     const row = { _id: "1", title: "old", label_ids: ["a", "b"] };
     const patched = mergePatch(row, {
       title: "new", // plain field → overwrite
-      label_ids: { __lfSet: { add: ["c"], remove: ["a"] } } // set field → merge
+      label_ids: { __lfSet: { add: ["c"], remove: ["a"] } }, // set field → merge
     });
     expect(patched).toEqual({ _id: "1", title: "new", label_ids: ["b", "c"] });
   });
@@ -74,7 +79,9 @@ describe("counter-field merge primitives", () => {
     expect(applyCounterDelta(5, -1)).toBe(4);
     expect(applyCounterDelta(undefined, 7)).toBe(7);
     // order-independent: (base +a) +b == (base +b) +a
-    expect(applyCounterDelta(applyCounterDelta(3, 2), 1)).toBe(applyCounterDelta(applyCounterDelta(3, 1), 2));
+    expect(applyCounterDelta(applyCounterDelta(3, 2), 1)).toBe(
+      applyCounterDelta(applyCounterDelta(3, 1), 2),
+    );
   });
 
   it("CONVERGES on concurrent increments (the data-loss case it fixes)", () => {
@@ -101,7 +108,7 @@ describe("counter-field merge primitives", () => {
     const row = { _id: "1", title: "old", votes: 3 };
     const patched = mergePatch(row, {
       title: "new", // plain field → overwrite
-      votes: { __lfCounter: 2 } // counter field → add
+      votes: { __lfCounter: 2 }, // counter field → add
     });
     expect(patched).toEqual({ _id: "1", title: "new", votes: 5 });
   });

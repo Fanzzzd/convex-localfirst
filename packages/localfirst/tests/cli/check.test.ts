@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { collectLocalFirstTables, findDirectWrites, findIdBasedWrites, type SourceFile } from "../../src/cli/check";
+import {
+  collectLocalFirstTables,
+  findDirectWrites,
+  findIdBasedWrites,
+  type SourceFile,
+} from "../../src/cli/check";
 
 const localfirst: SourceFile = {
   path: "convex/localfirst.ts",
-  content: `const todos = lf.table("todos", { scope: lf.byUser("ownerId") });\nconst notes = lf.table("notes", {});`
+  content: `const todos = lf.table("todos", { scope: lf.byUser("ownerId") });\nconst notes = lf.table("notes", {});`,
 };
 
 describe("convex-localfirst check", () => {
@@ -14,7 +19,7 @@ describe("convex-localfirst check", () => {
   it("flags a direct ctx.db.insert into a local-first table", () => {
     const offender: SourceFile = {
       path: "convex/sneaky.ts",
-      content: `export const hack = mutation({ handler: async (ctx) => {\n  await ctx.db.insert("todos", { text: "bypass" });\n} });`
+      content: `export const hack = mutation({ handler: async (ctx) => {\n  await ctx.db.insert("todos", { text: "bypass" });\n} });`,
     };
     const lfTables = collectLocalFirstTables([localfirst]);
     const violations = findDirectWrites([localfirst, offender], lfTables);
@@ -25,7 +30,7 @@ describe("convex-localfirst check", () => {
   it("does not flag DSL-based writes or writes to non-local-first tables", () => {
     const clean: SourceFile = {
       path: "convex/ok.ts",
-      content: `const created = todos.insert({ value: () => ({}) });\nexport const log = mutation({ handler: async (ctx) => {\n  await ctx.db.insert("auditLogs", { ok: true });\n} });`
+      content: `const created = todos.insert({ value: () => ({}) });\nexport const log = mutation({ handler: async (ctx) => {\n  await ctx.db.insert("auditLogs", { ok: true });\n} });`,
     };
     const lfTables = collectLocalFirstTables([localfirst]);
     expect(findDirectWrites([localfirst, clean], lfTables)).toHaveLength(0);
@@ -34,7 +39,7 @@ describe("convex-localfirst check", () => {
   it("detects a multiline insert call", () => {
     const offender: SourceFile = {
       path: "convex/multi.ts",
-      content: `await ctx.db.insert(\n  "notes",\n  { body: "x" }\n);`
+      content: `await ctx.db.insert(\n  "notes",\n  { body: "x" }\n);`,
     };
     const violations = findDirectWrites([offender], ["notes"]);
     expect(violations).toHaveLength(1);
@@ -53,7 +58,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
   handler: async (ctx, args) => {
     await ctx.db.delete(args.id);
   }
-});`
+});`,
     };
     const v = findIdBasedWrites([offender], lf);
     expect(v).toHaveLength(1);
@@ -68,7 +73,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
   handler: async (ctx, { id, body }) => {
     await ctx.db.patch(id, { body });
   }
-});`
+});`,
     };
     const v = findIdBasedWrites([offender], lf);
     expect(v).toHaveLength(1);
@@ -83,7 +88,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
     const doc = await ctx.db.query("todos").withIndex("by_owner").first();
     await ctx.db.patch(doc._id, { done: true });
   }
-});`
+});`,
     };
     const v = findIdBasedWrites([offender], lf);
     expect(v).toHaveLength(1);
@@ -93,7 +98,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
   it("flags an inline query-then-delete", () => {
     const offender: SourceFile = {
       path: "convex/d.ts",
-      content: `await ctx.db.delete((await ctx.db.query("notes").unique())._id);`
+      content: `await ctx.db.delete((await ctx.db.query("notes").unique())._id);`,
     };
     expect(findIdBasedWrites([offender], lf)).toHaveLength(1);
   });
@@ -108,7 +113,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
     const a = await ctx.db.query("auditLogs").first();
     await ctx.db.patch(a._id, { ok: true });
   }
-});`
+});`,
     };
     expect(findIdBasedWrites([clean], lf)).toHaveLength(0);
   });
@@ -121,7 +126,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
     const doc = await ctx.db.get(args.someId);
     if (doc) await ctx.db.delete(doc._id);
   }
-});`
+});`,
     };
     expect(findIdBasedWrites([clean], lf)).toHaveLength(0);
   });
@@ -131,7 +136,7 @@ describe("convex-localfirst check — id-based writes (AST)", () => {
       path: "convex/g.ts",
       content: `const todos = lf.table("todos", {});
 export const remove = todos.remove();
-export const update = todos.patch();`
+export const update = todos.patch();`,
     };
     expect(findIdBasedWrites([clean], lf)).toHaveLength(0);
   });

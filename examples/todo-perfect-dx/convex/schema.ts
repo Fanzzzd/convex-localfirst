@@ -25,8 +25,8 @@ export default defineSchema({
   // --- workspace membership (a plain Convex table; the server checks it for I7) ---
   ws_members: defineTable({
     userId: v.string(),
-    workspaceId: v.string()
+    workspaceId: v.string(),
   })
     .index("by_user_ws", ["userId", "workspaceId"])
-    .index("by_ws", ["workspaceId"])
+    .index("by_ws", ["workspaceId"]),
 });

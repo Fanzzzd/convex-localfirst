@@ -65,6 +65,18 @@ export type LocalOperation = {
   readonly createdAt: number;
   readonly status: OperationStatus;
   readonly error?: string;
+  /**
+   * Atomic write group (DX v4 §5, engine.batch/useBatch). When present, this op is
+   * one member of a group that lands or rejects on the server TOGETHER: the group is
+   * pushed contiguously in one request, applied transactionally, and reverts as one
+   * unit if rejected. ABSENT means ungrouped — exactly the single-op behavior of every
+   * prior release (a 0.3.x client emits no group fields; the server treats their
+   * absence as ungrouped). `groupId` is shared by all members; `groupSize` is the total
+   * member count; `groupIndex` is this op's 0-based position (the intra-group order).
+   */
+  readonly groupId?: string;
+  readonly groupSize?: number;
+  readonly groupIndex?: number;
 };
 
 export type ServerChangeKind = "insert" | "patch" | "delete" | "replace";
@@ -154,7 +166,16 @@ export type PullResponse = {
   /** Requested scopes this user is not (or no longer) a member of: evict their
    *  rows and forget their cursors — revocation removes data from the device. */
   readonly deniedScopes?: readonly ScopeKey[];
+  /** Per (membership) scope: the role the server resolved for the caller (the value
+   *  `access.member` returned). Lets the client mirror access rules in the UI
+   *  (useRole/useCan). OPTIONAL and additive: a 0.3.x server omits it, and the client
+   *  then treats every scope's role as not-yet-synced (useRole → undefined). */
+  readonly roles?: Record<ScopeKey, RoleValue>;
 };
+
+/** A serializable membership role, as returned by `access.member` and shipped to the
+ *  client. Opaque to the library (apps use `number` / string enums / small objects). */
+export type RoleValue = JsonValue;
 
 export type SyncStatus = {
   readonly online: boolean;
@@ -167,6 +188,62 @@ export type SyncStatus = {
   /** True while the local cache is still catching up to the server for some scope (a
    *  large cold start drained past the per-pull cap). False once fully hydrated. */
   readonly partial: boolean;
+  /** Durable writes that need user/app recovery instead of disappearing silently.
+   *  Rejected operations survive reload; older-schema operations live in the prior
+   *  IndexedDB namespace and cannot be pushed under the current schema. */
+  readonly recovery: RecoveryStatus;
+};
+
+export type RecoveryOperation = Pick<
+  LocalOperation,
+  "opId" | "table" | "id" | "kind" | "schemaVersion" | "createdAt" | "error"
+> & { readonly namespace?: string };
+
+export type RecoveryStatus = {
+  readonly rejectedOperations: readonly RecoveryOperation[];
+  readonly olderSchemaOperations: readonly RecoveryOperation[];
+  /** Attachment uploads that exhausted retry (network) or were rejected by the
+   *  server finalize. The metadata row stays synced and the local blob is RETAINED
+   *  (never evicted before a confirmed finalize), so the app can offer a retry. */
+  readonly failedAttachments: readonly AttachmentRecovery[];
+  /**
+   * Atomic write groups (engine.batch) the server rejected as a unit. ONE entry per
+   * rejected group — not one per member op — so recovery UI surfaces "the create-issue
+   * batch failed" once instead of N times. Its member ops are excluded from
+   * `rejectedOperations` (which stays exactly the ungrouped-rejection list every prior
+   * release produced). Empty unless the app uses batches.
+   */
+  readonly failedGroups: readonly RecoveryGroup[];
+};
+
+/** A rejected atomic write group, surfaced once in recovery. `opIds` are its member
+ *  operation ids (in group order); `error` is the group rejection reason
+ *  (`groupRejected: <first failing reason>`). */
+export type RecoveryGroup = {
+  readonly groupId: string;
+  readonly opIds: readonly string[];
+  /** The member ops' tables (deduped) — usually one, but a group can span tables. */
+  readonly tables: readonly TableName[];
+  readonly schemaVersion: number;
+  readonly createdAt: number;
+  readonly error?: string;
+};
+
+/** A durable attachment upload that needs app/user recovery. The blob is still in
+ *  the local outbox (retained), keyed by `localId` — the metadata row's id. */
+export type AttachmentRecovery = {
+  readonly localId: LocalId;
+  readonly table: TableName;
+  readonly error: string;
+  readonly createdAt: number;
+};
+
+/** Live upload state for one attachment (keyed by the metadata row's localId).
+ *  `progress` is a 0..1 fraction while uploading (bytes sent / total), null otherwise. */
+export type AttachmentUploadState = {
+  readonly state: "queued" | "uploading" | "done" | "failed";
+  readonly progress: number | null;
+  readonly error?: string;
 };
 
 /**
@@ -203,3 +280,25 @@ export type MutationStatus = {
   readonly status: OperationStatus;
   readonly error?: string;
 };
+
+/**
+ * A single row-level change to the live (canonical + replayed-pending) view of a
+ * table, emitted by the engine's delta bus after every commit — local mutation,
+ * server-change apply, op-status transition, eviction, or resync. The in-memory
+ * table cache, secondary indexes, and every active query view are maintained from
+ * these deltas instead of re-reading whole tables. `upsert` carries the new row;
+ * `delete` means the row left the visible view (removed or tombstoned).
+ */
+export type RowDelta =
+  | {
+      readonly table: TableName;
+      readonly localId: LocalId;
+      readonly kind: "upsert";
+      readonly row: RowValue;
+    }
+  | {
+      readonly table: TableName;
+      readonly localId: LocalId;
+      readonly kind: "delete";
+      readonly row: null;
+    };

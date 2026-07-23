@@ -1,0 +1,82 @@
+---
+title: Test harness
+description: createTestHarness — a deterministic, fully wired local-first environment (real engine, real server handlers) for testing offline → conflict → recovery in a dozen lines.
+---
+
+`convex-localfirst/testing` packages the library's own test machinery for app
+developers. `createTestHarness` returns a fully wired, **deterministic**
+local-first environment: an in-memory store plus a fake in-process server built
+on the **real** `handlePush` / `handlePull`, bridged through the real transport,
+driving the **real** engine — the exact code paths the library ships. An app
+that can test "offline edit → conflict → recovery" in ten lines trusts the
+library.
+
+```ts
+import { createTestHarness } from "convex-localfirst/testing";
+import { renderHook } from "@testing-library/react";
+import { useLiveQuery, useMutation } from "convex-localfirst";
+import { api } from "../convex/_generated/api";
+import * as todos from "../convex/todos";
+
+const t = createTestHarness({ modules: { todos } });
+t.server.seed("todos", [{ localId: "a", ownerId: "u1", text: "hi", done: false }]);
+
+const { result } = renderHook(() => useLiveQuery(t.db.todos.scope({})), {
+  wrapper: t.Provider
+});
+
+t.goOffline();
+// ...mutate optimistically while offline...
+t.goOnline();
+await t.settled();
+```
+
+## Options
+
+```ts
+createTestHarness({
+  modules,        // your imported lf.table modules (the isomorphic source of truth)
+  access?,        // server membership/read/write (serverSync shape), required for workspace/project scopes
+  onWrite?,       // server onWrite hook
+  serverStamp?,   // per-table server-minted fields, PURE stamp (no ctx)
+  userId?,        // the initial authenticated user
+  clientId?,
+  now?,           // starting logical clock in ms (default 1_000_000)
+  schemaVersion?
+})
+```
+
+Both the **client manifest** (`collectManifest`) and the **server config**
+(`collectTables`) are derived from the **same** `modules`, so the harness runs
+the precise declarations your app deploys.
+
+<Callout type="warn">
+`serverStamp` here takes a **pure** stamp — `(input: { userId, value }) =>
+Record<string, unknown>` with no Convex `ctx` — mirroring
+`createSyncFunctions({ serverStamp })` but runnable in-process.
+</Callout>
+
+## What it returns
+
+| Member | What it is |
+| --- | --- |
+| `db` | The fully-typed `createLocalDb(modules)` root — `db.todos.scope({...})`. |
+| `engine` | The current client engine (swaps on `setUser`). Handy for status assertions. |
+| `Provider` | React wrapper publishing the current engine to the local-first hooks. Requires `react` (optional peer). |
+| `server.seed(table, rows)` | Insert authoritative rows (via the trusted server writer) so clients pull them. Each row carries its scope field and, ideally, its id field. |
+| `server.rows(table)` | Current authoritative rows for a table. |
+| `server.ledger()` | Every recorded operation-ledger entry. |
+| `server.store` | The underlying `MemoryServerStore` (advanced: `gc()`, members, `denyWrite`, changes). |
+| `goOffline()` / `goOnline()` | Cut / restore the network. Local reads and writes keep working while offline. |
+| `settled()` | Await sync quiescence — drain the outbox and pull every known scope until stable. |
+| `clock.now()` / `clock.advance(ms)` | The deterministic clock threaded into engine **and** server. |
+| `setUser(uid)` | Switch the authenticated user — rebuilds the engine on a fresh store (device isolation). |
+| `userId()` | The current authenticated user. |
+| `dispose()` | Tear down the current engine (call in test cleanup). |
+
+Because the clock and id factory are deterministic and connectivity is
+controllable, a whole offline-conflict-recovery flow is reproducible:
+`goOffline()` → mutate on two engines → `goOnline()` → `settled()` → assert on
+`server.rows(...)`, `server.ledger()`, or `useSyncRecovery()`.
+
+Next: [Devtools](/docs/devtools).

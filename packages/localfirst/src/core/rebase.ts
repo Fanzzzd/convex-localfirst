@@ -32,8 +32,17 @@ export function rebaseAndReplay(input: RebaseInput): RebaseOutput {
     // appending), so this matches a plain spread today — but routing through mergePatch (the
     // one shared apply rule, same as the pending-op path below) makes server changes delta-safe
     // by construction, so a re-delivered or future delta-bearing change can never clobber.
-    const next = change.kind === "patch" ? mergePatch(current, change.patch ?? {}) : { ...current, ...change.value };
-    rows.set(key, { ...next, _id: change.id, _table: change.table, _version: change.version, _deleted: false });
+    const next =
+      change.kind === "patch"
+        ? mergePatch(current, change.patch ?? {})
+        : { ...current, ...change.value };
+    rows.set(key, {
+      ...next,
+      _id: change.id,
+      _table: change.table,
+      _version: change.version,
+      _deleted: false,
+    });
   }
 
   for (const operation of input.pendingOperations) {
@@ -41,11 +50,11 @@ export function rebaseAndReplay(input: RebaseInput): RebaseOutput {
     const current = rows.get(key);
     if (operation.kind === "insert") {
       rows.set(key, {
-        ...(operation.value ?? {}),
+        ...operation.value,
         _id: operation.id,
         _table: operation.table,
         _pending: true,
-        _deleted: false
+        _deleted: false,
       });
       continue;
     }

@@ -36,7 +36,10 @@ function lineOf(content: string, index: number): number {
  * Detect direct `ctx.db.insert("<lfTable>", …)` calls — writes that bypass the
  * local-first wrappers and the sync ledger (Security: I10).
  */
-export function findDirectWrites(files: readonly SourceFile[], lfTables: readonly string[]): Violation[] {
+export function findDirectWrites(
+  files: readonly SourceFile[],
+  lfTables: readonly string[],
+): Violation[] {
   const violations: Violation[] = [];
   const lfSet = new Set(lfTables);
   for (const file of files) {
@@ -49,7 +52,7 @@ export function findDirectWrites(files: readonly SourceFile[], lfTables: readonl
           line,
           table,
           method,
-          snippet: file.content.split("\n")[line - 1]?.trim() ?? ""
+          snippet: file.content.split("\n")[line - 1]?.trim() ?? "",
         });
       }
     }
@@ -68,7 +71,7 @@ export function findDirectWrites(files: readonly SourceFile[], lfTables: readonl
 // NOT trace ids across function boundaries or through ctx.db.get(); those stay
 // unflagged (false negatives), same coverage class as before but strictly more.
 //
-// ponytail: syntactic, function-scoped taint over `const`/handler-args only —
+// Syntactic, function-scoped taint over `const`/handler-args only —
 // no type checker, no cross-call dataflow. Upgrade path: a full ts.Program +
 // TypeChecker pass if cross-function id passing shows up as a real miss.
 // ---------------------------------------------------------------------------
@@ -91,7 +94,11 @@ function freshScope(): Scope {
 }
 
 function unwrap(node: ts.Expression): ts.Expression {
-  if (ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) {
+  if (
+    ts.isAwaitExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
     return unwrap(node.expression);
   }
   return node;
@@ -151,7 +158,8 @@ function classifyId(arg: ts.Expression, scope: Scope, lfSet: Set<string>): strin
     const base = a.expression;
     if (a.name.text === "_id") {
       // <constDoc>._id  or  (await ctx.db.query("lf")…first())._id
-      if (ts.isIdentifier(base) && scope.constDoc.has(base.text)) return scope.constDoc.get(base.text);
+      if (ts.isIdentifier(base) && scope.constDoc.has(base.text))
+        return scope.constDoc.get(base.text);
       const inline = singleDocQueryTable(base, lfSet);
       if (inline) return inline;
     } else if (ts.isIdentifier(base) && base.text === scope.argParam) {
@@ -166,7 +174,11 @@ function classifyId(arg: ts.Expression, scope: Scope, lfSet: Set<string>): strin
 }
 
 /** Extract field -> lf table from an `args: { f: v.id("lf") }` validator object. */
-function readArgValidators(argsValue: ts.Expression, lfSet: Set<string>, out: Map<string, string>): void {
+function readArgValidators(
+  argsValue: ts.Expression,
+  lfSet: Set<string>,
+  out: Map<string, string>,
+): void {
   if (!ts.isObjectLiteralExpression(argsValue)) return;
   for (const prop of argsValue.properties) {
     if (!ts.isPropertyAssignment(prop)) continue;
@@ -193,7 +205,10 @@ function scriptKindFor(path: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
-export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readonly string[]): Violation[] {
+export function findIdBasedWrites(
+  files: readonly SourceFile[],
+  lfTables: readonly string[],
+): Violation[] {
   const lfSet = new Set(lfTables);
   if (lfSet.size === 0) return [];
   const violations: Violation[] = [];
@@ -204,7 +219,7 @@ export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readon
       file.content,
       ts.ScriptTarget.Latest,
       /* setParentNodes */ true,
-      scriptKindFor(file.path)
+      scriptKindFor(file.path),
     );
 
     const record = (node: ts.Node, table: string, method: string) => {
@@ -214,7 +229,7 @@ export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readon
         line,
         table,
         method,
-        snippet: file.content.split("\n")[line - 1]?.trim() ?? ""
+        snippet: file.content.split("\n")[line - 1]?.trim() ?? "",
       });
     };
 
@@ -228,13 +243,13 @@ export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readon
               ts.isPropertyAssignment(p) &&
               ts.isIdentifier(p.name) &&
               p.name.text === "handler" &&
-              (ts.isArrowFunction(p.initializer) || ts.isFunctionExpression(p.initializer))
+              (ts.isArrowFunction(p.initializer) || ts.isFunctionExpression(p.initializer)),
           );
           if (handlerProp) {
             const handlerScope = freshScope();
             const argsProp = arg0.properties.find(
               (p): p is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "args"
+                ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "args",
             );
             if (argsProp) readArgValidators(argsProp.initializer, lfSet, handlerScope.argTaint);
 
@@ -246,7 +261,10 @@ export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readon
               } else if (ts.isObjectBindingPattern(argsParam.name)) {
                 for (const el of argsParam.name.elements) {
                   if (!ts.isIdentifier(el.name)) continue;
-                  const field = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
+                  const field =
+                    el.propertyName && ts.isIdentifier(el.propertyName)
+                      ? el.propertyName.text
+                      : el.name.text;
                   const tbl = handlerScope.argTaint.get(field);
                   if (tbl) handlerScope.destructuredIds.set(el.name.text, tbl);
                 }
@@ -291,7 +309,7 @@ export function findIdBasedWrites(files: readonly SourceFile[], lfTables: readon
   return violations;
 }
 
-export function readSourceFiles(dir: string): SourceFile[] {
+function readSourceFiles(dir: string): SourceFile[] {
   const files: SourceFile[] = [];
   const walk = (current: string) => {
     let entries: string[];

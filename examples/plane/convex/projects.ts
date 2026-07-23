@@ -24,11 +24,11 @@ export const projects = lf.table("projects", {
     members: v.optional(v.array(v.string())),
     timezone: v.optional(v.string()),
     created_by: v.optional(v.string()),
-    updated_by: v.optional(v.string())
+    updated_by: v.optional(v.string()),
   },
   scope: scopeWorkspace,
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace", "created_at"] }
+  indexes: { byWorkspace: ["workspace", "created_at"] },
 });
 
 export const create = projects.insert();

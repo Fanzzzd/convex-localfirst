@@ -4,29 +4,17 @@ import { v } from "convex/values";
 export default defineSchema({
   ops: defineTable({
     userId: v.string(),
-    clientId: v.string(),
     opId: v.string(),
     schemaVersion: v.number(),
-    functionName: v.string(),
-    table: v.string(),
-    localId: v.string(),
     status: v.union(v.literal("accepted"), v.literal("rejected")),
-    argsJson: v.string(),
-    operationJson: v.string(),
-    resultJson: v.optional(v.string()),
     // The confirming change(s) this op produced, re-delivered on a duplicate replay so
     // an op committed but never acked (crash/drop) can leave _pending on recovery.
     changesJson: v.optional(v.string()),
     error: v.optional(v.string()),
     committedAt: v.number()
   })
-    // Idempotency key is (userId, opId): opId is globally unique (it embeds the
-    // originating clientId + a random suffix), so a durable op replayed after a
-    // reload/new tab — under a DIFFERENT envelope clientId — still dedups. Keying by
-    // clientId here would miss that replay and re-apply the op. clientId stays as a
-    // column for audit only.
     .index("by_user_op", ["userId", "opId"])
-    .index("by_user_committed", ["userId", "committedAt"]),
+    .index("by_committed", ["committedAt"]),
 
   changes: defineTable({
     scopeKey: v.string(),
@@ -41,7 +29,8 @@ export default defineSchema({
     opId: v.optional(v.string())
   })
     .index("by_scope_change", ["scopeKey", "changeId"])
-    .index("by_table_local", ["table", "localId"]),
+    .index("by_table_local", ["table", "localId"])
+    .index("by_server_time", ["serverTime"]),
 
   // Per-row version authority + snapshot-bootstrap driver. One row per (table,
   // localId) EVER seen, upserted on every change append; survives change-log GC
@@ -79,5 +68,13 @@ export default defineSchema({
     updatedAt: v.number()
   })
     .index("by_scope_client", ["scopeKey", "clientId"])
-    .index("by_scope_updated", ["scopeKey", "updatedAt"])
+    .index("by_scope_updated", ["scopeKey", "updatedAt"]),
+
+  gcState: defineTable({
+    name: v.string(),
+    opsCursor: v.optional(v.string()),
+    opsHorizon: v.optional(v.number()),
+    changesCursor: v.optional(v.string()),
+    changesHorizon: v.optional(v.number())
+  }).index("by_name", ["name"])
 });

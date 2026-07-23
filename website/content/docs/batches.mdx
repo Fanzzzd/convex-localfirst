@@ -1,0 +1,66 @@
+---
+title: Atomic write groups — useBatch
+description: Group several local-first mutations into one all-or-nothing unit that applies optimistically in order and lands or reverts together.
+---
+
+Some flows are only correct as a unit: "create an issue **and** its first comment
+**and** a start-work log entry." `useBatch` runs several local-first mutations as
+one atomic write group — they apply optimistically in order, push together, and
+the server commits or rejects them **as one**.
+
+```tsx
+import { useBatch, useMutation } from "convex-localfirst";
+
+const batch = useBatch();
+const create = useMutation(api.issues.create);
+const comment = useMutation(api.comments.create);
+const logStart = useMutation(api.activity.logStart);
+
+await batch(() => {
+  const { id } = create({ workspace_id, title: "Ship v4" });
+  comment({ issue_id: id, body: "kicking off" });
+  logStart({ issue_id: id });
+}).local;
+```
+
+## The call shape
+
+`batch(fn)` returns a `LocalFirstBatchCall`:
+
+| Member | Meaning |
+| --- | --- |
+| `.local` | Resolves once **every** op in the group is durably enqueued and optimistically applied, in order. This is what you usually `await`. |
+| `.server` | Resolves with the per-op server results when the whole group is accepted, or **rejects** with the group reason (and every optimistic op reverts as a unit). Awaiting the handle itself is the same as `.server`. |
+| `.groupId` | The shared id of the group's member operations. |
+
+## All-or-nothing
+
+The group is transactional on the server: it lands entirely or not at all. A
+mid-group authorization failure writes **zero** server side effects and reverts
+the entire group client-side. A rejected group surfaces **once** in
+[`useSyncRecovery().failedGroups`](/docs/recovery) — one entry per group, never
+one per member op.
+
+## Insert-then-patch the same row
+
+A fresh insert's canonical id is available **synchronously** on the call's `.id`,
+so you can reference a just-created row later in the same batch:
+
+```tsx
+await batch(() => {
+  const issue = create({ workspace_id, title });
+  comment({ issue_id: issue.id, body });   // issue.id known at call time
+}).local;
+```
+
+<Callout type="warn">
+The callback issues mutations synchronously (it may be `async`, but) it must
+**not** `await` a batched call's `.server` inside itself — the group hasn't been
+dispatched yet, so awaiting it would deadlock. Await `.local` on the returned
+handle instead, after the callback returns.
+</Callout>
+
+[Undo](/docs/undo) treats a group as a single unit — one `undo()` reverts the
+whole batch.
+
+Next: [Undo & redo](/docs/undo).

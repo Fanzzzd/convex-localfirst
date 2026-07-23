@@ -1,0 +1,119 @@
+---
+title: Typed client — createLocalDb & relations
+description: Build a fully-typed db root from your imported lf.table modules, declare relations once, and query them by name — no strings, no client-side schema.
+---
+
+`createLocalDb(modules)` derives a fully-typed `db` root from the **same**
+imported `lf.table` modules you already hand the provider. Row types, scope
+fields, filter keys, order fields, and relation names all flow from the schema —
+the module import *is* the contract, so there is nothing to restate on the client.
+
+## `createLocalDb(modules)`
+
+Declare it once, next to your other client wiring:
+
+```ts title="src/lib/db.ts"
+import { createLocalDb } from "convex-localfirst";
+import * as issues from "../convex/issues";
+import * as states from "../convex/states";
+import * as labels from "../convex/labels";
+import * as members from "../convex/members";
+
+export const db = createLocalDb({ issues, states, labels, members });
+```
+
+Then query any table off the root — fully typed, no generics:
+
+```ts
+import { useLiveQuery } from "convex-localfirst";
+import { db } from "../lib/db";
+
+const rows = useLiveQuery(
+  db.issues
+    .scope({ workspace_id })              // scope keys typed from the scope def
+    .filter({ state_id: { in: stateIds } }) // filter keys typed from the shape
+    .with("state", "labels")              // relation names typed from `relations`
+    .order("sort_order")
+);
+// rows: Array<Issue & { state: State | null; labels: Label[] }> | undefined
+```
+
+`db` is tree-shakeable per table — importing `db` and touching only `db.issues`
+does not pull in unrelated table code. The chains it returns are ordinary
+`LocalQueryPlan` objects, so they pass straight to
+[`useLiveQuery`](/docs/react-hooks#client-queries--collection--uselivequery),
+[`useLiveCounts`](/docs/grouping), and the rest of the query surface.
+
+<Callout>
+`collection<Row>("issues")` remains the **untyped escape hatch** — the same
+chainable builder, but you supply the row type by hand. Reach for it for a table
+you did not declare in `modules`, or a quick one-off; prefer `db` everywhere else.
+</Callout>
+
+## Declared relations
+
+Relations belong to the model, not the query. Declare them **once**, where the
+table is declared, and name them in the query:
+
+```ts title="convex/issues.ts"
+export const issues = lf.table("issues", {
+  shape: {
+    workspace_id: v.string(),
+    state_id: v.string(),
+    label_ids: v.array(v.string()),
+    parent_id: v.optional(v.string()),
+    /* … */
+  },
+  scope: lf.byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "members" }),
+  setFields: ["label_ids"],
+  relations: {
+    state:     lf.one("states", "state_id"),        // this row's FK → states._id
+    labels:    lf.many("labels", { via: "label_ids" }), // set-field id-array → labels
+    parent:    lf.one("issues", "parent_id"),        // self relation
+    subIssues: lf.backref("issues", "parent_id"),    // reverse FK: children pointing back
+  }
+});
+```
+
+| Descriptor | Meaning |
+| --- | --- |
+| `lf.one(table, fk)` | This row's `fk` field → one target row's `_id`. Resolves to `Target \| null`. |
+| `lf.many(table, { via })` | This row's `via` id-**array** field → each target `_id`, in array order. The natural pair for a [`setFields`](/docs/defining-tables#merges) id-array — no join table. Resolves to `Target[]`. |
+| `lf.backref(table, fk)` | Reverse FK: every target row whose `fk` points back at this row's `_id`. Resolves to `Target[]`. |
+
+Query them by name — the result rows are typed from the descriptors:
+
+```ts
+const rows = useLiveQuery(db.issues.scope({ workspace_id }).with("state", "labels", "subIssues"));
+// rows[i].state: State | null
+// rows[i].labels: Label[]
+// rows[i].subIssues: Issue[]
+```
+
+Relations resolve **in memory** across tables already synced into the scope — no
+extra round trip, reactive through the same store subscription, and incremental.
+Cycles are fine (`issue → parent → issue`); depth is bounded by what you name in
+`.with()`. Naming a relation not declared on the table throws.
+
+## Per-query combinators (escape hatch)
+
+For a one-off shape that does not belong on the table, attach relations inline
+with `.related(name, spec)` or a whole map with `.withRelations(map)`, using the
+`one` / `many` / `manyToMany` / `viaIds` spec builders:
+
+```ts
+import { one, many, manyToMany, viaIds } from "convex-localfirst";
+
+const rows = useLiveQuery(
+  db.issues.scope({ workspace_id }).withRelations({
+    project:  one<Project>("projects", "project_id"),
+    comments: many<Comment>("comments", "issue_id"),
+    tags:     manyToMany<Tag>("tags", "issue_tags", "issue_id", "tag_id"),
+    labels:   viaIds<Label>("labels", "label_ids"),
+  })
+);
+```
+
+Declared relations are the recommended path; combinators exist for the long tail.
+
+Next: [Filters & saved views](/docs/filters).

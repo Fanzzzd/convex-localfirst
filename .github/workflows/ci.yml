@@ -25,5 +25,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Build, typecheck, and test the published packages (examples are demos, not gated).
+      # check:format + check:lint (whole repo), then build/typecheck/test the published
+      # packages (examples are linted and formatted, but not build/typecheck-gated).
       - run: pnpm run ci

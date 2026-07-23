@@ -1,0 +1,86 @@
+---
+title: Filters & saved views
+description: A typed, JSON-serializable filter AST that the planner can push through local indexes — and the primitives to store and replay filters as saved views.
+---
+
+`.where(fn)` takes any JS predicate, but a closure is opaque: the planner can't
+use an index through it, and it can't be persisted. Plane-class apps need
+**persistable, plannable** filters — a saved view *is* a serialized query. That's
+what `.filter(spec)` is: a typed, JSON-serializable filter object.
+
+## `.filter(spec)`
+
+`spec` is a `FilterSpec` typed from the table's shape. Fields (and logical
+clauses) at the same level are **ANDed**:
+
+```ts
+db.issues.scope({ workspace_id }).filter({
+  priority: "urgent",                     // eq sugar
+  state_id: { in: stateIds },             // operator object
+  assignee_ids: { contains: userId },     // set-field membership
+  target_date: { lt: today, ne: null },   // multiple operators on one field
+  OR: [{ is_draft: false }, { created_by: userId }],
+});
+```
+
+A bare value is `eq` sugar (`{ priority: "urgent" }` ≡ `{ priority: { eq: "urgent" } }`).
+An operator object combines any of:
+
+| Operator | Meaning |
+| --- | --- |
+| `eq` / `ne` | Equal / not equal (same JS equality as `.where`). |
+| `in` / `nin` | Value is / is not one of an array. |
+| `lt` / `lte` / `gt` / `gte` | Range comparison (shared Convex-style ordering). |
+| `contains` | Set/array field contains the given element. |
+| `overlaps` | Set/array field shares any element with the given array. |
+
+`contains` / `overlaps` are offered only on array/set fields (typed from the
+shape). Nest with `OR` (array), `AND` (array), and `NOT` (a single filter).
+`.filter(...)` chains as AND, so multiple calls compose.
+
+<Callout>
+Filters are **plannable**: `eq` / `in` / range conditions match local secondary
+indexes, so the incremental query engine narrows candidates before scanning. A
+`.where(fn)` closure never can — it is opaque to the planner.
+</Callout>
+
+## `.where(fn)` — the closure escape hatch
+
+For the long tail (a predicate no operator expresses), `.where(row => boolean)`
+still takes a fully-typed JS closure. It is evaluated **after** index scanning and
+is **not serializable**, so keep it for ad-hoc component-local reads, not saved
+views. `.filter` and `.where` compose (both chain as AND).
+
+## Saved views
+
+Because a `FilterSpec` is plain JSON, a saved view is just a stored filter. Store
+`serializeFilter(spec)` in a `views` [`lf.table`](/docs/defining-tables) row and
+replay it later — the app gets its own query language for free.
+
+```ts
+import { serializeFilter, parseFilter } from "convex-localfirst";
+
+// Save: validate + stringify.
+const json = serializeFilter({ state_id: { in: stateIds }, priority: "urgent" });
+create({ workspace_id, name: "Urgent triage", filter: json });
+
+// Load untrusted saved JSON without throwing.
+const parsed = parseFilter<Issue>(view.filter);
+if (parsed.ok) {
+  useLiveQuery(db.issues.scope({ workspace_id }).filter(parsed.value));
+} else {
+  console.warn(`bad saved view at ${parsed.error.path}: ${parsed.error.message}`);
+}
+```
+
+| Helper | Signature |
+| --- | --- |
+| `serializeFilter(spec)` | Validates and returns a JSON string. Throws `TypeError` on a malformed / non-serializable filter. |
+| `parseFilter<Shape>(json)` | Parses untrusted JSON **without throwing** → `{ ok: true, value } \| { ok: false, error }`. |
+| `matchesFilter(row, spec)` | Evaluate a single row against a filter (the same predicate the engine runs). |
+
+`parseFilter`'s error is typed — `{ code, path, message }`, where `code` is one of
+`invalid_json` / `invalid_filter` / `invalid_operator` / `invalid_operand` — so
+you can surface a precise message in the UI. Malformed clauses fail closed.
+
+Next: [Grouping, counts & ranking](/docs/grouping).

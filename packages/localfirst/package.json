@@ -28,6 +28,7 @@
     "convex-localfirst": "./dist/cli/index.js"
   },
   "exports": {
+    "./package.json": "./package.json",
     ".": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
@@ -39,6 +40,14 @@
     "./react/shadow": {
       "types": "./dist/react/shadow.d.ts",
       "import": "./dist/react/shadow.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./devtools": {
+      "types": "./dist/devtools/index.d.ts",
+      "import": "./dist/devtools/index.js"
     },
     "./server": {
       "types": "./dist/server/index.d.ts",
@@ -56,27 +65,51 @@
       "types": "./dist/yjs/index.d.ts",
       "import": "./dist/yjs/index.js"
     },
-    "./component/convex.config.js": "./component/convex/convex.config.ts",
-    "./component/convex.config": "./component/convex/convex.config.ts",
-    "./component/_generated/component.js": "./component/convex/_generated/component.ts",
-    "./component/_generated/api.js": "./component/convex/_generated/api.ts"
+    "./yjs/awareness": {
+      "types": "./dist/yjs/awareness.d.ts",
+      "import": "./dist/yjs/awareness.js"
+    },
+    "./component/convex.config.js": {
+      "@convex-dev/component-source": "./component/convex/convex.config.ts",
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./component/convex.config": {
+      "@convex-dev/component-source": "./component/convex/convex.config.ts",
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./component/_generated/component.js": {
+      "@convex-dev/component-source": "./component/convex/_generated/component.ts",
+      "types": "./dist/component/_generated/component.d.ts",
+      "default": "./dist/component/_generated/component.js"
+    },
+    "./component/_generated/api.js": {
+      "@convex-dev/component-source": "./component/convex/_generated/api.ts",
+      "types": "./dist/component/_generated/api.d.ts",
+      "default": "./dist/component/_generated/api.js"
+    }
   },
   "files": [
     "dist",
-    "component"
+    "component",
+    "src",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').copyFileSync('../../README.md','README.md')\" && tsc -p tsconfig.json --noEmit false --emitDeclarationOnly false",
-    "typecheck": "tsc -p tsconfig.json",
+    "build": "node -e \"const fs=require('node:fs');fs.copyFileSync('../../README.md','README.md');fs.copyFileSync('../../LICENSE','LICENSE')\" && tsc -p tsconfig.json --noEmit false --emitDeclarationOnly false && tsc -p tsconfig.component.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.component.json --noEmit",
     "test": "vitest run"
   },
   "peerDependencies": {
-    "convex": ">=1.0.0",
+    "convex": ">=1.16.1",
     "react": ">=18.0.0",
     "yjs": ">=13.0.0",
+    "y-protocols": ">=1.0.0",
     "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
@@ -84,6 +117,9 @@
       "optional": true
     },
     "yjs": {
+      "optional": true
+    },
+    "y-protocols": {
       "optional": true
     },
     "typescript": {
@@ -103,6 +139,7 @@
     "react-dom": "^19.2.7",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0",
-    "yjs": "^13.6.31"
+    "yjs": "^13.6.31",
+    "y-protocols": "^1.0.7"
   }
 }

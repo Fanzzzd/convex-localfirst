@@ -3,15 +3,7 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import { ConvexProvider, ConvexReactClient } from "convex-localfirst";
 import { App } from "./App";
-// The client imports the SAME lf.table modules the server deploys — the local
-// manifest is built from them at runtime (no codegen, nothing to regenerate).
-import * as comments from "../convex/comments";
-import * as docUpdates from "../convex/docUpdates";
-import * as documents from "../convex/documents";
-import * as issues from "../convex/issues";
-import * as labels from "../convex/labels";
-import * as projects from "../convex/projects";
-import * as todos from "../convex/todos";
+import { modules } from "./db";
 
 const userId = "demo-user";
 // Fallback URL lets the client construct offline; if there is no backend the
@@ -25,12 +17,12 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <ConvexProvider
       client={convex}
       localFirst={{
-        modules: { todos, issues, projects, comments, labels, documents, docUpdates },
+        modules,
         userId,
-        databaseName: "todo-perfect-dx"
+        databaseName: "todo-perfect-dx",
       }}
     >
       <App />
     </ConvexProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

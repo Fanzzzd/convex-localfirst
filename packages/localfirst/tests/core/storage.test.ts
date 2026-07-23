@@ -1,7 +1,12 @@
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { IndexedDbStore, MemoryLocalStore, type LocalOperation, type ServerChange } from "../../src/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  IndexedDbStore,
+  MemoryLocalStore,
+  type LocalOperation,
+  type ServerChange,
+} from "../../src/core";
 import { INDEXED_DB_SCHEMA_VERSION, openLocalFirstDb } from "../../src/core/internal";
 
 // Fresh IndexedDB per test for isolation.
@@ -24,10 +29,15 @@ const op = (over: Partial<LocalOperation> & Pick<LocalOperation, "opId">): Local
   value: { listId: "inbox", text: "hi", done: false },
   createdAt: 1,
   status: "pending",
-  ...over
+  ...over,
 });
 
-const insertChange = (id: string, version: number, value: Record<string, unknown>, opId?: string): ServerChange => ({
+const insertChange = (
+  id: string,
+  version: number,
+  value: Record<string, unknown>,
+  opId?: string,
+): ServerChange => ({
   changeId: `chg_${id}_${version}`,
   scopeKey: "user:user_a",
   table: "todos",
@@ -36,10 +46,26 @@ const insertChange = (id: string, version: number, value: Record<string, unknown
   value,
   version,
   serverTime: version,
-  opId
+  opId,
 });
 
 describe("IndexedDbStore", () => {
+  it("retries IndexedDB open after a rejected open promise", async () => {
+    const realOpen = indexedDB.open.bind(indexedDB);
+    let opens = 0;
+    const spy = vi.spyOn(indexedDB, "open").mockImplementation((name, version) => {
+      if (opens++ > 0) return realOpen(name, version);
+      const failed = { error: new Error("transient open failure") } as IDBOpenDBRequest;
+      queueMicrotask(() => failed.onerror?.(new Event("error")));
+      return failed;
+    });
+    const store = new IndexedDbStore({ databaseName: "retry-open", namespace: "user_a" });
+    await expect(store.getRows("todos")).rejects.toThrow(/transient open failure/);
+    await expect(store.getRows("todos")).resolves.toEqual([]);
+    expect(opens).toBe(2);
+    spy.mockRestore();
+  });
+
   it("derives the live view from canonical + pending (round-trips an insert)", async () => {
     const store = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
     await store.enqueueOperation(op({ opId: "o1", id: "t1" }));
@@ -50,7 +76,9 @@ describe("IndexedDbStore", () => {
 
   it("a closed tab's pending op is recovered by a new store over the same db", async () => {
     const first = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
-    await first.enqueueOperation(op({ opId: "o1", id: "t1", value: { listId: "inbox", text: "persist" } }));
+    await first.enqueueOperation(
+      op({ opId: "o1", id: "t1", value: { listId: "inbox", text: "persist" } }),
+    );
     (await first._database()).close();
 
     const second = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
@@ -82,7 +110,13 @@ describe("IndexedDbStore", () => {
     const v1 = await openLocalFirstDb("lf:user_a", 1);
     await new Promise<void>((resolve, reject) => {
       const tx = v1.transaction("canonical", "readwrite");
-      tx.objectStore("canonical").put({ _table: "todos", _id: "t1", text: "from-v1", _version: 1, _deleted: false });
+      tx.objectStore("canonical").put({
+        _table: "todos",
+        _id: "t1",
+        text: "from-v1",
+        _version: 1,
+        _deleted: false,
+      });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -93,7 +127,12 @@ describe("IndexedDbStore", () => {
     const store = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
     const db = await store._database();
     expect(db.version).toBe(INDEXED_DB_SCHEMA_VERSION);
-    expect(db.transaction("canonical", "readonly").objectStore("canonical").indexNames.contains("by_table")).toBe(true);
+    expect(
+      db
+        .transaction("canonical", "readonly")
+        .objectStore("canonical")
+        .indexNames.contains("by_table"),
+    ).toBe(true);
 
     // Data written under v1 survives and is now queryable via the v2 index.
     const rows = await store.getCanonicalRows("todos");
@@ -108,10 +147,11 @@ describe("IndexedDbStore", () => {
     const upgraded = openLocalFirstDb("lf:user_a", INDEXED_DB_SCHEMA_VERSION, {
       onBlocked: () => {
         blocked = true;
-      }
+      },
     });
 
     // Wait (deterministically) for the blocked event to fire, then release.
+    // oxlint-disable-next-line no-unmodified-loop-condition -- set by the async onBlocked callback
     for (let i = 0; i < 100 && !blocked; i++) {
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
@@ -130,7 +170,12 @@ describe("IndexedDbStore", () => {
     // Write inside a transaction, then abort it.
     await new Promise<void>((resolve) => {
       const tx = db.transaction("canonical", "readwrite");
-      tx.objectStore("canonical").put({ _table: "todos", _id: "rollback", text: "should-not-persist", _version: 1 });
+      tx.objectStore("canonical").put({
+        _table: "todos",
+        _id: "rollback",
+        text: "should-not-persist",
+        _version: 1,
+      });
       tx.onabort = () => resolve();
       tx.abort();
     });
@@ -147,7 +192,7 @@ describe("applyServerChanges (batched apply)", () => {
     await store.applyServerChanges([
       insertChange("a", 1, { listId: "inbox", text: "A" }),
       insertChange("b", 1, { listId: "inbox", text: "B" }),
-      insertChange("c", 1, { listId: "inbox", text: "C" })
+      insertChange("c", 1, { listId: "inbox", text: "C" }),
     ]);
     expect(notifies).toBe(1); // NOT 3 — the whole point (cold pulls stay O(rows), not O(N×rows))
     expect((await store.getCanonicalRows("todos")).length).toBe(3);
@@ -158,7 +203,7 @@ describe("applyServerChanges (batched apply)", () => {
     await store.applyServerChanges([
       insertChange("t1", 1, { listId: "inbox", text: "v1" }),
       insertChange("t1", 2, { listId: "inbox", text: "v2" }),
-      insertChange("t1", 1, { listId: "inbox", text: "stale" }) // older version is ignored (I5)
+      insertChange("t1", 1, { listId: "inbox", text: "stale" }), // older version is ignored (I5)
     ]);
     const rows = await store.getCanonicalRows("todos");
     expect(rows).toHaveLength(1);
@@ -172,7 +217,7 @@ describe("applyServerChanges (batched apply)", () => {
     await store.applyServerChanges([
       insertChange("a", 1, { listId: "inbox", text: "A" }),
       insertChange("b", 1, { listId: "inbox", text: "B" }),
-      insertChange("a", 2, { listId: "inbox", text: "A2" }) // same row, newer version wins
+      insertChange("a", 2, { listId: "inbox", text: "A2" }), // same row, newer version wins
     ]);
     expect(notifies).toBe(1);
     const rows = await store.getCanonicalRows("todos");
@@ -190,7 +235,7 @@ describe("applyServerChanges (batched apply)", () => {
     // Both pulls start from the v1 read; the older (v2) must not clobber the newer (v3).
     await Promise.all([
       store.applyServerChanges([insertChange("t1", 3, { listId: "inbox", text: "v3" })]),
-      store.applyServerChanges([insertChange("t1", 2, { listId: "inbox", text: "v2" })])
+      store.applyServerChanges([insertChange("t1", 2, { listId: "inbox", text: "v2" })]),
     ]);
     const rows = await store.getCanonicalRows("todos");
     expect(rows).toHaveLength(1);
@@ -208,7 +253,7 @@ describe("applyServerChanges (batched apply)", () => {
     // Concurrent applies from two SEPARATE store instances (two tabs) over the same DB.
     await Promise.all([
       tabA.applyServerChanges([insertChange("t1", 3, { listId: "inbox", text: "v3" })]),
-      tabB.applyServerChanges([insertChange("t1", 2, { listId: "inbox", text: "v2" })])
+      tabB.applyServerChanges([insertChange("t1", 2, { listId: "inbox", text: "v2" })]),
     ]);
     // Re-read through a fresh store to bypass any per-instance caching.
     const reader = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
@@ -224,7 +269,9 @@ describe("applyServerChanges (batched apply)", () => {
     const store = new IndexedDbStore({ databaseName: "lf", namespace: "user_a" });
     await store.applyServerChanges([insertChange("t0", 1, { listId: "inbox", text: "old" })]);
     // Start an apply, then immediately log out — both queued; clear must win.
-    const applying = store.applyServerChanges([insertChange("t1", 1, { listId: "inbox", text: "new" })]);
+    const applying = store.applyServerChanges([
+      insertChange("t1", 1, { listId: "inbox", text: "new" }),
+    ]);
     const clearing = store.clear();
     await Promise.all([applying, clearing]);
     expect(await store.getCanonicalRows("todos")).toHaveLength(0); // nothing resurrected

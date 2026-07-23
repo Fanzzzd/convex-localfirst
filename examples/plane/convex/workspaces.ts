@@ -25,7 +25,7 @@ export const createWorkspace = mutation({
         organization_size: "",
         timezone: "UTC",
         created_at: Date.now(),
-        created_by: args.user_id
+        created_by: args.user_id,
       });
     }
     const member = await ctx.db
@@ -36,19 +36,21 @@ export const createWorkspace = mutation({
       await ctx.db.insert("ws_members", { user_id: args.user_id, workspace_id: args.id, role: 20 });
     }
     return args.id;
-  }
+  },
 });
 
 /** Add (or update the role of) a member in a workspace. Idempotent on
  *  (user_id, workspace_id). The membership table `ws_members` is exactly what the
- *  sync layer's `isMember` check (I7) reads, so this is the single source of
+ *  sync layer's `access.member` gate (I7) reads, so this is the single source of
  *  workspace access. Server-only mutation — clients never write membership. */
 export const addMember = mutation({
   args: { user_id: v.string(), workspace_id: v.string(), role: v.number() },
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("ws_members")
-      .withIndex("by_user_ws", (q) => q.eq("user_id", args.user_id).eq("workspace_id", args.workspace_id))
+      .withIndex("by_user_ws", (q) =>
+        q.eq("user_id", args.user_id).eq("workspace_id", args.workspace_id),
+      )
       .unique();
     if (existing) {
       await ctx.db.patch(existing._id, { role: args.role });
@@ -57,9 +59,9 @@ export const addMember = mutation({
     return await ctx.db.insert("ws_members", {
       user_id: args.user_id,
       workspace_id: args.workspace_id,
-      role: args.role
+      role: args.role,
     });
-  }
+  },
 });
 
 /** Ensure a user record exists (idempotent) — backs the members list. */
@@ -70,7 +72,7 @@ export const upsertUser = mutation({
     display_name: v.string(),
     first_name: v.string(),
     last_name: v.string(),
-    avatar_url: v.string()
+    avatar_url: v.string(),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -83,7 +85,7 @@ export const upsertUser = mutation({
     }
     await ctx.db.insert("users", { ...args, is_active: true, is_bot: false });
     return args.id;
-  }
+  },
 });
 
 /** Workspaces the user belongs to (joins ws_members -> workspaces), with role. */
@@ -105,7 +107,7 @@ export const listMine = query({
       }
     }
     return out;
-  }
+  },
 });
 
 /** Members of a workspace, shaped like Plane's IWorkspaceMember (member: IUserLite). */
@@ -133,11 +135,19 @@ export const members = query({
               last_name: u.last_name,
               email: u.email,
               avatar_url: u.avatar_url,
-              is_bot: u.is_bot
+              is_bot: u.is_bot,
             }
-          : { id: r.user_id, display_name: r.user_id, first_name: r.user_id, last_name: "", email: "", avatar_url: "", is_bot: false }
+          : {
+              id: r.user_id,
+              display_name: r.user_id,
+              first_name: r.user_id,
+              last_name: "",
+              email: "",
+              avatar_url: "",
+              is_bot: false,
+            },
       });
     }
     return out;
-  }
+  },
 });

@@ -8,12 +8,33 @@ import {
   many,
   manyToMany,
   one,
-  viaIds
+  viaIds,
 } from "../../src/core";
 import { LocalFirstEngine } from "../../src/core/internal";
 import { acceptAllTransport, createHarness } from "./helpers";
 
 describe("collection() client query builder", () => {
+  it("orders null/undefined as the smallest values in both directions", () => {
+    const rows = [
+      { _id: "two", rank: 2 },
+      { _id: "null", rank: null },
+      { _id: "one", rank: 1 },
+      { _id: "missing", rank: undefined },
+    ];
+    expect(
+      collection<(typeof rows)[number]>("rows")
+        .order("rank", "asc")
+        .run(rows)
+        .map((row) => row._id),
+    ).toEqual(["null", "missing", "one", "two"]);
+    expect(
+      collection<(typeof rows)[number]>("rows")
+        .order("rank", "desc")
+        .run(rows)
+        .map((row) => row._id),
+    ).toEqual(["two", "one", "null", "missing"]);
+  });
+
   it("filters, orders, and limits the live derived view", async () => {
     const { engine } = createHarness({ transport: acceptAllTransport() });
     await engine.mutate("todos:create", { localId: "t1", listId: "inbox", text: "a" }).local;
@@ -25,7 +46,7 @@ describe("collection() client query builder", () => {
       collection("todos")
         .where((row) => row.done !== true)
         .order("createdAt", "desc")
-        .limit(1)
+        .limit(1),
     );
 
     // newest not-done todo, capped at 1 — proves where + order + limit compose.
@@ -40,7 +61,7 @@ describe("collection() client query builder", () => {
     const rows = await engine.runLocalQuery(
       collection("todos")
         .where((row) => row.listId === "inbox")
-        .where((row) => row.text === "keep")
+        .where((row) => row.text === "keep"),
     );
 
     expect(rows.map((row) => row.text)).toEqual(["keep"]);
@@ -73,18 +94,30 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          indexes: {}
-        })
+          indexes: {},
+        }),
       },
       queries: {},
-      mutations: {}
+      mutations: {},
     });
     const store = new MemoryLocalStore();
     await store.applyServerChange({
-      changeId: "c1", scopeKey: "byWorkspace:w1", table: "issues", id: "i1",
-      kind: "insert", value: { workspaceId: "w1", title: "x" }, version: 1, serverTime: 1
+      changeId: "c1",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "insert",
+      value: { workspaceId: "w1", title: "x" },
+      version: 1,
+      serverTime: 1,
     });
-    const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
+    const engine = new LocalFirstEngine({
+      manifest,
+      store,
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
+    });
 
     // No scope value -> empty, NOT the whole local cache.
     expect(await engine.runLocalQuery(collection("issues"))).toEqual([]);
@@ -102,8 +135,8 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          indexes: {}
-        })
+          indexes: {},
+        }),
       },
       queries: {
         "issues:list": {
@@ -114,29 +147,49 @@ describe("collection() client query builder", () => {
           scope: (args: { workspaceId?: string }) => ({
             kind: "byWorkspace" as const,
             key: `byWorkspace:${String(args.workspaceId)}`,
-            table: "issues"
+            table: "issues",
           }),
           run: (rows: readonly Record<string, unknown>[], args: { workspaceId?: string }) =>
-            rows.filter((row) => row.workspaceId === args.workspaceId)
-        }
+            rows.filter((row) => row.workspaceId === args.workspaceId),
+        },
       },
-      mutations: {}
+      mutations: {},
     });
     const store = new MemoryLocalStore();
     await store.applyServerChange({
-      changeId: "c1", scopeKey: "byWorkspace:w1", table: "issues", id: "i1", kind: "insert",
-      value: { workspaceId: "w1", title: "x" }, version: 1, serverTime: 1
+      changeId: "c1",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "insert",
+      value: { workspaceId: "w1", title: "x" },
+      version: 1,
+      serverTime: 1,
     });
     await store.applyServerChange({
-      changeId: "c2", scopeKey: "byWorkspace:w2", table: "issues", id: "i2", kind: "insert",
-      value: { workspaceId: "w2", title: "y" }, version: 1, serverTime: 1
+      changeId: "c2",
+      scopeKey: "byWorkspace:w2",
+      table: "issues",
+      id: "i2",
+      kind: "insert",
+      value: { workspaceId: "w2", title: "y" },
+      version: 1,
+      serverTime: 1,
     });
-    const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
+    const engine = new LocalFirstEngine({
+      manifest,
+      store,
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
+    });
 
     // Missing scope arg -> initial (empty), NOT both cached workspaces' rows.
     expect(await engine.query("issues:list", {})).toEqual([]);
     // With the scope arg -> only that workspace's row.
-    const w1 = (await engine.query("issues:list", { workspaceId: "w1" })) as Array<{ title: string }>;
+    const w1 = (await engine.query("issues:list", { workspaceId: "w1" })) as Array<{
+      title: string;
+    }>;
     expect(w1.map((row) => row.title)).toEqual(["x"]);
   });
 
@@ -148,8 +201,8 @@ describe("collection() client query builder", () => {
           table: "issues",
           idField: "localId",
           scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-          indexes: {}
-        })
+          indexes: {},
+        }),
       },
       // A custom query whose run() ignores the workspace scope entirely — the engine
       // must still confine it to the requested scope so it can't see other workspaces.
@@ -159,23 +212,43 @@ describe("collection() client query builder", () => {
           name: "issues:all",
           table: "issues",
           initial: [],
-          run: (rows) => rows
-        }
+          run: (rows) => rows,
+        },
       },
-      mutations: {}
+      mutations: {},
     });
     const store = new MemoryLocalStore();
     await store.applyServerChange({
-      changeId: "c1", scopeKey: "byWorkspace:w1", table: "issues", id: "i1", kind: "insert",
-      value: { workspaceId: "w1", title: "x" }, version: 1, serverTime: 1
+      changeId: "c1",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "insert",
+      value: { workspaceId: "w1", title: "x" },
+      version: 1,
+      serverTime: 1,
     });
     await store.applyServerChange({
-      changeId: "c2", scopeKey: "byWorkspace:w2", table: "issues", id: "i2", kind: "insert",
-      value: { workspaceId: "w2", title: "y" }, version: 1, serverTime: 1
+      changeId: "c2",
+      scopeKey: "byWorkspace:w2",
+      table: "issues",
+      id: "i2",
+      kind: "insert",
+      value: { workspaceId: "w2", title: "y" },
+      version: 1,
+      serverTime: 1,
     });
-    const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
+    const engine = new LocalFirstEngine({
+      manifest,
+      store,
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
+    });
 
-    const w1 = (await engine.query("issues:all", { workspaceId: "w1" })) as Array<{ title: string }>;
+    const w1 = (await engine.query("issues:all", { workspaceId: "w1" })) as Array<{
+      title: string;
+    }>;
     expect(w1.map((row) => row.title)).toEqual(["x"]);
   });
 
@@ -184,15 +257,27 @@ describe("collection() client query builder", () => {
     const t = (table: string) => localTable({ table, idField: "localId", scope: ws, indexes: {} });
     const manifest = defineLocalFirstManifest({
       schemaVersion: 1,
-      tables: { issues: t("issues"), projects: t("projects"), comments: t("comments"), labels: t("labels"), issue_labels: t("issue_labels") },
+      tables: {
+        issues: t("issues"),
+        projects: t("projects"),
+        comments: t("comments"),
+        labels: t("labels"),
+        issue_labels: t("issue_labels"),
+      },
       queries: {},
-      mutations: {}
+      mutations: {},
     });
     const store = new MemoryLocalStore();
     const seed = (table: string, id: string, value: Record<string, unknown>) =>
       store.applyServerChange({
-        changeId: `c-${id}`, scopeKey: "byWorkspace:w1", table, id, kind: "insert",
-        value: { workspaceId: "w1", ...value }, version: 1, serverTime: 1
+        changeId: `c-${id}`,
+        scopeKey: "byWorkspace:w1",
+        table,
+        id,
+        kind: "insert",
+        value: { workspaceId: "w1", ...value },
+        version: 1,
+        serverTime: 1,
       });
     await seed("projects", "p1", { name: "Platform" });
     await seed("issues", "i1", { title: "Bug", projectId: "p1", tag_ids: ["l2", "l1", "ghost"] });
@@ -202,7 +287,13 @@ describe("collection() client query builder", () => {
     await seed("labels", "l1", { name: "urgent" });
     await seed("labels", "l2", { name: "later" });
     await seed("issue_labels", "il1", { issueId: "i1", labelId: "l1" });
-    const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
+    const engine = new LocalFirstEngine({
+      manifest,
+      store,
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
+    });
 
     const rows = await engine.runLocalQuery(
       collection<{ title: string; projectId: string; tag_ids?: string[] }>("issues")
@@ -210,8 +301,11 @@ describe("collection() client query builder", () => {
         .order("title")
         .related("project", one<{ name: string }>("projects", "projectId"))
         .related("comments", many<{ body: string }>("comments", "issueId"))
-        .related("labels", manyToMany<{ name: string }>("labels", "issue_labels", "issueId", "labelId"))
-        .related("tags", viaIds<{ name: string }>("labels", "tag_ids"))
+        .related(
+          "labels",
+          manyToMany<{ name: string }>("labels", "issue_labels", "issueId", "labelId"),
+        )
+        .related("tags", viaIds<{ name: string }>("labels", "tag_ids")),
     );
 
     expect(rows.map((r) => r.title)).toEqual(["Bug", "Feature"]); // ordered
@@ -221,7 +315,7 @@ describe("collection() client query builder", () => {
     expect(rows[0].labels.map((l) => l.name)).toEqual(["urgent"]); // manyToMany
     expect(rows[1].labels).toEqual([]);
     // viaIds: the id-array on the base row, in array order; missing/absent are skipped.
-    expect(rows[0].tags.map((t) => t.name)).toEqual(["later", "urgent"]); // ["l2","l1","ghost"] order
+    expect(rows[0].tags.map((tag) => tag.name)).toEqual(["later", "urgent"]); // ["l2","l1","ghost"] order
     expect(rows[1].tags).toEqual([]); // no tag_ids field at all
   });
 
@@ -230,31 +324,51 @@ describe("collection() client query builder", () => {
     const t = (table: string) => localTable({ table, idField: "localId", scope: ws, indexes: {} });
     const manifest = defineLocalFirstManifest({
       schemaVersion: 1,
-      tables: { issues: t("issues"), projects: t("projects"), comments: t("comments"), labels: t("labels"), issue_labels: t("issue_labels") },
+      tables: {
+        issues: t("issues"),
+        projects: t("projects"),
+        comments: t("comments"),
+        labels: t("labels"),
+        issue_labels: t("issue_labels"),
+      },
       queries: {},
-      mutations: {}
+      mutations: {},
     });
     const store = new MemoryLocalStore();
     const seed = (table: string, id: string, value: Record<string, unknown>) =>
       store.applyServerChange({
-        changeId: `c-${id}`, scopeKey: "byWorkspace:w1", table, id, kind: "insert",
-        value: { workspaceId: "w1", ...value }, version: 1, serverTime: 1
+        changeId: `c-${id}`,
+        scopeKey: "byWorkspace:w1",
+        table,
+        id,
+        kind: "insert",
+        value: { workspaceId: "w1", ...value },
+        version: 1,
+        serverTime: 1,
       });
     await seed("projects", "p1", { name: "Platform" });
     await seed("issues", "i1", { title: "Bug", projectId: "p1" });
     await seed("comments", "cm1", { issueId: "i1", body: "hi" });
     await seed("labels", "l1", { name: "urgent" });
     await seed("issue_labels", "il1", { issueId: "i1", labelId: "l1" });
-    const engine = new LocalFirstEngine({ manifest, store, clientId: "c", userId: "u", nameOf: String });
+    const engine = new LocalFirstEngine({
+      manifest,
+      store,
+      clientId: "c",
+      userId: "u",
+      nameOf: String,
+    });
 
     // The relation map is declared once and could live next to the row type.
     const issueRelations = {
       project: one<{ name: string }>("projects", "projectId"),
       comments: many<{ body: string }>("comments", "issueId"),
-      labels: manyToMany<{ name: string }>("labels", "issue_labels", "issueId", "labelId")
+      labels: manyToMany<{ name: string }>("labels", "issue_labels", "issueId", "labelId"),
     };
     const rows = await engine.runLocalQuery(
-      collection<{ title: string; projectId: string }>("issues").scope({ workspaceId: "w1" }).withRelations(issueRelations)
+      collection<{ title: string; projectId: string }>("issues")
+        .scope({ workspaceId: "w1" })
+        .withRelations(issueRelations),
     );
 
     expect(rows[0].project?.name).toBe("Platform"); // one (typed via the map)
@@ -267,7 +381,7 @@ describe("collection() client query builder", () => {
     expect(engine.scopeForPlan(collection("todos"))).toEqual({
       kind: "byUser",
       key: "u:user_a",
-      table: "todos"
+      table: "todos",
     });
   });
 });

@@ -11,7 +11,12 @@
 // real app adopt the library without rewriting its components into hooks.
 export { createLocalFirstEngine } from "./engine.js";
 export type { LocalFirstEngine, LocalFirstEngineOptions } from "./engine.js";
+export * from "./db.js";
+// Attachment pipeline (P5): the injectable backend + XHR contracts are public so an
+// adapter can wire its own upload transport. AttachmentManager itself is internal.
+export type { AttachmentBackend, XhrLike } from "./attachments.js";
 export * from "./collection.js";
+export * from "./filter.js";
 // collectManifest: the codegen-free client manifest — built at runtime from the same
 // imported lf.table modules the server's collectTables consumes. LF_METADATA_KEY and
 // the meta TYPE stay internal (only the server DSL writes them).
@@ -25,7 +30,9 @@ export { createClientId, type IdFactory } from "./id.js";
 export { IndexedDbStore, type IndexedDbStoreOptions } from "./indexedDbStore.js";
 export * from "./manifest.js";
 export * from "./memoryStore.js";
-export type { LocalFirstMutationCall } from "./mutationCall.js";
+// rank: fractional-index helpers for kanban/manual ordering (public — no deps).
+export * from "./rank.js";
+export type { LocalFirstMutationCall, LocalFirstBatchCall } from "./mutationCall.js";
 export type { FunctionNameResolver } from "./functionName.js";
 // ordering (compareOperations) is an engine internal → "./internal.js".
 export * from "./status.js";

@@ -1,6 +1,7 @@
 import { IndexedDbStore } from "./indexedDbStore.js";
 import { TabLeadership, type LockManagerLike } from "./leadership.js";
 import type { LocalStore } from "./storage.js";
+import type { OperationOutcome } from "./engine.js";
 
 /** The slice of BroadcastChannel the cross-tab poke channel uses. */
 export type BroadcastChannelLike = {
@@ -13,27 +14,26 @@ export type BroadcastChannelLike = {
  * Multi-tab sync coordination. Two independent jobs over one BroadcastChannel:
  *
  *  1. Leadership gate — elect a single leader among the tabs sharing this user's
- *     local data; only the leader runs the engine's BACKGROUND batch push, so the
- *     shared outbox is pushed once, not N times. (Pull/watch stay per-tab so every
- *     tab still sees fresh data for its own scopes — no divergent-scope staleness.)
+ *     local data; only the leader pushes. Follower mutations durably enqueue, wake
+ *     the leader, and settle from the leader's outcome broadcast.
  *
  *  2. Cross-tab data poke — IndexedDB has no cross-tab change event, so whenever a
  *     tab applies changes to the shared DB it broadcasts "changed"; the others
  *     re-derive their mounted queries (pokeLocalChange).
  *
- * The leader does NOT re-push a follower's queued op on "changed": a follower pushes
- * its OWN explicit mutations (pushSingleOperation is never gated) and flushes its own
- * backlog on reconnect, so leader re-push would only DOUBLE-push an op the follower is
- * already pushing — a concurrent same-opId race (idempotency TOCTOU + a call.server that
- * the leader could prune out from under the follower). The leader's normal background
- * push still drains anything genuinely stuck in the shared outbox.
+ * Pull/watch stay per-tab so tabs with different mounted scopes remain fresh; the
+ * single-writer invariant applies to pushes.
  */
 
 /** The slice of the engine the coordinator drives (keeps it unit-testable). */
 export type MultiTabEngine = {
   setSyncEnabled(enabled: boolean): void;
+  setMultiTabEnabled(enabled: boolean): void;
   pokeLocalChange(): void;
+  flushPending(): void;
   subscribe(listener: () => void): () => void;
+  subscribeOperationOutcomes(listener: (outcome: OperationOutcome) => void): () => void;
+  observeOperationOutcome(outcome: OperationOutcome): void;
 };
 
 /** The slice of TabLeadership the coordinator drives (so tests can inject a fake). */
@@ -57,7 +57,9 @@ export type MultiTabSyncOptions = {
   readonly locks?: LockManagerLike | null;
 };
 
-type PokeMessage = { readonly type: "changed" };
+type PokeMessage =
+  | { readonly type: "changed" }
+  | { readonly type: "outcome"; readonly outcome: OperationOutcome };
 
 /**
  * The multi-tab coordination key for a store. It MUST equal the shared-data boundary so
@@ -79,10 +81,14 @@ export function coordinationName(store: LocalStore | undefined, userId: string |
  * Wire one engine into multi-tab coordination. Returns a dispose that tears down the
  * channel + leadership and restores the engine to the un-gated (every-tab-sync) default.
  */
-export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSyncOptions): () => void {
+export function createMultiTabSync(
+  engine: MultiTabEngine,
+  options: MultiTabSyncOptions,
+): () => void {
   const channelName = `convex-localfirst:multitab:${options.name}`;
   const channelFactory =
-    options.createChannel ?? ((name) => new BroadcastChannel(name) as unknown as BroadcastChannelLike);
+    options.createChannel ??
+    ((name) => new BroadcastChannel(name) as unknown as BroadcastChannelLike);
   const channel = channelFactory(channelName);
 
   let stopped = false;
@@ -99,13 +105,14 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
         name: channelName,
         id: options.id,
         locks: options.locks,
-        onChange
+        onChange,
       }));
   const leadership = leadershipFactory((isLeader) => {
     if (!stopped) {
       engine.setSyncEnabled(isLeader);
     }
   });
+  engine.setMultiTabEnabled(true);
   // Gate EVERY tab up front, then let leadership re-enable only the actual leader.
   // TabLeadership fires onChange(true) when a tab BECOMES leader but never fires
   // onChange(false) for a tab that merely starts as a follower (a queued Web Locks
@@ -115,20 +122,23 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
   // idempotent, and the leader's onChange(true) flips it back on.
   engine.setSyncEnabled(false);
 
-  // 2) Cross-tab data poke. Broadcast on a genuine local change; on receipt every tab
-  //    re-derives from the shared store (pokeLocalChange). The leader does NOT re-push
-  //    here — see the header note (it would double-push an op the follower is pushing).
+  // 2) Cross-tab data poke + leader drain + explicit operation outcome.
   channel.onmessage = (event) => {
     if (stopped) {
       return;
     }
     const data = event.data as PokeMessage | null;
+    if (data?.type === "outcome") {
+      engine.observeOperationOutcome(data.outcome);
+      return;
+    }
     if (data?.type !== "changed") {
       return;
     }
     applyingPoke = true;
     try {
       engine.pokeLocalChange();
+      if (leadership.isLeader()) engine.flushPending();
     } finally {
       applyingPoke = false;
     }
@@ -143,9 +153,14 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
     queueMicrotask(() => {
       broadcastQueued = false;
       if (!stopped) {
+        // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel.postMessage takes no targetOrigin
         channel.postMessage({ type: "changed" } satisfies PokeMessage);
       }
     });
+  });
+  const unsubscribeOutcomes = engine.subscribeOperationOutcomes((outcome) => {
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel.postMessage takes no targetOrigin
+    if (!stopped) channel.postMessage({ type: "outcome", outcome } satisfies PokeMessage);
   });
 
   void leadership.start();
@@ -156,8 +171,10 @@ export function createMultiTabSync(engine: MultiTabEngine, options: MultiTabSync
     }
     stopped = true;
     unsubscribe();
+    unsubscribeOutcomes();
     leadership.stop();
     channel.close();
+    engine.setMultiTabEnabled(false);
     // A follower's engine was gated; restore the default so a remount/HMR isn't stuck off.
     engine.setSyncEnabled(true);
   };

@@ -17,7 +17,8 @@ function watchableServer() {
   const listeners = new Set<() => void>();
   let pullCalls = 0;
 
-  const changesAfter = (cursor: string | null) => (cursor ? log.filter((c) => c.changeId > cursor) : log.slice());
+  const changesAfter = (cursor: string | null) =>
+    cursor ? log.filter((c) => c.changeId > cursor) : log.slice();
 
   const transport: SyncTransport = {
     async push() {
@@ -39,7 +40,7 @@ function watchableServer() {
         if (listeners.has(onChange)) onChange();
       });
       return () => listeners.delete(onChange);
-    }
+    },
   };
 
   let n = 0;
@@ -53,7 +54,7 @@ function watchableServer() {
       kind: "insert",
       value: { ownerId: "user_a", listId: "L", text: id, done: false, createdAt: n, updatedAt: n },
       version: 1,
-      serverTime: n
+      serverTime: n,
     });
     for (const l of Array.from(listeners)) l();
   };
@@ -141,8 +142,17 @@ describe("reactive pull (engine.watchPlan)", () => {
   });
 
   it("watchQuery returns null for an unknown query or a non-reactive transport", () => {
-    expect(createHarness({ transport: watchableServer().transport }).engine.watchQuery("nope:missing", {})).toBeNull();
-    expect(createHarness({ transport: acceptAllTransport() }).engine.watchQuery("todos:list", { listId: "L" })).toBeNull();
+    expect(
+      createHarness({ transport: watchableServer().transport }).engine.watchQuery(
+        "nope:missing",
+        {},
+      ),
+    ).toBeNull();
+    expect(
+      createHarness({ transport: acceptAllTransport() }).engine.watchQuery("todos:list", {
+        listId: "L",
+      }),
+    ).toBeNull();
   });
 
   it("surfaces a failing reactive drain on status.lastError (not silently swallowed)", async () => {
@@ -152,7 +162,7 @@ describe("reactive pull (engine.watchPlan)", () => {
       ...server.transport,
       async pull() {
         throw new Error("pull boom");
-      }
+      },
     };
     const { engine } = createHarness({ transport: failing });
     const unwatch = engine.watchPlan(collection<RowValue>("todos"))!;

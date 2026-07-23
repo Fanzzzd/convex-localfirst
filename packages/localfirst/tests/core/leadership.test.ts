@@ -27,6 +27,7 @@ function makeFakeLockManager(): LockManagerLike {
         active.set(name, false);
         next.resolve();
         pump(name);
+        return;
       });
   };
   return {
@@ -56,7 +57,7 @@ function makeFakeLockManager(): LockManagerLike {
         q.push(entry);
         pump(name);
       });
-    }
+    },
   };
 }
 
@@ -97,7 +98,12 @@ describe("TabLeadership — no Web Locks (sole-tab fallback)", () => {
     // locks: null → no coordination primitive; the tab must self-lead (onChange(true))
     // rather than stay a gated follower forever, so a direct caller's engine still syncs.
     const changes: boolean[] = [];
-    const t = new TabLeadership({ name: "N", id: "a", locks: null, onChange: (v) => changes.push(v) });
+    const t = new TabLeadership({
+      name: "N",
+      id: "a",
+      locks: null,
+      onChange: (v) => changes.push(v),
+    });
     tabs.push(t);
     await t.start();
     expect(t.isLeader()).toBe(true);

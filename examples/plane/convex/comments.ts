@@ -10,11 +10,11 @@ export const comments = lf.table("issue_comments", {
     comment_html: v.string(),
     comment_stripped: v.optional(v.string()),
     access: v.optional(v.string()),
-    created_by: v.string()
+    created_by: v.string(),
   },
   scope: scopeWorkspace, // scope field = "workspace"
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace", "created_at"] }
+  indexes: { byWorkspace: ["workspace", "created_at"] },
 });
 
 // Custom insert (created_by is derived from the actor, not passed by the caller);
@@ -27,9 +27,9 @@ export const create = comments.insert({
     actor: v.string(),
     comment_html: v.string(),
     comment_stripped: v.optional(v.string()),
-    access: v.optional(v.string())
+    access: v.optional(v.string()),
   },
-  value: ({ args }) => ({ ...args, created_by: args.actor })
+  value: ({ args }) => ({ ...args, created_by: args.actor }),
 });
 
 export const update = comments.patch();

@@ -4,9 +4,10 @@ import type {
   LocalMutationDefinition,
   LocalQueryDefinition,
   LocalTableDefinition,
-  ScopeDefinition
+  ScopeDefinition,
 } from "./manifest.js";
 import type { RowValue } from "./types.js";
+import type { DeclaredRelations } from "./relations.js";
 
 /**
  * Non-enumerable key under which every `lf.table(...).query/insert/patch/remove`
@@ -35,17 +36,32 @@ type SpecMeta = {
     localId: string;
   }) => Record<string, unknown>;
   readonly id?: (input: { args: AnyArgs }) => string;
-  readonly patch?: (input: { ctx: unknown; auth: Auth; args: AnyArgs; now: number }) => Record<string, unknown>;
+  readonly patch?: (input: {
+    ctx: unknown;
+    auth: Auth;
+    args: AnyArgs;
+    now: number;
+  }) => Record<string, unknown>;
 };
 
 export type LocalFirstFunctionMeta = {
-  readonly kind: "query" | "insert" | "patch" | "remove";
+  readonly kind: "table" | "query" | "insert" | "patch" | "remove";
   readonly tableName: string;
   readonly idField: string;
   readonly scope: ScopeDefinition;
   readonly indexes: Record<string, readonly string[]>;
   readonly setFields?: readonly string[];
   readonly counterFields?: readonly string[];
+  /** Fields fed to the local full-text search index (client-only). See search.ts. */
+  readonly searchFields?: readonly string[];
+  /** Server-minted field names (serverStamp/server-only). The client strips them from an
+   *  undo-of-delete re-insert (they are re-minted fresh on resurrection). See
+   *  LocalTableDefinition.serverFields. */
+  readonly serverFields?: readonly string[];
+  readonly relations?: DeclaredRelations;
+  /** Optional client-side mirror of `access.write` (DX v4 §6), declared on lf.table.
+   *  Isomorphic: the server ignores it, the client evaluates it in useCan. */
+  readonly clientCan?: LocalTableDefinition["clientCan"];
   /** Auto-timestamp field names (lf.table's `timestamps` option). Stamped by the
    *  mutation plans below: insert sets both, patch sets updatedAt. */
   readonly timestamps?: { readonly createdAt: string; readonly updatedAt: string };
@@ -76,12 +92,10 @@ export type CollectManifestOptions = {
  */
 export function collectManifest(
   modules: Record<string, unknown>,
-  options?: CollectManifestOptions
+  options?: CollectManifestOptions,
 ): LocalFirstManifest {
   const tables: Record<string, LocalTableDefinition> = {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const queries: Record<string, LocalQueryDefinition<any, any>> = {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mutations: Record<string, LocalMutationDefinition<any, any>> = {};
   const declaredVersions = new Set<number>();
 
@@ -93,7 +107,9 @@ export function collectManifest(
       const name = `${moduleKey}:${exportName}`;
       if (typeof meta.schemaVersion === "number") declaredVersions.add(meta.schemaVersion);
       registerTable(tables, meta, name);
-      if (meta.kind === "query") {
+      if (meta.kind === "table") {
+        continue;
+      } else if (meta.kind === "query") {
         queries[name] = interpretQuery(name, meta);
       } else {
         mutations[name] = interpretMutation(name, meta);
@@ -103,13 +119,13 @@ export function collectManifest(
 
   if (Object.keys(tables).length === 0) {
     throw new Error(
-      "collectManifest: no local-first functions found. Import your lf.table modules and pass them, e.g. collectManifest({ todos, issues })."
+      "collectManifest: no local-first functions found. Import your lf.table modules and pass them, e.g. collectManifest({ todos, issues }).",
     );
   }
   if (declaredVersions.size > 1) {
     // Two lf factories with different versions would silently gate half the app.
     throw new Error(
-      `collectManifest: modules declare conflicting schemaVersions (${[...declaredVersions].join(", ")}) — declare it once, in createLocalFirst({ schemaVersion }).`
+      `collectManifest: modules declare conflicting schemaVersions (${[...declaredVersions].join(", ")}) — declare it once, in createLocalFirst({ schemaVersion }).`,
     );
   }
 
@@ -124,14 +140,22 @@ function metaOf(exported: unknown): LocalFirstFunctionMeta | null {
   return meta && typeof meta.tableName === "string" ? meta : null;
 }
 
-function registerTable(tables: Record<string, LocalTableDefinition>, meta: LocalFirstFunctionMeta, name: string): void {
+function registerTable(
+  tables: Record<string, LocalTableDefinition>,
+  meta: LocalFirstFunctionMeta,
+  name: string,
+): void {
   const definition: LocalTableDefinition = {
     table: meta.tableName,
     idField: meta.idField,
     scope: meta.scope,
     indexes: meta.indexes,
     ...(meta.setFields?.length ? { setFields: meta.setFields } : {}),
-    ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {})
+    ...(meta.counterFields?.length ? { counterFields: meta.counterFields } : {}),
+    ...(meta.searchFields?.length ? { searchFields: meta.searchFields } : {}),
+    ...(meta.serverFields?.length ? { serverFields: meta.serverFields } : {}),
+    ...(meta.relations && Object.keys(meta.relations).length ? { relations: meta.relations } : {}),
+    ...(meta.clientCan ? { clientCan: meta.clientCan } : {}),
   };
   const existing = tables[meta.tableName];
   if (!existing) {
@@ -142,7 +166,7 @@ function registerTable(tables: Record<string, LocalTableDefinition>, meta: Local
     // Fail closed: divergent config for one table can only come from hand-tampered
     // metadata — never from a single lf.table definition.
     throw new Error(
-      `collectManifest: conflicting table config for "${meta.tableName}" (seen at "${name}") — every lf.table function for a table must share one definition.`
+      `collectManifest: conflicting table config for "${meta.tableName}" (seen at "${name}") — every lf.table function for a table must share one definition.`,
     );
   }
 }
@@ -155,15 +179,20 @@ function scopeField(scope: ScopeDefinition): string {
       : scope.projectIdField;
 }
 
-function interpretQuery(name: string, meta: LocalFirstFunctionMeta): LocalQueryDefinition<AnyArgs, RowValue[]> {
+function interpretQuery(
+  name: string,
+  meta: LocalFirstFunctionMeta,
+): LocalQueryDefinition<AnyArgs, RowValue[]> {
   const spec = meta.spec;
   if (!spec.index || typeof spec.key !== "function") {
-    throw new Error(`collectManifest: query "${name}" is missing index/key — declare both in todos.query({...}).`);
+    throw new Error(
+      `collectManifest: query "${name}" is missing index/key — declare both in todos.query({...}).`,
+    );
   }
   const columns = meta.indexes[spec.index];
   if (!columns) {
     throw new Error(
-      `collectManifest: query "${name}" reads index "${spec.index}" but lf.table("${meta.tableName}") does not declare it.`
+      `collectManifest: query "${name}" reads index "${spec.index}" but lf.table("${meta.tableName}") does not declare it.`,
     );
   }
   const key = spec.key;
@@ -186,7 +215,7 @@ function interpretQuery(name: string, meta: LocalFirstFunctionMeta): LocalQueryD
           // filterToScope): skip the owner column instead of matching nothing.
           if (column === ownerColumn && userId === null) return true;
           return row[column] === value;
-        })
+        }),
       );
       const sortColumns = columns.slice(keyValues.length);
       if (sortColumns.length === 0) return matched;
@@ -197,7 +226,7 @@ function interpretQuery(name: string, meta: LocalFirstFunctionMeta): LocalQueryD
         }
         return 0;
       });
-    }
+    },
   };
   if (meta.scope.kind === "byWorkspace" || meta.scope.kind === "byProject") {
     // The pull scope value comes from the arg named after the scope field — the
@@ -206,13 +235,16 @@ function interpretQuery(name: string, meta: LocalFirstFunctionMeta): LocalQueryD
     const field = scopeField(meta.scope);
     return {
       ...definition,
-      scope: (args) => ({ kind, key: `${kind}:${String(args[field])}`, table: meta.tableName })
+      scope: (args) => ({ kind, key: `${kind}:${String(args[field])}`, table: meta.tableName }),
     };
   }
   return definition;
 }
 
-function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMutationDefinition<AnyArgs> {
+function interpretMutation(
+  name: string,
+  meta: LocalFirstFunctionMeta,
+): LocalMutationDefinition<AnyArgs> {
   const spec = meta.spec;
   const table = meta.tableName;
   const ts = meta.timestamps;
@@ -225,15 +257,22 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
       kind: "mutation",
       name,
       table,
+      operationKind: "insert",
       plan(args, ctx) {
         const id = ctx.localId(table);
-        const row = value({ ctx: forbiddenCtx(name), auth: { userId: ctx.userId }, args, now: ctx.now, localId: id });
+        const row = value({
+          ctx: forbiddenCtx(name),
+          auth: { userId: ctx.userId },
+          args,
+          now: ctx.now,
+          localId: id,
+        });
         if (ts) {
           row[ts.createdAt] ??= ctx.now;
           row[ts.updatedAt] ??= ctx.now;
         }
         return { kind: "insert", table, id, value: row };
-      }
+      },
     };
   }
 
@@ -248,7 +287,8 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
       kind: "mutation",
       name,
       table,
-      plan: (args) => ({ kind: "delete", table, id: resolveId(args) })
+      operationKind: "delete",
+      plan: (args) => ({ kind: "delete", table, id: resolveId(args) }),
     };
   }
 
@@ -257,11 +297,17 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
     kind: "mutation",
     name,
     table,
+    operationKind: "patch",
     plan(args, ctx) {
       const id = resolveId(args);
       const patch: Record<string, unknown> = {};
       if (patchClosure) {
-        const result = patchClosure({ ctx: forbiddenCtx(name), auth: { userId: ctx.userId }, args, now: ctx.now });
+        const result = patchClosure({
+          ctx: forbiddenCtx(name),
+          auth: { userId: ctx.userId },
+          args,
+          now: ctx.now,
+        });
         for (const [field, value] of Object.entries(result)) {
           // A partial patch must not clobber fields the caller didn't set: an arg that
           // resolved to `undefined` (absent optional) is skipped. `null` is a real value
@@ -284,7 +330,7 @@ function interpretMutation(name: string, meta: LocalFirstFunctionMeta): LocalMut
         patch[ts.updatedAt] ??= ctx.now;
       }
       return { kind: "patch", table, id, patch };
-    }
+    },
   };
 }
 
@@ -297,7 +343,7 @@ function defaultIdArg(spec: SpecMeta, idField: string, name: string): string | n
   if (argKeys.includes(idField)) return idField;
   if (spec.id) return null; // explicit id() closure; no default arg needed
   throw new Error(
-    `collectManifest: "${name}" omits id() but has neither an "id" arg nor one named "${idField}" (the table's idField). Add id: ({ args }) => args.<field>.`
+    `collectManifest: "${name}" omits id() but has neither an "id" arg nor one named "${idField}" (the table's idField). Add id: ({ args }) => args.<field>.`,
   );
 }
 
@@ -309,9 +355,9 @@ function forbiddenCtx(name: string): unknown {
     {
       get(_target, prop) {
         throw new Error(
-          `${name}: ctx.${String(prop)} is not available — local-first closures run optimistically on the client. Keep value()/patch() pure (auth, args, now, localId).`
+          `${name}: ctx.${String(prop)} is not available — local-first closures run optimistically on the client. Keep value()/patch() pure (auth, args, now, localId).`,
         );
-      }
-    }
+      },
+    },
   );
 }

@@ -13,7 +13,7 @@ const op: LocalOperation = {
   args: {},
   value: { text: "hi" },
   createdAt: 1,
-  status: "pending"
+  status: "pending",
 };
 
 const storedChange = {
@@ -25,7 +25,7 @@ const storedChange = {
   data: { text: "hi", ownerId: "user_a" },
   version: 1,
   serverTime: 5,
-  opId: "o1"
+  opId: "o1",
 };
 
 describe("createConvexTransport", () => {
@@ -35,36 +35,54 @@ describe("createConvexTransport", () => {
       rejected: [],
       idMaps: [{ table: "todos", localId: "t1", serverId: "srv1" }],
       changes: [storedChange],
-      serverTime: 5
+      serverTime: 5,
     }));
     const transport = createConvexTransport({
       client: { mutation, query: vi.fn() },
       push: "ref:push",
       pull: "ref:pull",
       clientId: "A",
-      userId: "user_a"
+      userId: "user_a",
     });
 
-    const res = await transport.push({ clientId: "A", userId: "user_a", schemaVersion: 1, mutations: [op] });
+    const res = await transport.push({
+      clientId: "A",
+      userId: "user_a",
+      schemaVersion: 1,
+      mutations: [op],
+    });
 
     // Op was serialized with localId (not id).
-    expect(mutation).toHaveBeenCalledWith("ref:push", expect.objectContaining({ userId: "user_a", schemaVersion: 1 }));
-    const sent = mutation.mock.calls[0][1] as { mutations: Array<{ localId: string; value: unknown }> };
+    expect(mutation).toHaveBeenCalledWith(
+      "ref:push",
+      expect.objectContaining({ userId: "user_a", schemaVersion: 1 }),
+    );
+    const sent = mutation.mock.calls[0][1] as {
+      mutations: Array<{ localId: string; value: unknown }>;
+    };
     expect(sent.mutations[0]).toMatchObject({ localId: "t1", value: { text: "hi" } });
 
     // Server change mapped to client ServerChange (localId -> id, data -> value).
-    expect(res.changes[0]).toMatchObject({ id: "t1", value: { text: "hi", ownerId: "user_a" }, changeId: "000000000001" });
+    expect(res.changes[0]).toMatchObject({
+      id: "t1",
+      value: { text: "hi", ownerId: "user_a" },
+      changeId: "000000000001",
+    });
     expect(res.idMaps[0]).toMatchObject({ localId: "t1", serverId: "srv1" });
   });
 
   it("maps pull scopes and changes, passing cursors through", async () => {
-    const query = vi.fn(async () => ({ changes: [storedChange], cursors: { "u:user_a": "000000000001" }, serverTime: 5 }));
+    const query = vi.fn(async () => ({
+      changes: [storedChange],
+      cursors: { "u:user_a": "000000000001" },
+      serverTime: 5,
+    }));
     const transport = createConvexTransport({
       client: { mutation: vi.fn(), query },
       push: "ref:push",
       pull: "ref:pull",
       clientId: "B",
-      userId: "user_a"
+      userId: "user_a",
     });
 
     const res = await transport.pull({
@@ -72,7 +90,7 @@ describe("createConvexTransport", () => {
       userId: "user_a",
       schemaVersion: 1,
       scopes: [{ kind: "byUser", key: "u:user_a" }],
-      cursors: { "u:user_a": null }
+      cursors: { "u:user_a": null },
     });
 
     const sent = query.mock.calls[0][1] as { scopes: Array<{ kind: string; value?: string }> };
@@ -91,17 +109,26 @@ describe("createConvexTransport", () => {
       push: "ref:push",
       pull: "ref:pull",
       clientId: "C",
-      userId: "user_a"
+      userId: "user_a",
     });
 
     const onChange = vi.fn();
     const unsubscribe = transport.subscribe!(
-      { clientId: "C", userId: "user_a", schemaVersion: 1, scopes: [{ kind: "byUser", key: "u:user_a" }], cursors: { "u:user_a": null } },
-      onChange
+      {
+        clientId: "C",
+        userId: "user_a",
+        schemaVersion: 1,
+        scopes: [{ kind: "byUser", key: "u:user_a" }],
+        cursors: { "u:user_a": null },
+      },
+      onChange,
     );
 
     // Watched the SAME pull query, with the scope/cursor mapping pull uses.
-    const sent = watchQuery.mock.calls[0][1] as { scopes: Array<{ kind: string; value?: string }>; cursors: Record<string, unknown> };
+    const sent = watchQuery.mock.calls[0][1] as {
+      scopes: Array<{ kind: string; value?: string }>;
+      cursors: Record<string, unknown>;
+    };
     expect(watchQuery.mock.calls[0][0]).toBe("ref:pull");
     expect(sent.scopes[0]).toEqual({ kind: "byUser", value: "user_a" });
     expect(sent.cursors).toEqual({ "u:user_a": null });
@@ -118,7 +145,7 @@ describe("createConvexTransport", () => {
       push: "ref:push",
       pull: "ref:pull",
       clientId: "D",
-      userId: "user_a"
+      userId: "user_a",
     });
     expect(transport.subscribe).toBeUndefined();
   });

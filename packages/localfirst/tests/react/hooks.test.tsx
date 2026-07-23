@@ -11,19 +11,18 @@ import {
   localTable,
   type LocalFirstMutationCall,
   type RowValue,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core/index.js";
 
 // Controllable spies for the mocked Convex react module.
 const h = vi.hoisted(() => ({
   convexUseQueryCalls: [] as Array<{ ref: unknown; args: unknown }>,
-  convexMutation: vi.fn(async () => ({ viaConvex: true }))
+  convexMutation: vi.fn(async () => ({ viaConvex: true })),
 }));
 
 vi.mock("convex/react", () => ({
-  ConvexReactClient: class {
-    constructor(_url?: string) {}
-  },
+  // oxlint-disable-next-line typescript/no-extraneous-class -- stub for a class the consumer instantiates with `new`
+  ConvexReactClient: class {},
   ConvexProvider: ({ children }: { children: React.ReactNode }) => children,
   Authenticated: ({ children }: { children: React.ReactNode }) => children,
   Unauthenticated: () => null,
@@ -34,12 +33,22 @@ vi.mock("convex/react", () => ({
     h.convexUseQueryCalls.push({ ref, args });
     return args === "skip" ? undefined : { viaConvex: true, ref: String(ref) };
   },
-  useMutation: () => h.convexMutation
+  useMutation: () => h.convexMutation,
 }));
 
 // Imported AFTER the mock so the wrapper picks up the stubbed convex/react.
-const { ConvexProvider, ConvexReactClient, collection, many, useLiveQuery, useMutation, useQuery, useSyncStatus } =
-  await import("../../src/react/index");
+const {
+  ConvexProvider,
+  ConvexReactClient,
+  collection,
+  many,
+  useLiveCounts,
+  useLiveQuery,
+  useMutation,
+  useQuery,
+  useSearch,
+  useSyncStatus,
+} = await import("../../src/react/index");
 
 function manifest() {
   return defineLocalFirstManifest({
@@ -49,20 +58,21 @@ function manifest() {
         table: "todos",
         idField: "localId",
         scope: byUser("ownerId"),
-        indexes: {}
+        indexes: {},
+        searchFields: ["text"],
       }),
       issues: localTable({
         table: "issues",
         idField: "localId",
         scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-        indexes: {}
+        indexes: {},
       }),
       comments: localTable({
         table: "comments",
         idField: "localId",
         scope: byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "m" }),
-        indexes: {}
-      })
+        indexes: {},
+      }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly RowValue[]>({
@@ -70,8 +80,8 @@ function manifest() {
         name: "todos:list",
         table: "todos",
         initial: [],
-        run: (rows, args) => rows.filter((row) => row.listId === args.listId)
-      })
+        run: (rows, args) => rows.filter((row) => row.listId === args.listId),
+      }),
     },
     mutations: {
       "todos:create": localMutation<{ localId: string; listId: string; text: string }>({
@@ -82,10 +92,10 @@ function manifest() {
           kind: "insert",
           table: "todos",
           id: args.localId,
-          value: { ownerId: "user_a", listId: args.listId, text: args.text, done: false }
-        })
-      })
-    }
+          value: { ownerId: "user_a", listId: args.listId, text: args.text, done: false },
+        }),
+      }),
+    },
   });
 }
 
@@ -96,19 +106,24 @@ const acceptAll: SyncTransport = {
       rejected: [],
       idMaps: [],
       changes: [],
-      serverTime: 1
+      serverTime: 1,
     };
   },
   async pull() {
     return { changes: [], cursors: {}, serverTime: 1 };
-  }
+  },
 };
 
 function wrap(ui: React.ReactNode) {
   return (
     <ConvexProvider
       client={new ConvexReactClient("http://localhost")}
-      localFirst={{ manifest: manifest(), transport: acceptAll, userId: "user_a", nameOf: (ref) => String(ref) }}
+      localFirst={{
+        manifest: manifest(),
+        transport: acceptAll,
+        userId: "user_a",
+        nameOf: (ref) => String(ref),
+      }}
     >
       {ui}
     </ConvexProvider>
@@ -124,15 +139,25 @@ afterEach(() => {
 let captured: LocalFirstMutationCall<unknown> | undefined;
 
 function Todos() {
-  const todos = useQuery<{ listId: string }, readonly RowValue[]>("todos:list", { listId: "inbox" }, { initial: [] });
-  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>("todos:create");
+  const todos = useQuery<{ listId: string }, readonly RowValue[]>(
+    "todos:list",
+    { listId: "inbox" },
+    { initial: [] },
+  );
+  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>(
+    "todos:create",
+  );
   return (
     <div>
       <span data-testid="count">{todos?.length ?? -1}</span>
       <button
         type="button"
         onClick={() => {
-          captured = create({ localId: "t1", listId: "inbox", text: "hi" }) as LocalFirstMutationCall<unknown>;
+          captured = create({
+            localId: "t1",
+            listId: "inbox",
+            text: "hi",
+          }) as LocalFirstMutationCall<unknown>;
         }}
       >
         add
@@ -142,15 +167,25 @@ function Todos() {
 }
 
 function LiveTodos() {
-  const todos = useLiveQuery(collection<RowValue>("todos").where((row) => row.listId === "inbox").order("text"));
-  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>("todos:create");
+  const todos = useLiveQuery(
+    collection<RowValue>("todos")
+      .where((row) => row.listId === "inbox")
+      .order("text"),
+  );
+  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>(
+    "todos:create",
+  );
   return (
     <div>
       <span data-testid="live-count">{todos?.length ?? -1}</span>
       <button
         type="button"
         onClick={() => {
-          captured = create({ localId: "t1", listId: "inbox", text: "hi" }) as LocalFirstMutationCall<unknown>;
+          captured = create({
+            localId: "t1",
+            listId: "inbox",
+            text: "hi",
+          }) as LocalFirstMutationCall<unknown>;
         }}
       >
         addlive
@@ -159,16 +194,131 @@ function LiveTodos() {
   );
 }
 
+function SearchTodos({ query }: { query: string }) {
+  const { results, total } = useSearch<RowValue>("todos", query);
+  const create = useMutation<{ localId: string; listId: string; text: string }, unknown>(
+    "todos:create",
+  );
+  return (
+    <div>
+      <span data-testid="search-total">{total}</span>
+      <span data-testid="search-ids">{results.map((r) => r._id).join(",")}</span>
+      <button
+        type="button"
+        onClick={() => {
+          captured = create({
+            localId: "t1",
+            listId: "inbox",
+            text: "Fix the login bug",
+          }) as LocalFirstMutationCall<unknown>;
+        }}
+      >
+        addsearch
+      </button>
+    </div>
+  );
+}
+
 describe("react hooks", () => {
+  it("useLiveCounts returns scalar/grouped counts and updates after a group move", async () => {
+    const store = new MemoryLocalStore();
+    const seed = (id: string, status: string) =>
+      store.applyServerChange({
+        changeId: `c-${id}`,
+        scopeKey: "byWorkspace:w1",
+        table: "issues",
+        id,
+        kind: "insert" as const,
+        value: { workspaceId: "w1", status },
+        version: 1,
+        serverTime: 1,
+      });
+    await seed("i1", "open");
+    await seed("i2", "open");
+    await seed("i3", "closed");
+
+    function Counts() {
+      const plan = collection<RowValue>("issues").scope({ workspaceId: "w1" });
+      const total = useLiveCounts(plan);
+      const grouped = useLiveCounts(plan.groupBy("status"));
+      return (
+        <span data-testid="counts">
+          {total ?? -1}:{JSON.stringify(grouped ?? {})}
+        </span>
+      );
+    }
+
+    render(
+      <ConvexProvider
+        client={new ConvexReactClient("http://localhost")}
+        localFirst={{
+          manifest: manifest(),
+          transport: acceptAll,
+          store,
+          userId: "user_a",
+          nameOf: String,
+        }}
+      >
+        <Counts />
+      </ConvexProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("counts").textContent).toBe('3:{"open":2,"closed":1}'),
+    );
+
+    await act(() =>
+      store.applyServerChange({
+        changeId: "move",
+        scopeKey: "byWorkspace:w1",
+        table: "issues",
+        id: "i3",
+        kind: "patch",
+        patch: { status: "open" },
+        version: 2,
+        serverTime: 2,
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId("counts").textContent).toBe('3:{"open":3}'));
+  });
+
+  it("useSearch returns empty for an empty query and finds a row after it is created (delta-driven)", async () => {
+    render(wrap(<SearchTodos query="" />));
+    // Empty query → empty result, zero cost (no subscription).
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("0"));
+    cleanup();
+
+    render(wrap(<SearchTodos query="login" />));
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("0"));
+    await act(async () => {
+      screen.getByText("addsearch").click();
+      await captured?.local;
+    });
+    // The optimistic insert flows through the delta bus into the index and the live search.
+    await waitFor(() => expect(screen.getByTestId("search-total").textContent).toBe("1"));
+    expect(screen.getByTestId("search-ids").textContent).toBe("t1");
+  });
+
   it("useLiveQuery fails closed for a workspace table queried without .scope() (no cross-workspace leak)", async () => {
     const store = new MemoryLocalStore();
     await store.applyServerChange({
-      changeId: "c1", scopeKey: "byWorkspace:w1", table: "issues", id: "i1", kind: "insert",
-      value: { workspaceId: "w1", title: "x" }, version: 1, serverTime: 1
+      changeId: "c1",
+      scopeKey: "byWorkspace:w1",
+      table: "issues",
+      id: "i1",
+      kind: "insert",
+      value: { workspaceId: "w1", title: "x" },
+      version: 1,
+      serverTime: 1,
     });
     await store.applyServerChange({
-      changeId: "c2", scopeKey: "byWorkspace:w2", table: "issues", id: "i2", kind: "insert",
-      value: { workspaceId: "w2", title: "y" }, version: 1, serverTime: 1
+      changeId: "c2",
+      scopeKey: "byWorkspace:w2",
+      table: "issues",
+      id: "i2",
+      kind: "insert",
+      value: { workspaceId: "w2", title: "y" },
+      version: 1,
+      serverTime: 1,
     });
 
     function NoScope() {
@@ -183,11 +333,17 @@ describe("react hooks", () => {
     render(
       <ConvexProvider
         client={new ConvexReactClient("http://localhost")}
-        localFirst={{ manifest: manifest(), transport: acceptAll, store, userId: "user_a", nameOf: (ref) => String(ref) }}
+        localFirst={{
+          manifest: manifest(),
+          transport: acceptAll,
+          store,
+          userId: "user_a",
+          nameOf: (ref) => String(ref),
+        }}
       >
         <NoScope />
         <Scoped />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
 
     // No .scope() on a byWorkspace table -> fail closed (0), even with w1+w2 cached.
@@ -200,8 +356,14 @@ describe("react hooks", () => {
     const store = new MemoryLocalStore();
     const seed = (table: string, id: string, value: Record<string, unknown>) =>
       store.applyServerChange({
-        changeId: `c-${id}`, scopeKey: "byWorkspace:w1", table, id, kind: "insert",
-        value: { workspaceId: "w1", ...value }, version: 1, serverTime: 1
+        changeId: `c-${id}`,
+        scopeKey: "byWorkspace:w1",
+        table,
+        id,
+        kind: "insert",
+        value: { workspaceId: "w1", ...value },
+        version: 1,
+        serverTime: 1,
       });
     await seed("issues", "i1", { title: "Bug", createdAt: 1 });
     await seed("comments", "cm1", { issueId: "i1", body: "a" });
@@ -209,17 +371,29 @@ describe("react hooks", () => {
 
     function IssueComments() {
       const issues =
-        useLiveQuery(collection<RowValue>("issues").scope({ workspaceId: "w1" }).related("comments", many<RowValue>("comments", "issueId"))) ?? [];
-      return <span data-testid="cc">{issues[0] ? (issues[0].comments as unknown[]).length : -1}</span>;
+        useLiveQuery(
+          collection<RowValue>("issues")
+            .scope({ workspaceId: "w1" })
+            .related("comments", many<RowValue>("comments", "issueId")),
+        ) ?? [];
+      return (
+        <span data-testid="cc">{issues[0] ? (issues[0].comments as unknown[]).length : -1}</span>
+      );
     }
 
     render(
       <ConvexProvider
         client={new ConvexReactClient("http://localhost")}
-        localFirst={{ manifest: manifest(), transport: acceptAll, store, userId: "user_a", nameOf: (ref) => String(ref) }}
+        localFirst={{
+          manifest: manifest(),
+          transport: acceptAll,
+          store,
+          userId: "user_a",
+          nameOf: (ref) => String(ref),
+        }}
       >
         <IssueComments />
-      </ConvexProvider>
+      </ConvexProvider>,
     );
     await waitFor(() => expect(screen.getByTestId("cc").textContent).toBe("2"));
   });
@@ -301,11 +475,16 @@ describe("react hooks", () => {
   it("useSyncStatus reports pending mutations", async () => {
     function WithStatus() {
       const status = useSyncStatus();
-      const create = useMutation<{ localId: string; listId: string; text: string }, unknown>("todos:create");
+      const create = useMutation<{ localId: string; listId: string; text: string }, unknown>(
+        "todos:create",
+      );
       return (
         <div>
           <span data-testid="pending">{status.pendingMutations}</span>
-          <button type="button" onClick={() => void create({ localId: "tx", listId: "inbox", text: "p" })}>
+          <button
+            type="button"
+            onClick={() => void create({ localId: "tx", listId: "inbox", text: "p" })}
+          >
             go
           </button>
         </div>

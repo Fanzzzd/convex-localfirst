@@ -1,0 +1,45 @@
+---
+title: Devtools
+description: LocalFirstDevtools — a dev-only, zero-dependency inspector for the outbox, per-scope sync, live queries with plan explain, and storage.
+---
+
+`convex-localfirst/devtools` ships `<LocalFirstDevtools />` — a dev-only,
+zero-dependency (beyond React) inspector for the engine. It is the single
+biggest trust-builder while developing, and the best story for reproducing a bug
+report. Mount it **manually** inside your provider — there is no auto-injection:
+
+```tsx
+import { LocalFirstDevtools } from "convex-localfirst/devtools";
+
+<ConvexProvider client={convex} localFirst={{ modules, userId }}>
+  <App />
+  {import.meta.env.DEV && <LocalFirstDevtools />}
+</ConvexProvider>
+```
+
+It renders **nothing** in a production build (`process.env.NODE_ENV ===
+"production"`) unless `force` is set — safe to leave mounted. Fixed to the
+bottom-right, collapsible, dark-themed, inline styles only (no external CSS).
+
+| Prop | Meaning |
+| --- | --- |
+| `defaultOpen` | Start expanded instead of collapsed. |
+| `force` | Render even in a production build. Off by default. |
+| `pollMs` | How often (ms) to refresh the store-backed tabs. Default `750`. |
+
+## Tabs
+
+- **Sync** — per-scope `cursor` / `hydrated` / `partial` / `denied` / `role`,
+  the global sync status, and a recovery count.
+- **Outbox** — every pending / pushing / rejected operation, with its table,
+  function, and error.
+- **Queries** — the live views currently mounted, each with a **plan explain**:
+  which secondary index it uses, or `scan`, plus order / limit / group.
+- **Storage** — per-table row counts, attachment blob count and bytes, and which
+  tables have a live search index.
+
+A **simulate-offline** toggle in the header flips the engine's connectivity so
+you can exercise the offline → reconnect path without touching DevTools' Network
+panel.
+
+Next: [API reference](/docs/reference/api).

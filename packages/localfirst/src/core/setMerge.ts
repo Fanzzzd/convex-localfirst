@@ -8,7 +8,9 @@
  */
 
 /** A patch field carrying a set delta instead of a replacement value. */
-export type SetDelta = { readonly __lfSet: { readonly add: readonly unknown[]; readonly remove: readonly unknown[] } };
+export type SetDelta = {
+  readonly __lfSet: { readonly add: readonly unknown[]; readonly remove: readonly unknown[] };
+};
 
 /**
  * Counter-field merge: convergent add/subtract for numeric fields declared as counters
@@ -41,10 +43,9 @@ export function applyCounterDelta(current: unknown, delta: number): number {
   return (typeof current === "number" ? current : 0) + delta;
 }
 
-/** Stable identity key for a set element. Strings (the common case: ids) key as-is;
- *  anything else by JSON so distinct shapes never collide and types don't alias. */
+/** Stable, type-tagged identity key for a set element. */
 function keyOf(element: unknown): string {
-  return typeof element === "string" ? element : JSON.stringify(element);
+  return `${typeof element}:${typeof element === "bigint" ? element : JSON.stringify(element)}`;
 }
 
 export function isSetDelta(value: unknown): value is SetDelta {
@@ -94,7 +95,10 @@ export function applySetDelta(current: unknown, delta: SetDelta["__lfSet"]): unk
  * to the current field value (set merge); every other field overwrites (field-level LWW).
  * This is the single shared apply rule used by the client view/replay AND the server.
  */
-export function mergePatch<T extends Record<string, unknown>>(current: T, patch: Record<string, unknown>): T {
+export function mergePatch<T extends Record<string, unknown>>(
+  current: T,
+  patch: Record<string, unknown>,
+): T {
   const next = { ...current } as Record<string, unknown>;
   for (const [field, value] of Object.entries(patch)) {
     next[field] = isSetDelta(value)

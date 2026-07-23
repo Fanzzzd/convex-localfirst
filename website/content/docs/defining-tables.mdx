@@ -38,6 +38,11 @@ export const todos = lf.table("todos", {
 | `idField` | The stable, client-generated id column. Default `"localId"`. |
 | `timestamps` | `true` adds `createdAt`/`updatedAt`; a tuple names them (e.g. `["created_at", "updated_at"]`). Stamped automatically on insert (both) and patch (updated). |
 | `indexes` | Named indexes (field lists) your queries read from. Added to the Convex table by `.table()`. |
+| `relations` | Declared client-side relations queried by name — see [Relations](#relations). |
+| `setFields` / `counterFields` | Fields with convergent merges instead of LWW — see [Merges](#merges). |
+| `searchFields` | Fields indexed for local full-text [search](/docs/search) (priority order; client-only). |
+| `serverFields` | Names of fields the **server** mints — see [Server-minted fields](#server-minted-fields). |
+| `clientCan` | A client-side mirror of `access.write` for [permission-aware UI](/docs/permissions). |
 
 The returned object has the schema derivation `.table()` plus four function
 builders: `query`, `insert`, `patch`, `remove`. Export the table **and** each
@@ -192,6 +197,49 @@ For convergent merges of specific fields, declare them per field:
 (numeric increments accumulate). Both compose with the per-field merge. For real
 collaborative editing of the *same* rich-text field (ordered lists, text), reach
 for [document mode](/docs/document-mode).
+
+## Relations
+
+Declare relations **once**, next to the table, and query them by name — no
+per-query combinators to repeat:
+
+```ts
+export const issues = lf.table("issues", {
+  shape: { /* … */ state_id: v.string(), label_ids: v.array(v.string()), parent_id: v.optional(v.string()) },
+  scope: byWorkspace,
+  setFields: ["label_ids"],
+  relations: {
+    state:     lf.one("states", "state_id"),        // base[fk] -> target._id
+    labels:    lf.many("labels", { via: "label_ids" }), // a setFields id-array -> targets
+    subIssues: lf.backref("issues", "parent_id")     // reverse FK: target[fk] === base._id
+  }
+});
+```
+
+You then query them with `db.issues.scope({ workspace_id }).with("state",
+"labels")`, fully typed. See [Typed client](/docs/typed-db#relations) for the
+full story (and the per-query `.related()` / `.withRelations()` escape hatches).
+
+## Server-minted fields
+
+Some columns are minted by the **server** — an atomic `sequence_id` from
+[`serverStamp`](/docs/syncing#row-level-access--server-minted-fields), or any
+server-only value. List their names in `serverFields` so the client can strip
+them from an [undo-of-delete](/docs/undo) re-insert (resurrecting a deleted row
+re-mints them fresh, so re-sending the captured old value would be rejected):
+
+```ts
+lf.table("issues", { /* … */ serverFields: ["sequence_id"] });
+```
+
+`serverFields` is a client-only advisory (like `searchFields`); it pairs with
+the matching `createSyncFunctions({ serverStamp })` field list on the server.
+
+## Permission mirror
+
+Declare `clientCan.write` to mirror the server's `access.write` on the client —
+the same pure predicate, evaluated by [`useCan`](/docs/permissions) to
+enable/disable UI. It is **advisory**; the server stays authoritative.
 
 ## Mixing with plain Convex
 

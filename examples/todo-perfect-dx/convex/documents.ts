@@ -9,22 +9,22 @@ export const documents = lf.table("documents", {
     title: v.string(),
     icon: v.optional(v.string()), // emoji
     parentId: v.optional(v.string()), // FK -> documents.localId (tree; root pages have none)
-    position: v.number() // sibling order
+    position: v.number(), // sibling order
   },
   scope: lf.byWorkspace({ workspaceIdField: "workspaceId", membershipTable: "ws_members" }),
   timestamps: true,
-  indexes: { byWorkspace: ["workspaceId", "position"] }
+  indexes: { byWorkspace: ["workspaceId", "position"] },
 });
 
 export const create = documents.insert();
 
 // No patch() closures: args forward 1:1 (updatedAt stamps automatically).
 export const rename = documents.patch({
-  args: { id: v.string(), title: v.string() }
+  args: { id: v.string(), title: v.string() },
 });
 
 export const setIcon = documents.patch({
-  args: { id: v.string(), icon: v.string() }
+  args: { id: v.string(), icon: v.string() },
 });
 
 export const remove = documents.remove();

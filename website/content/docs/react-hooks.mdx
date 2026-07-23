@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: The drop-in ConvexProvider plus useQuery, useMutation, useSyncStatus, and useQueryMeta — same signatures as Convex.
+description: The drop-in ConvexProvider plus useQuery, useMutation, and useSyncStatus — same signatures as Convex — and the client query builder (collection / useLiveQuery).
 ---
 
 Import everything from `convex-localfirst` (or the standalone
@@ -206,7 +206,7 @@ live without polling.
 
 The scope is a sync scope, and the server enforces the same access rules as
 pull: your own user scope, or a workspace/project the caller is a **member** of
-(your `isMember`). Non-members see an empty room and their beats are dropped —
+(your `access.member`). Non-members see an empty room and their beats are dropped —
 fail-soft, so a heartbeat racing a just-sent join converges on its own. Export
 the endpoints from `convex/sync.ts`:
 

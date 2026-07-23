@@ -1,4 +1,5 @@
-import type { LocalStore, StoreListener, StoreUnsubscribe } from "./storage.js";
+import { OWED_STATUSES } from "./storage.js";
+import type { LocalStore, StoreListener, StoreUnsubscribe, StoredBlob } from "./storage.js";
 import { compareOperations } from "./ordering.js";
 import { deriveView, nextCanonicalRow } from "./view.js";
 import type {
@@ -6,10 +7,11 @@ import type {
   LocalId,
   LocalOperation,
   OperationStatus,
+  RoleValue,
   RowValue,
   ScopeKey,
   ServerChange,
-  TableName
+  TableName,
 } from "./types.js";
 
 export type IndexedDbStoreOptions = {
@@ -20,16 +22,16 @@ export type IndexedDbStoreOptions = {
   readonly onBlocked?: () => void;
 };
 
-export const INDEXED_DB_SCHEMA_VERSION = 3;
+export const INDEXED_DB_SCHEMA_VERSION = 5;
 
 const CANONICAL = "canonical";
 const OPERATIONS = "operations";
 const CURSORS = "cursors";
 const META = "meta";
+const BLOBS = "blobs";
+const ROLES = "roles";
 const BY_TABLE = "by_table";
 const EPOCH_KEY = "epoch";
-
-const OWED_STATUSES: ReadonlySet<OperationStatus> = new Set(["pending", "pushing"]);
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -68,12 +70,26 @@ function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction): void 
       db.createObjectStore(META, { keyPath: "key" });
     }
   }
+  if (oldVersion < 4) {
+    // Durable attachment blob outbox (P5), keyed by the metadata row's localId.
+    // Independent of canonical rows/ops; a stored blob == an upload still owed.
+    if (!db.objectStoreNames.contains(BLOBS)) {
+      db.createObjectStore(BLOBS, { keyPath: "localId" });
+    }
+  }
+  if (oldVersion < 5) {
+    // Durable per-scope role cache (DX v4 §6), keyed by scopeKey, so useRole/useCan
+    // survive a reload before the first pull. Wiped by clear() on logout.
+    if (!db.objectStoreNames.contains(ROLES)) {
+      db.createObjectStore(ROLES, { keyPath: "scopeKey" });
+    }
+  }
 }
 
 export function openLocalFirstDb(
   name: string,
   version: number,
-  options: { onBlocked?: () => void } = {}
+  options: { onBlocked?: () => void } = {},
 ): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const open = indexedDB.open(name, version);
@@ -97,7 +113,7 @@ export class IndexedDbStore implements LocalStore {
   private dbPromise: Promise<IDBDatabase> | null = null;
   /** Serializes canonical-mutating writes within this tab so a logout clear can't
    *  interleave with an in-flight apply and resurrect rows. Cross-tab safety comes from
-   *  each apply being one atomic readwrite tx, not this lock. ponytail: promise-chain;
+   *  each apply being one atomic readwrite tx, not this lock. Promise-chain;
    *  errors swallowed so one failed write can't wedge the queue. */
   private writeChain: Promise<void> = Promise.resolve();
   // Logout epoch this instance opened under. clear() bumps the durable epoch; an apply
@@ -114,8 +130,8 @@ export class IndexedDbStore implements LocalStore {
 
   private db(): Promise<IDBDatabase> {
     if (!this.dbPromise) {
-      this.dbPromise = openLocalFirstDb(this.dbName, INDEXED_DB_SCHEMA_VERSION, {
-        onBlocked: this.options.onBlocked
+      const opening = openLocalFirstDb(this.dbName, INDEXED_DB_SCHEMA_VERSION, {
+        onBlocked: this.options.onBlocked,
       }).then(async (db) => {
         // If another tab needs to upgrade, get out of the way and reopen lazily.
         db.onversionchange = () => {
@@ -125,14 +141,20 @@ export class IndexedDbStore implements LocalStore {
         // Seed the epoch this instance opened under, so a later clear() (here or in
         // another tab) is detectable as an advance against this captured value.
         try {
-          const row = (await request(db.transaction(META, "readonly").objectStore(META).get(EPOCH_KEY))) as
-            | { value: number }
-            | undefined;
+          const row = (await request(
+            db.transaction(META, "readonly").objectStore(META).get(EPOCH_KEY),
+          )) as { value: number } | undefined;
           this.epoch = row?.value ?? 0;
         } catch {
           this.epoch = 0;
         }
         return db;
+      });
+      this.dbPromise = opening;
+      // A transient open failure must not poison this store forever. The caller still
+      // receives the rejection; the next method call gets a fresh open attempt.
+      void opening.catch(() => {
+        if (this.dbPromise === opening) this.dbPromise = null;
       });
     }
     return this.dbPromise;
@@ -153,7 +175,9 @@ export class IndexedDbStore implements LocalStore {
   async getRows(table: TableName): Promise<readonly RowValue[]> {
     const db = await this.db();
     const tx = db.transaction([CANONICAL, OPERATIONS], "readonly");
-    const canonical = (await request(tx.objectStore(CANONICAL).index(BY_TABLE).getAll(table))) as RowValue[];
+    const canonical = (await request(
+      tx.objectStore(CANONICAL).index(BY_TABLE).getAll(table),
+    )) as RowValue[];
     const operations = (await request(tx.objectStore(OPERATIONS).getAll())) as LocalOperation[];
     return deriveView(table, canonical, operations);
   }
@@ -163,26 +187,33 @@ export class IndexedDbStore implements LocalStore {
     return rows.find((row) => row._id === id) ?? null;
   }
 
-  async applyServerChange(change: ServerChange): Promise<void> {
-    await this.applyServerChanges([change]);
+  async applyServerChange(change: ServerChange, expectedEpoch?: number): Promise<void> {
+    await this.applyServerChanges([change], expectedEpoch);
   }
 
-  async applyServerChanges(changes: readonly ServerChange[]): Promise<void> {
+  async applyServerChanges(
+    changes: readonly ServerChange[],
+    expectedEpoch?: number,
+  ): Promise<void> {
     if (changes.length === 0 || this.sessionEnded) {
       return;
     }
     // Queue behind any in-flight canonical write IN THIS TAB (so clear() cannot
     // interleave). Cross-tab safety is the atomic tx inside applyServerChangesAtomic.
-    const run = this.writeChain.then(() => this.applyServerChangesAtomic(changes));
+    const run = this.writeChain.then(() => this.applyServerChangesAtomic(changes, expectedEpoch));
     this.writeChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return run;
   }
 
-  private async applyServerChangesAtomic(changes: readonly ServerChange[]): Promise<void> {
+  private async applyServerChangesAtomic(
+    changes: readonly ServerChange[],
+    expectedEpoch?: number,
+  ): Promise<void> {
     const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
     // NUL separator: table names and localIds cannot contain it, so distinct
     // (table, id) pairs never collide in the grouping map below.
     const keyOf = (table: string, id: string) => `${table}\u0000${id}`;
@@ -219,7 +250,7 @@ export class IndexedDbStore implements LocalStore {
     const epochReq = tx.objectStore(META).get(EPOCH_KEY);
     epochReq.onsuccess = () => {
       const epoch = (epochReq.result as { value: number } | undefined)?.value ?? 0;
-      if (epoch !== this.epoch) {
+      if (epoch !== expected) {
         // A clear() advanced the epoch since we opened: applying now would resurrect
         // just-cleared (sensitive) rows. Abort — issue NO writes — and end this session.
         this.epoch = epoch;
@@ -283,10 +314,16 @@ export class IndexedDbStore implements LocalStore {
   async getOperation(opId: string): Promise<LocalOperation | null> {
     const db = await this.db();
     const tx = db.transaction(OPERATIONS, "readonly");
-    return ((await request(tx.objectStore(OPERATIONS).get(opId))) as LocalOperation | undefined) ?? null;
+    return (
+      ((await request(tx.objectStore(OPERATIONS).get(opId))) as LocalOperation | undefined) ?? null
+    );
   }
 
-  async updateOperationStatus(opId: string, status: OperationStatus, error?: string): Promise<void> {
+  async updateOperationStatus(
+    opId: string,
+    status: OperationStatus,
+    error?: string,
+  ): Promise<void> {
     const db = await this.db();
     const tx = db.transaction(OPERATIONS, "readwrite");
     const store = tx.objectStore(OPERATIONS);
@@ -317,57 +354,157 @@ export class IndexedDbStore implements LocalStore {
   async getCursor(scopeKey: ScopeKey): Promise<Cursor> {
     const db = await this.db();
     const tx = db.transaction(CURSORS, "readonly");
-    const row = (await request(tx.objectStore(CURSORS).get(scopeKey))) as { cursor: string } | undefined;
+    const row = (await request(tx.objectStore(CURSORS).get(scopeKey))) as
+      | { cursor: string }
+      | undefined;
     return row?.cursor ?? null;
   }
 
-  async setCursor(scopeKey: ScopeKey, cursor: string): Promise<void> {
+  async setCursor(scopeKey: ScopeKey, cursor: string, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
     const db = await this.db();
-    const tx = db.transaction(CURSORS, "readwrite");
+    const expected = expectedEpoch ?? this.epoch;
+    const tx = db.transaction([CURSORS, META], "readwrite");
     const store = tx.objectStore(CURSORS);
     // Monotonic (I5): read-compare-write in ONE readwrite tx. IndexedDB serializes
     // readwrite txns on the same store, so this is atomic across concurrent pulls;
     // the put is issued inside the get's onsuccess so the tx can't auto-commit
     // between them. A write that would move the cursor backward is dropped.
-    const getReq = store.get(scopeKey);
-    getReq.onsuccess = () => {
-      const existing = getReq.result as { cursor: string } | undefined;
-      if (!existing || cursor > existing.cursor) {
-        store.put({ scopeKey, cursor });
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) !== expected) return;
+      const getReq = store.get(scopeKey);
+      getReq.onsuccess = () => {
+        const existing = getReq.result as { cursor: string } | undefined;
+        if (!existing || cursor > existing.cursor) store.put({ scopeKey, cursor });
+      };
+    };
+    await transactionDone(tx);
+  }
+
+  async removeCanonicalRows(
+    table: TableName,
+    field: string,
+    value: unknown,
+    keepIds?: ReadonlySet<LocalId>,
+    expectedEpoch?: number,
+  ): Promise<void> {
+    if (this.sessionEnded) return;
+    // Serialized like every canonical write. One readwrite tx: read the table's rows
+    // and delete matches via request callbacks (no awaits inside the tx).
+    const run = this.writeChain.then(async () => {
+      const db = await this.db();
+      const expected = expectedEpoch ?? this.epoch;
+      const tx = db.transaction([CANONICAL, META], "readwrite");
+      const store = tx.objectStore(CANONICAL);
+      let applied = false;
+      const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+      epochReq.onsuccess = () => {
+        if (((epochReq.result as { value: number } | undefined)?.value ?? 0) !== expected) return;
+        applied = true;
+        const getReq = store.index(BY_TABLE).getAll(table);
+        getReq.onsuccess = () => {
+          for (const row of getReq.result as RowValue[]) {
+            if (row[field] === value && !keepIds?.has(row._id)) store.delete([table, row._id]);
+          }
+        };
+      };
+      await transactionDone(tx);
+      if (applied) this.notify();
+      return;
+    });
+    this.writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async removeCursor(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
+    const tx = db.transaction([CURSORS, META], "readwrite");
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) === expected) {
+        tx.objectStore(CURSORS).delete(scopeKey);
       }
     };
     await transactionDone(tx);
   }
 
-  async removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void> {
-    // Serialized like every canonical write. One readwrite tx: read the table's rows
-    // and delete matches via request callbacks (no awaits inside the tx).
-    const run = this.writeChain.then(async () => {
-      const db = await this.db();
-      const tx = db.transaction(CANONICAL, "readwrite");
-      const store = tx.objectStore(CANONICAL);
-      const getReq = store.index(BY_TABLE).getAll(table);
-      getReq.onsuccess = () => {
-        for (const row of getReq.result as RowValue[]) {
-          if (row[field] === value && !keepIds?.has(row._id)) {
-            store.delete([table, row._id]);
-          }
-        }
-      };
-      await transactionDone(tx);
-      this.notify();
-    });
-    this.writeChain = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
+  async getEpoch(): Promise<number> {
+    await this.db();
+    return this.epoch;
   }
 
-  async removeCursor(scopeKey: ScopeKey): Promise<void> {
+  async getRoles(): Promise<Record<ScopeKey, RoleValue>> {
     const db = await this.db();
-    const tx = db.transaction(CURSORS, "readwrite");
-    tx.objectStore(CURSORS).delete(scopeKey);
+    const tx = db.transaction(ROLES, "readonly");
+    const rows = (await request(tx.objectStore(ROLES).getAll())) as Array<{
+      scopeKey: ScopeKey;
+      role: RoleValue;
+    }>;
+    const out: Record<ScopeKey, RoleValue> = {};
+    for (const row of rows) out[row.scopeKey] = row.role;
+    return out;
+  }
+
+  async setRole(scopeKey: ScopeKey, role: RoleValue, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
+    // Epoch-guarded in one tx (like setCursor): a logout clear that committed first is
+    // observed here and the write is skipped, so a stale role can't outlive a logout.
+    const tx = db.transaction([ROLES, META], "readwrite");
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) === expected) {
+        tx.objectStore(ROLES).put({ scopeKey, role });
+      }
+    };
+    await transactionDone(tx);
+  }
+
+  async removeRole(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const expected = expectedEpoch ?? this.epoch;
+    const tx = db.transaction([ROLES, META], "readwrite");
+    const epochReq = tx.objectStore(META).get(EPOCH_KEY);
+    epochReq.onsuccess = () => {
+      if (((epochReq.result as { value: number } | undefined)?.value ?? 0) === expected) {
+        tx.objectStore(ROLES).delete(scopeKey);
+      }
+    };
+    await transactionDone(tx);
+  }
+
+  async putBlob(record: StoredBlob): Promise<void> {
+    if (this.sessionEnded) return;
+    const db = await this.db();
+    const tx = db.transaction(BLOBS, "readwrite");
+    tx.objectStore(BLOBS).put(record);
+    await transactionDone(tx);
+  }
+
+  async getBlob(localId: LocalId): Promise<StoredBlob | null> {
+    const db = await this.db();
+    const tx = db.transaction(BLOBS, "readonly");
+    return ((await request(tx.objectStore(BLOBS).get(localId))) as StoredBlob | undefined) ?? null;
+  }
+
+  async getAllBlobs(): Promise<readonly StoredBlob[]> {
+    const db = await this.db();
+    const tx = db.transaction(BLOBS, "readonly");
+    return (await request(tx.objectStore(BLOBS).getAll())) as StoredBlob[];
+  }
+
+  async deleteBlob(localId: LocalId): Promise<void> {
+    const db = await this.db();
+    const tx = db.transaction(BLOBS, "readwrite");
+    tx.objectStore(BLOBS).delete(localId);
     await transactionDone(tx);
   }
 
@@ -377,17 +514,19 @@ export class IndexedDbStore implements LocalStore {
     const run = this.writeChain.then(() => this.clearAtomic());
     this.writeChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return run;
   }
 
   private async clearAtomic(): Promise<void> {
     const db = await this.db();
-    const tx = db.transaction([CANONICAL, OPERATIONS, CURSORS, META], "readwrite");
+    const tx = db.transaction([CANONICAL, OPERATIONS, CURSORS, META, BLOBS, ROLES], "readwrite");
     tx.objectStore(CANONICAL).clear();
     tx.objectStore(OPERATIONS).clear();
     tx.objectStore(CURSORS).clear();
+    tx.objectStore(BLOBS).clear();
+    tx.objectStore(ROLES).clear();
     // Bump (NOT clear) the durable epoch in the SAME tx so a concurrent apply — in this
     // tab or another, which reads META in its own serialized tx — sees the advance and
     // aborts instead of resurrecting the just-cleared rows.

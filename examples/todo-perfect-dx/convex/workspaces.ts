@@ -10,13 +10,18 @@ export const join = mutation({
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("ws_members")
-      .withIndex("by_user_ws", (q) => q.eq("userId", args.userId).eq("workspaceId", args.workspaceId))
+      .withIndex("by_user_ws", (q) =>
+        q.eq("userId", args.userId).eq("workspaceId", args.workspaceId),
+      )
       .unique();
     if (existing) {
       return existing._id;
     }
-    return await ctx.db.insert("ws_members", { userId: args.userId, workspaceId: args.workspaceId });
-  }
+    return await ctx.db.insert("ws_members", {
+      userId: args.userId,
+      workspaceId: args.workspaceId,
+    });
+  },
 });
 
 /** How many members a workspace has (a plain Convex read, via fallback). */
@@ -28,5 +33,5 @@ export const memberCount = query({
       .withIndex("by_ws", (q) => q.eq("workspaceId", args.workspaceId))
       .collect();
     return members.length;
-  }
+  },
 });

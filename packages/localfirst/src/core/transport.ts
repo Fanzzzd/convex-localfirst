@@ -1,4 +1,10 @@
-import type { PullRequest, PullResponse, PushRequest, PushResponse, ServerChange } from "./types.js";
+import type {
+  PullRequest,
+  PullResponse,
+  PushRequest,
+  PushResponse,
+  ServerChange,
+} from "./types.js";
 
 export type SyncTransport = {
   push(request: PushRequest): Promise<PushResponse>;
@@ -53,7 +59,7 @@ function toClientChange(change: ServerStoredChange): ServerChange {
     patch: change.patch,
     version: change.version,
     serverTime: change.serverTime,
-    opId: change.opId
+    opId: change.opId,
   };
 }
 
@@ -89,8 +95,12 @@ export function createConvexTransport(options: {
           kind: op.kind,
           localId: op.id,
           value: op.value,
-          patch: op.patch
-        }))
+          patch: op.patch,
+          // Atomic write group tag (absent ⇒ ungrouped ⇒ exactly the prior behavior).
+          groupId: op.groupId,
+          groupSize: op.groupSize,
+          groupIndex: op.groupIndex,
+        })),
       })) as Omit<PushResponse, "changes"> & { changes: ServerStoredChange[] };
       return { ...response, changes: response.changes.map(toClientChange) };
     },
@@ -103,7 +113,7 @@ export function createConvexTransport(options: {
         cursors: request.cursors,
         ...(request.bootstrapCursors && Object.keys(request.bootstrapCursors).length > 0
           ? { bootstrapCursors: request.bootstrapCursors }
-          : {})
+          : {}),
       })) as Omit<PullResponse, "changes"> & { changes: ServerStoredChange[] };
       return { ...response, changes: response.changes.map(toClientChange) };
     },
@@ -119,16 +129,19 @@ export function createConvexTransport(options: {
             clientId: options.clientId,
             userId: options.userId,
             schemaVersion: request.schemaVersion,
-            scopes: request.scopes.map((scope) => ({ kind: scope.kind, value: scopeValue(scope.key) })),
+            scopes: request.scopes.map((scope) => ({
+              kind: scope.kind,
+              value: scopeValue(scope.key),
+            })),
             cursors: request.cursors,
             // Content-free doorbell: the server skips the bootstrap path and reads
             // one change per scope — enough to invalidate on new appends, cheap to
             // re-execute on every one.
-            doorbell: true
+            doorbell: true,
           });
           return watch.onUpdate(() => onChange());
         }
-      : undefined
+      : undefined,
   };
 }
 
@@ -146,6 +159,6 @@ export function createOfflineTransport(): SyncTransport {
     },
     async pull() {
       throw new OfflineTransportError();
-    }
+    },
   };
 }

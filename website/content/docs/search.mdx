@@ -1,0 +1,76 @@
+---
+title: Full-text search
+description: Declare searchFields on a table and search-as-you-type with useSearch — a memory-resident incremental index, no debounce.
+---
+
+Declare which fields are searchable, and the client builds a memory-resident
+inverted index over the rows already synced into scope. There is no server round
+trip and no debounce — every keystroke is an in-memory index probe.
+
+## Declare `searchFields`
+
+List the fields to index, in **priority order** (earlier fields rank higher).
+HTML fields are tag-stripped before tokenizing:
+
+```ts title="convex/issues.ts"
+export const issues = lf.table("issues", {
+  shape: {
+    workspace_id: v.string(),
+    title: v.string(),
+    description_html: v.string(),
+    /* … */
+  },
+  scope: lf.byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "members" }),
+  searchFields: ["title", "description_html"],
+});
+```
+
+`searchFields` is a **client-only** concern — it feeds the incremental inverted
+index behind `useSearch` and is maintained from row deltas. Omit it and the table
+is simply not searchable.
+
+## `useSearch(table, query, options?)`
+
+Pass the raw input on every keystroke:
+
+```tsx
+import { useSearch } from "convex-localfirst";
+
+function IssueSearch({ workspace_id }: { workspace_id: string }) {
+  const [q, setQ] = useState("");
+  const { results, total } = useSearch("issues", q, { scope: { workspace_id }, limit: 20 });
+
+  return (
+    <>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search issues…" />
+      <p>Showing {results.length} of {total}</p>
+      {results.map((issue) => <IssueRow key={issue._id} issue={issue} />)}
+    </>
+  );
+}
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `table` | The table whose `searchFields` to search. |
+| `query` | The raw input string — pass it on every keystroke (no debounce needed). |
+| `options.scope` | Restrict to rows matching these field equalities (e.g. `{ workspace_id }`), applied before ranking. |
+| `options.limit` | Cap the returned `results` (ranked). `total` is always the full match count. |
+
+It returns `{ results: Row[]; total: number }`:
+
+- `results` are the ranked matching rows, capped by `limit`.
+- `total` is the full post-scope match count — for a "showing N of M" affordance.
+
+The final token **prefix-matches**, so results narrow as the user types.
+Results update incrementally as local data changes (a delta touching the table
+refreshes only the live searches on it), and the `results` array keeps a **stable
+reference** while unchanged.
+
+<Callout>
+An empty or whitespace-only `query` returns empty results at **zero cost** — no
+index subscription is opened — so you can mount `useSearch` unconditionally and
+let the empty input be the idle state.
+</Callout>
+
+Next: [Attachments](/docs/attachments).

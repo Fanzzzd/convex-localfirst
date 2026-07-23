@@ -7,7 +7,7 @@ import {
   localQuery,
   localTable,
   byUser,
-  type SyncTransport
+  type SyncTransport,
 } from "../../src/core";
 import { LocalFirstEngine } from "../../src/core/internal";
 
@@ -20,9 +20,9 @@ function createManifest() {
         idField: "localId",
         scope: byUser("ownerId"),
         indexes: {
-          byList: ["ownerId", "listId", "createdAt"]
-        }
-      })
+          byList: ["ownerId", "listId", "createdAt"],
+        },
+      }),
     },
     queries: {
       "todos:list": localQuery<{ listId: string }, readonly unknown[]>({
@@ -32,8 +32,8 @@ function createManifest() {
         initial: [],
         run(rows, args) {
           return rows.filter((row) => row.listId === args.listId);
-        }
-      })
+        },
+      }),
     },
     mutations: {
       "todos:create": localMutation<{ listId: string; text: string }>({
@@ -51,20 +51,25 @@ function createManifest() {
               text: args.text,
               done: false,
               createdAt: context.now,
-              updatedAt: context.now
-            }
+              updatedAt: context.now,
+            },
           };
-        }
+        },
       }),
       "todos:update": localMutation<{ id: string; text?: string; done?: boolean }>({
         kind: "mutation",
         name: "todos:update",
         table: "todos",
         plan(args) {
-          return { kind: "patch", table: "todos", id: args.id, patch: { text: args.text, done: args.done } };
-        }
-      })
-    }
+          return {
+            kind: "patch",
+            table: "todos",
+            id: args.id,
+            patch: { text: args.text, done: args.done },
+          };
+        },
+      }),
+    },
   });
 }
 
@@ -74,16 +79,19 @@ describe("LocalFirstEngine", () => {
     const transport: SyncTransport = {
       async push(request) {
         return {
-          accepted: request.mutations.map((operation) => ({ opId: operation.opId, serverResult: { ok: true } })),
+          accepted: request.mutations.map((operation) => ({
+            opId: operation.opId,
+            serverResult: { ok: true },
+          })),
           rejected: [],
           idMaps: [],
           changes: [],
-          serverTime: 1
+          serverTime: 1,
         };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -99,12 +107,15 @@ describe("LocalFirstEngine", () => {
       },
       clock() {
         return 100;
-      }
+      },
     });
 
     const call = engine.mutate("todos:create", { listId: "inbox", text: "hello" });
     await call.local;
-    const result = await engine.query<{ listId: string }, readonly { text?: unknown }[]>("todos:list", { listId: "inbox" });
+    const result = await engine.query<{ listId: string }, readonly { text?: unknown }[]>(
+      "todos:list",
+      { listId: "inbox" },
+    );
     expect(result?.[0]?.text).toBe("hello");
     await expect(call.server).resolves.toEqual({ ok: true });
   });
@@ -118,11 +129,17 @@ describe("LocalFirstEngine", () => {
     // Pull transport never runs here; push is a no-op so the row stays purely optimistic.
     const transport: SyncTransport = {
       async push(request) {
-        return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+        return {
+          accepted: request.mutations.map((o) => ({ opId: o.opId })),
+          rejected: [],
+          idMaps: [],
+          changes: [],
+          serverTime: 1,
+        };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -132,14 +149,17 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (reference) => String(reference),
       idFactory: () => "todos_local_42",
-      clock: () => 100
+      clock: () => 100,
     });
 
     const call = engine.mutate("todos:create", { listId: "inbox", text: "hi" });
     const commit = await call.local;
     expect(commit.id).toBe("todos_local_42"); // LocalCommit.id is the new row's id
 
-    const rows = await engine.query<{ listId: string }, readonly Record<string, unknown>[]>("todos:list", { listId: "inbox" });
+    const rows = await engine.query<{ listId: string }, readonly Record<string, unknown>[]>(
+      "todos:list",
+      { listId: "inbox" },
+    );
     const row = rows?.[0] as Record<string, unknown>;
     expect(row._id).toBe("todos_local_42");
     expect(row.localId).toBe("todos_local_42"); // the fix: idField present + equal to _id
@@ -152,11 +172,17 @@ describe("LocalFirstEngine", () => {
     const store = new MemoryLocalStore();
     const transport: SyncTransport = {
       async push(request) {
-        return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+        return {
+          accepted: request.mutations.map((o) => ({ opId: o.opId })),
+          rejected: [],
+          idMaps: [],
+          changes: [],
+          serverTime: 1,
+        };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -166,7 +192,7 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (reference) => String(reference),
       idFactory: () => "todos_local_7",
-      clock: () => 100
+      clock: () => 100,
     });
 
     const commit = await engine.mutate("todos:create", { listId: "inbox", text: "hi" }).local;
@@ -186,11 +212,17 @@ describe("LocalFirstEngine", () => {
     const store = new MemoryLocalStore();
     const transport: SyncTransport = {
       async push(request) {
-        return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+        return {
+          accepted: request.mutations.map((o) => ({ opId: o.opId })),
+          rejected: [],
+          idMaps: [],
+          changes: [],
+          serverTime: 1,
+        };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -200,11 +232,15 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (r) => String(r),
       idFactory: () => "todos_local_p",
-      clock: () => 100
+      clock: () => 100,
     });
 
     await engine.mutate("todos:create", { listId: "inbox", text: "before" }).local;
-    const commit = await engine.mutate("todos:update", { id: "todos_local_p", text: "after", done: true }).local;
+    const commit = await engine.mutate("todos:update", {
+      id: "todos_local_p",
+      text: "after",
+      done: true,
+    }).local;
 
     // the merged row reflects this patch over the prior insert (other fields preserved)
     expect(commit.row).toBeDefined();
@@ -226,11 +262,17 @@ describe("LocalFirstEngine", () => {
     const store = new MemoryLocalStore();
     const transport: SyncTransport = {
       async push(request) {
-        return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+        return {
+          accepted: request.mutations.map((o) => ({ opId: o.opId })),
+          rejected: [],
+          idMaps: [],
+          changes: [],
+          serverTime: 1,
+        };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -240,7 +282,7 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (r) => String(r),
       idFactory: () => "todos_local_g",
-      clock: () => 100
+      clock: () => 100,
     });
 
     // optimistic insert -> getRow finds it with no scope + no pull
@@ -256,9 +298,17 @@ describe("LocalFirstEngine", () => {
       table: "todos",
       id: "todos_srv_1",
       kind: "insert",
-      value: { localId: "todos_srv_1", ownerId: "user_a", listId: "inbox", text: "srv", done: false, createdAt: 1, updatedAt: 1 },
+      value: {
+        localId: "todos_srv_1",
+        ownerId: "user_a",
+        listId: "inbox",
+        text: "srv",
+        done: false,
+        createdAt: 1,
+        updatedAt: 1,
+      },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
     const srv = await engine.getRow<Record<string, unknown>>("todos", "todos_srv_1");
     expect(srv?.text).toBe("srv");
@@ -281,7 +331,7 @@ describe("LocalFirstEngine", () => {
       async pull() {
         pulled += 1;
         throw new Error("backend down");
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -291,7 +341,7 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (r) => String(r),
       idFactory: () => "todos_local_r",
-      clock: () => 100
+      clock: () => 100,
     });
 
     await engine.mutate("todos:create", { listId: "inbox", text: "offline-row" }).local;
@@ -299,7 +349,7 @@ describe("LocalFirstEngine", () => {
     // read() must refresh (attempt the sync) AND still return the local optimistic row,
     // without throwing — even though the transport rejects.
     const rows = await engine.read<Record<string, unknown>, unknown>(
-      collection("todos").scope({ ownerId: "user_a" })
+      collection("todos").scope({ ownerId: "user_a" }),
     );
     expect(rows.map((r) => r.text)).toEqual(["offline-row"]);
     expect(pushed + pulled).toBeGreaterThan(0); // it actually attempted a refresh
@@ -321,11 +371,17 @@ describe("LocalFirstEngine", () => {
     const store = new MemoryLocalStore();
     const transport: SyncTransport = {
       async push(request) {
-        return { accepted: request.mutations.map((o) => ({ opId: o.opId })), rejected: [], idMaps: [], changes: [], serverTime: 1 };
+        return {
+          accepted: request.mutations.map((o) => ({ opId: o.opId })),
+          rejected: [],
+          idMaps: [],
+          changes: [],
+          serverTime: 1,
+        };
       },
       async pull() {
         return { changes: [], cursors: {}, serverTime: 1 };
-      }
+      },
     };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
@@ -335,7 +391,7 @@ describe("LocalFirstEngine", () => {
       transport,
       nameOf: (reference) => String(reference),
       idFactory: () => "todos_local_unused",
-      clock: () => 100
+      clock: () => 100,
     });
 
     // Shaped exactly as transport.toClientChange delivers a pulled insert: id is the
@@ -346,9 +402,17 @@ describe("LocalFirstEngine", () => {
       table: "todos",
       id: "todos_srv_7",
       kind: "insert",
-      value: { localId: "todos_srv_7", ownerId: "user_a", listId: "inbox", text: "from server", done: false, createdAt: 1, updatedAt: 1 },
+      value: {
+        localId: "todos_srv_7",
+        ownerId: "user_a",
+        listId: "inbox",
+        text: "from server",
+        done: false,
+        createdAt: 1,
+        updatedAt: 1,
+      },
       version: 1,
-      serverTime: 1
+      serverTime: 1,
     });
 
     const rows = await engine.runLocalQuery(collection("todos").scope({ ownerId: "user_a" }));
@@ -365,7 +429,10 @@ describe("LocalFirstEngine", () => {
     vi.stubGlobal("navigator", { onLine: false });
     try {
       const store = new MemoryLocalStore();
-      const hang: SyncTransport = { push: () => new Promise(() => {}), pull: () => new Promise(() => {}) };
+      const hang: SyncTransport = {
+        push: () => new Promise(() => {}),
+        pull: () => new Promise(() => {}),
+      };
       const engine = new LocalFirstEngine({
         manifest: createManifest(),
         store,
@@ -374,7 +441,7 @@ describe("LocalFirstEngine", () => {
         transport: hang,
         nameOf: (r) => String(r),
         idFactory: () => "todos_local_off",
-        clock: () => 100
+        clock: () => 100,
       });
 
       // Create while offline: commits locally, stays pending (the background push hangs — ignored).
@@ -403,7 +470,10 @@ describe("LocalFirstEngine", () => {
     // awaited read — would hang forever. With it, the call rejects quickly and the engine
     // is marked offline so the UI can degrade to local data.
     const store = new MemoryLocalStore();
-    const hang: SyncTransport = { push: () => new Promise(() => {}), pull: () => new Promise(() => {}) };
+    const hang: SyncTransport = {
+      push: () => new Promise(() => {}),
+      pull: () => new Promise(() => {}),
+    };
     const engine = new LocalFirstEngine({
       manifest: createManifest(),
       store,
@@ -413,10 +483,12 @@ describe("LocalFirstEngine", () => {
       nameOf: (r) => String(r),
       clock: () => 100,
       retry: { retries: 0, baseDelayMs: 1 },
-      syncTimeoutMs: 80
+      syncTimeoutMs: 80,
     });
 
-    await expect(engine.syncOnce([{ kind: "byUser", key: "u:user_a", table: "todos" }])).rejects.toThrow(/timed out/i);
+    await expect(
+      engine.syncOnce([{ kind: "byUser", key: "u:user_a", table: "todos" }]),
+    ).rejects.toThrow(/timed out/i);
     expect(engine.getStatus().online).toBe(false);
     engine.dispose();
   });

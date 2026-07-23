@@ -12,11 +12,11 @@ export const cycles = lf.table("cycles", {
     start_date: v.optional(v.union(v.string(), v.null())),
     end_date: v.optional(v.union(v.string(), v.null())),
     owned_by_id: v.optional(v.string()),
-    sort_order: v.optional(v.number())
+    sort_order: v.optional(v.number()),
   },
   scope: scopeWorkspaceId,
   timestamps: ["created_at", "updated_at"],
-  indexes: { byWorkspace: ["workspace_id", "created_at"] }
+  indexes: { byWorkspace: ["workspace_id", "created_at"] },
 });
 
 export const create = cycles.insert();

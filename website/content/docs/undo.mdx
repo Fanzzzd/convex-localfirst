@@ -1,0 +1,64 @@
+---
+title: Undo & redo
+description: Scope-aware undo/redo over local-first mutations — every local op has an inverse, and undos sync like any other write.
+---
+
+Every local-first operation has an inverse, so undo/redo comes almost for free:
+insert ↔ delete, patch → the inverse patch (computed from the before-image the
+outbox already holds), delete → re-insert the captured before-row. `useUndo`
+exposes it.
+
+```tsx
+import { useUndo } from "convex-localfirst";
+
+function Toolbar({ workspace_id }: { workspace_id: string }) {
+  const { undo, redo, canUndo, canRedo } = useUndo({ workspace_id });
+  return (
+    <>
+      <button disabled={!canUndo} onClick={() => void undo()}>Undo</button>
+      <button disabled={!canRedo} onClick={() => void redo()}>Redo</button>
+    </>
+  );
+}
+```
+
+## Scoping the stacks
+
+Pass a scope-value object to scope undo/redo to that workspace or project:
+
+```ts
+const { undo } = useUndo({ workspace_id });   // only this workspace's ops
+const { undo } = useUndo();                    // cross-scope, most-recent action first
+```
+
+| Member | Meaning |
+| --- | --- |
+| `undo` | `() => Promise<void>` — inverts the most recent op (in scope). |
+| `redo` | `() => Promise<void>` — replays the most recently undone op. |
+| `canUndo` / `canRedo` | Reactive booleans for enabling/disabling UI. |
+
+`undo` and `redo` emit **ordinary local-first mutations** — they apply
+optimistically and sync like any other write. A [batch group](/docs/batches)
+undoes as one unit.
+
+## Undo-of-delete and server-minted fields
+
+Undoing a delete re-inserts the captured before-row under its **original**
+`localId`. If the row is already gone on the server, that re-insert is treated as
+a **resurrection**: the server mints a fresh row and re-mints any server-controlled
+fields (a `sequence_id`-style column **changes**). So the client must strip those
+fields before re-inserting the old value — declare them with `serverFields` on the
+table:
+
+```ts
+export const issues = lf.table("issues", {
+  shape: { /* … */ sequence_id: v.optional(v.number()) },
+  scope: lf.byWorkspace({ workspaceIdField: "workspace_id", membershipTable: "members" }),
+  serverFields: ["sequence_id"]   // re-minted on resurrection; stripped on undo-of-delete
+});
+```
+
+Pair this with the matching [`serverStamp`](/docs/permissions) field list on the
+server. See [Defining tables](/docs/defining-tables).
+
+Next: [Permission-aware UI](/docs/permissions).

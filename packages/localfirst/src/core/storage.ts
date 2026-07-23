@@ -3,14 +3,35 @@ import type {
   LocalId,
   LocalOperation,
   OperationStatus,
+  RoleValue,
   RowValue,
   ScopeKey,
   ServerChange,
-  TableName
+  TableName,
 } from "./types.js";
 
 export type StoreListener = () => void;
 export type StoreUnsubscribe = () => void;
+
+/** Statuses a local store still owes the server — the filter for getPendingOperations. */
+export const OWED_STATUSES: ReadonlySet<OperationStatus> = new Set(["pending", "pushing"]);
+
+/**
+ * A durable attachment blob in the local outbox (see AttachmentManager). Keyed by
+ * `localId` — the id of the metadata row it belongs to — so it survives reloads and
+ * re-enters the upload queue on boot. Evicted ONLY after the server confirms finalize
+ * (never before), so an in-progress upload is always recoverable.
+ */
+export type StoredBlob = {
+  readonly localId: LocalId;
+  readonly table: TableName;
+  readonly blob: Blob;
+  /** The metadata-row insert op, so the uploader can wait until the row is synced
+   *  server-side before requesting an upload URL / finalizing. Absent only for a
+   *  best-effort update failure — the uploader then falls back to attempt+retry. */
+  readonly opId?: string;
+  readonly createdAt: number;
+};
 
 /**
  * Canonical-centric local store.
@@ -35,7 +56,7 @@ export type LocalStore = {
   /** Canonical server snapshot, for inspection/tests. */
   getCanonicalRows(table: TableName): Promise<readonly RowValue[]>;
   /** Apply one authoritative server change to the canonical snapshot (and prune a confirmed op). */
-  applyServerChange(change: ServerChange): Promise<void>;
+  applyServerChange(change: ServerChange, expectedEpoch?: number): Promise<void>;
   /**
    * Apply a batch of server changes with a SINGLE notify (and, for durable stores,
    * a single transaction). The hot path for sync pulls: applying N changes one at
@@ -43,7 +64,7 @@ export type LocalStore = {
    * every mounted query — turning a cold pull into O(N×rows). Order is preserved so
    * repeated changes to the same row resolve correctly.
    */
-  applyServerChanges(changes: readonly ServerChange[]): Promise<void>;
+  applyServerChanges(changes: readonly ServerChange[], expectedEpoch?: number): Promise<void>;
 
   /** Outbox. */
   enqueueOperation(operation: LocalOperation): Promise<void>;
@@ -59,17 +80,44 @@ export type LocalStore = {
   dropOperation(opId: string): Promise<void>;
 
   getCursor(scopeKey: ScopeKey): Promise<Cursor>;
-  setCursor(scopeKey: ScopeKey, cursor: string): Promise<void>;
+  setCursor(scopeKey: ScopeKey, cursor: string, expectedEpoch?: number): Promise<void>;
 
   /** Delete canonical rows of `table` whose `field` equals `value`, except ids in
    *  `keepIds`. Ghost eviction after a snapshot bootstrap (keepIds = rows the
    *  snapshot delivered) and full scope eviction on membership revocation (no
    *  keepIds). Pending operations are untouched: they replay/push as usual. */
-  removeCanonicalRows(table: TableName, field: string, value: unknown, keepIds?: ReadonlySet<LocalId>): Promise<void>;
+  removeCanonicalRows(
+    table: TableName,
+    field: string,
+    value: unknown,
+    keepIds?: ReadonlySet<LocalId>,
+    expectedEpoch?: number,
+  ): Promise<void>;
 
   /** Forget a scope's cursor entirely (revocation): a later re-grant must
    *  re-bootstrap instead of resuming from a cursor whose rows were evicted. */
-  removeCursor(scopeKey: ScopeKey): Promise<void>;
+  removeCursor(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void>;
+
+  /**
+   * OPTIONAL durable per-scope role cache (DX v4 §6). The role the server resolved for
+   * this user in a membership scope, persisted so useRole/useCan survive a reload without
+   * waiting for the first pull. Absent (a custom store that predates this): roles live in
+   * engine memory only — correct, just not reload-durable. Dropped by clear() on logout.
+   */
+  getRoles?(): Promise<Record<ScopeKey, RoleValue>>;
+  setRole?(scopeKey: ScopeKey, role: RoleValue, expectedEpoch?: number): Promise<void>;
+  removeRole?(scopeKey: ScopeKey, expectedEpoch?: number): Promise<void>;
+
+  /** Logout generation. Pull responses carry the value they started under; stores
+   *  reject every write from an older generation so clear() cannot be undone. */
+  getEpoch(): Promise<number>;
+
+  /** Durable attachment blob outbox (see StoredBlob). Blobs live in their own store,
+   *  independent of canonical rows/ops, and are dropped by clear() on logout. */
+  putBlob(record: StoredBlob): Promise<void>;
+  getBlob(localId: LocalId): Promise<StoredBlob | null>;
+  getAllBlobs(): Promise<readonly StoredBlob[]>;
+  deleteBlob(localId: LocalId): Promise<void>;
 
   /** Drop all data for this namespace (logout). */
   clear(): Promise<void>;

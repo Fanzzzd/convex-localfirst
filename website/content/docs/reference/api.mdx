@@ -1,12 +1,13 @@
 ---
 title: API reference
-description: The complete public API surface of convex-localfirst — React hooks, core wiring, the server DSL, and CRDTs.
+description: The complete public surface of convex-localfirst — the React client, the typed query builder, the server DSL, sync, and the tooling entries.
 ---
 
-Everything below is the public surface. Engine internals (rebase, the engine
-class, the store implementation details) are intentionally not exported.
+Everything below is public. Engine internals (rebase, the engine class, the store
+implementation) are intentionally not exported; they live behind
+`convex-localfirst/core/internal` for the React adapter only.
 
-## `convex-localfirst/react`
+## `convex-localfirst` — the React client
 
 ### `ConvexProvider`
 
@@ -21,134 +22,156 @@ function ConvexProvider(props: {
 Drop-in for Convex's provider. Without `localFirst`, behaves exactly like
 `convex/react`. See [the provider](/docs/react-hooks#the-provider).
 
-### `LocalFirstProviderConfig`
-
 ```ts
 type LocalFirstProviderConfig = {
-  modules?: Record<string, unknown>; // imported lf.table modules (runtime manifest, no codegen)
-  schemaVersion?: number;            // gates sync on incompatible shape changes; default 1
-  manifest?: LocalFirstManifest;     // escape hatch / tests, instead of modules
+  modules?: Record<string, unknown>;   // imported lf.table modules (runtime manifest, no codegen)
+  manifest?: LocalFirstManifest;       // escape hatch / tests, instead of modules
+  schemaVersion?: number;              // gates sync on incompatible shape changes; default 1
   userId?: string | null;
   clientId?: string;
-  store?: LocalStore;                // default: IndexedDB in the browser (namespaced by userId)
-  databaseName?: string;             // default "convex-localfirst"
-  namespace?: string;                // default userId
-  sync?: { push?: FunctionReference<"mutation">; pull?: FunctionReference<"query"> };
-                                     // default api.sync.push / api.sync.pull
-  transport?: SyncTransport;         // escape hatch: bring your own
-  nameOf?: FunctionNameResolver;     // defaults to Convex getFunctionName
+  store?: LocalStore;                  // default: IndexedDB in the browser, in-memory elsewhere
+  databaseName?: string;               // default "convex-localfirst"
+  namespace?: string;                  // default userId (device isolation, I9)
+  sync?: {
+    push?: FunctionReference<"mutation">;   // default api.sync.push
+    pull?: FunctionReference<"query">;      // default api.sync.pull
+    presence?: FunctionReference<"mutation">;   // default api.sync.presence
+    presenceList?: FunctionReference<"query">;  // default api.sync.presenceList
+  };
+  transport?: SyncTransport;           // escape hatch: bring your own
+  nameOf?: FunctionNameResolver;       // defaults to Convex getFunctionName
+  attachments?: {                      // offline attachments; default attachments:getUploadUrl/finalize
+    getUploadUrl?: FunctionReference<"mutation">;
+    finalize?: FunctionReference<"mutation">;
+    storageIdField?: string;           // default "storageId"
+    backend?: AttachmentBackend;       // escape hatch: your own upload transport
+  };
 };
 ```
 
-### `useQuery`
+### `useQuery` / `useMutation`
 
-Args and result are inferred from the function reference — no explicit generics.
+Args and result infer from the Convex function reference — no explicit generics.
+Arg arity mirrors `convex/react`'s `OptionalRestArgs`: functions with required
+args require them; empty-args functions may omit them.
 
 ```ts
 function useQuery<Query extends FunctionReference<"query">>(
   reference: Query,
-  args?: FunctionArgs<Query> | "skip",
-  options?: { initial?: FunctionReturnType<Query>; sync?: "auto" | "off" }
+  ...argsAndOptions   // args?: FunctionArgs<Query> | "skip", options?: { initial?; sync?: "auto" | "off" }
 ): FunctionReturnType<Query> | undefined
-```
 
-### `useMutation`
-
-```ts
 function useMutation<Mutation extends FunctionReference<"mutation">>(
   reference: Mutation
-): (args: FunctionArgs<Mutation>) => LocalFirstMutationCall<FunctionReturnType<Mutation>>
+): (...args: OptionalRestArgs<Mutation>) => LocalFirstMutationCall<FunctionReturnType<Mutation>>
 ```
+
+A declared local-first reference is served by the engine; every other reference
+falls through to Convex. See [React hooks](/docs/react-hooks).
 
 ### `LocalFirstMutationCall`
 
 ```ts
 type LocalFirstMutationCall<T> = Promise<T> & {
   opId: string;
+  id: LocalId;              // the canonical target row id, available SYNCHRONOUSLY (insert-then-patch seam)
   local: Promise<LocalCommit>;
   server: Promise<T>;
   status: () => MutationStatus;
 };
 ```
 
-### `useSyncStatus`
+### Sync + status hooks
 
 ```ts
 function useSyncStatus(): SyncStatus
+function useSyncRecovery(): RecoveryStatus              // == useSyncStatus().recovery
+function useScopeStatus(scope): { hydrated; partial; syncing; denied }
 ```
+
+See [Recovery & scope status](/docs/recovery).
+
+### Typed queries
+
+```ts
+function createLocalDb<Modules>(modules: Modules): LocalDb<Modules>   // typed db root
+function collection<Row>(table: string): LocalQuery<Row>             // untyped escape hatch
+
+function useLiveQuery(plan | "skip", options?: { pollMs? }):
+  Array<Row & Rel> | ReadonlyMap<string | null, Array<Row & Rel>> | undefined   // Map when grouped
+function useLiveCounts(plan | "skip", options?: { pollMs? }):
+  number | Record<string, number> | undefined                                    // Record when grouped
+```
+
+Query builder methods (on `db.<table>` and `collection(...)`):
+
+| Method | Meaning |
+| --- | --- |
+| `.scope(values)` | Scope fields to read/pull (drives the background pull). |
+| `.filter(spec)` | Serializable, planner-visible [`FilterSpec`](/docs/filters). AND-chains. |
+| `.where(row => boolean)` | Closure escape hatch (opaque; evaluated post-index). |
+| `.order(field, "asc" \| "desc")` | Sort by a field. |
+| `.orderBy(field, dir)` | Alias of `.order` on the typed root. |
+| `.limit(n)` | Cap the result count. |
+| `.groupBy(field)` | Turn the result into a live `Map`/counts record. |
+| `.with(...names)` | Attach [declared relations](/docs/typed-db) by name (typed root). |
+| `.related(name, spec)` / `.withRelations(map)` | Per-query relation escape hatches. |
+
+Relation combinators (per-query): `one`, `many`, `manyToMany`, `viaIds`.
+Declared-relation descriptors on `lf.table`: `lf.one`, `lf.many`, `lf.backref`.
+
+### Filters & ranking
+
+```ts
+type FilterSpec<Shape>                                   // eq / ne / in / nin / lt / lte / gt / gte / contains / overlaps + OR/AND/NOT
+function matchesFilter(row, filter): boolean
+function parseFilter<Shape>(json: string): FilterParseResult<Shape>   // { ok, value } | { ok: false, error }
+function serializeFilter<Shape>(filter): string          // validated JSON for saved views
+
+function rankBetween(a: string | null, b: string | null): string
+function rankCompare(a: string, b: string): number
+function isValidRank(value: unknown): boolean
+function rebalance(ranks: readonly string[]): string[]
+```
+
+See [Filters & saved views](/docs/filters) and [Grouping, counts & ranking](/docs/grouping).
+
+### Writes, permissions & undo
+
+```ts
+function useBatch(): <T>(fn: () => void | Promise<void>) => LocalFirstBatchCall<T>   // atomic write group
+function useRole<Role>(scope): Role | null | undefined         // null = denied, undefined = not synced
+function useCan<Modules>(): CanChecker<Modules>                 // { insert, patch, remove } — advisory
+function useUndo(scope?): { undo; redo; canUndo; canRedo }
+```
+
+See [Atomic write groups](/docs/batches), [Permission-aware UI](/docs/permissions),
+and [Undo & redo](/docs/undo).
+
+```ts
+type LocalFirstBatchCall<T> = Promise<readonly T[]> & {
+  groupId: string;
+  local: Promise<readonly LocalCommit[]>;
+  server: Promise<readonly T[]>;
+};
+```
+
+### Attachments & presence
+
+```ts
+function useCreateAttachment(insert: FunctionReference<"mutation">):
+  (input: { metadata: Record<string, unknown>; blob: Blob }) => Promise<{ localId: string }>
+function useAttachmentUpload(localId): AttachmentUploadState    // { state, progress, error? }
+
+function usePresence(scope?, data?, options?): { peers: PresencePeer[]; others: PresencePeer[] }
+```
+
+See [Offline attachments](/docs/attachments) and [React hooks → usePresence](/docs/presence).
 
 ### Re-exports from `convex/react`
 
 `ConvexReactClient`, `Authenticated`, `Unauthenticated`, `AuthLoading`,
 `useConvex`, `useConvexAuth`.
-
-## `convex-localfirst/core`
-
-### `IndexedDbStore`
-
-```ts
-new IndexedDbStore({ databaseName: string; namespace: string })
-```
-
-Browser persistence. `namespace` isolates per-user data on a shared device
-([invariant I9](/docs/reference/invariants)).
-
-### `MemoryLocalStore`
-
-In-memory `LocalStore` — the default when no `store` is given (tests, SSR).
-
-### `createConvexTransport`
-
-```ts
-function createConvexTransport(options: {
-  client: ConvexReactClient;
-  push: unknown;     // api.sync.push
-  pull: unknown;     // api.sync.pull
-  clientId: string;
-  userId: string;
-}): SyncTransport
-```
-
-### `createClientId`
-
-```ts
-function createClientId(): string
-```
-
-A stable id for this device/tab.
-
-### `SyncStatus`
-
-```ts
-type SyncStatus = {
-  online: boolean;
-  syncing: boolean;
-  pendingMutations: number;
-  lastPushAt: number | null;
-  lastPullAt: number | null;
-  lastError: string | null;
-  blockedBySchemaMismatch: boolean;
-  partial: boolean; // still catching up to the server (a large cold start drained past the per-pull cap)
-};
-```
-
-### `collectManifest`
-
-```ts
-function collectManifest(
-  modules: Record<string, unknown>,        // imported lf.table modules
-  options?: { schemaVersion?: number }
-): LocalFirstManifest
-```
-
-The codegen-free client manifest: reads the declarations (and their original
-closures) off the imported `lf.table` modules at runtime. The provider's
-`modules` option calls this for you; use it directly for a headless engine.
-Its server twin is [`collectTables`](#collecttables).
-
-Also exported: `LocalStore`, `SyncTransport`, `LocalFirstManifest`,
-`FunctionNameResolver`, `LocalCommit`, `MutationStatus`, `ScopeDefinition`,
-and `SyncScope`.
 
 ## `convex-localfirst/server`
 
@@ -161,57 +184,60 @@ function createLocalFirst<Ctx>(options?: {
 }): LfFactory
 ```
 
-The authenticated user is resolved server-side at sync time (in
-`createSyncFunctions`, from `ctx.auth`), not configured here.
-
-Returns the `lf` factory:
+Identity is resolved server-side at sync time (in `createSyncFunctions`), not
+here. Returns the `lf` factory:
 
 | Member | Signature |
 | --- | --- |
-| `lf.table(name, options)` | `{ shape; scope; idField?; timestamps?; indexes?; setFields?; counterFields? }` → `{ table, query, insert, patch, remove }` |
+| `lf.table(name, options)` | see below → `{ table, query, insert, patch, remove }` |
 | `lf.byUser(field)` | `ScopeDefinition` |
 | `lf.byWorkspace({ workspaceIdField, membershipTable })` | `ScopeDefinition` |
 | `lf.byProject({ projectIdField, membershipTable })` | `ScopeDefinition` |
+| `lf.one(table, fk)` / `lf.many(table, { via })` / `lf.backref(table, fk)` | [declared relations](/docs/typed-db) |
 
-The builder specs:
+`lf.table` options: `shape` (required validators), `scope` (required), `idField`
+(default `"localId"`), `indexes`, `timestamps` (`true` or `[created, updated]`),
+`relations`, `setFields`, `counterFields`, `searchFields`, `serverFields`,
+`clientCan`. Builder specs (each optional — a bare call derives args from the shape):
 
 ```ts
 table.query({  args, index, key, order?, initial? })
 table.insert({ args, value })   // value: ({ ctx, auth, args, now, localId }) => Row
-table.patch({  args, id, patch })
-table.remove({ args, id })
+table.patch({  args, id?, patch? })
+table.remove({ args?, id? })
 ```
 
-Every builder's spec is optional — a bare call derives it from the shape:
-`insert()` takes every field except the stamped ones (a `byUser` owner comes
-from auth, timestamps stamp automatically), `patch()` takes `id` plus any
-subset of non-partition fields, `remove()` takes `id`.
-
-### `createSyncFunctions`
-
-The turnkey server sync surface — builds the `push` mutation + `pull` query.
+### `collectTables` / `createSyncFunctions`
 
 ```ts
+function collectTables(modules: Record<string, unknown>): SyncConfig["tables"]
+
 function createSyncFunctions(options: {
   component: typeof components.convexLocalFirst;
-  mutation: MutationBuilder;   // from _generated/server
-  query: QueryBuilder;         // from _generated/server
+  mutation: MutationBuilder;
+  query: QueryBuilder;
+  internalMutation?: InternalMutationBuilder;   // exposes `gc` as an internal cron target
   tables: SyncConfig["tables"];
-  isMember?: (ctx, info: { userId; scopeValue; membershipTable }) => Promise<boolean>;
+  access?: {
+    member: (ctx, { userId, scopeValue, table, membershipTable }) => Role | null | Promise<Role | null>;
+    read?: (ctx, { userId, role, table, row }) => boolean | Promise<boolean>;
+    write?: (ctx, { userId, role, table, action, before, patch?, proposed }) => boolean | Promise<boolean>;
+  };
+  getUserId?: (ctx) => string | null | Promise<string | null>;   // default: identity.tokenIdentifier
+  devUnsafeAllowClientUserId?: boolean;                          // local demo only — never in prod
   schemaVersion?: number;
   now?: () => number;
-  changeRetentionMs?: number;  // change-log GC horizon, default 30 days
-  visibility?: Record<table, (ctx, { userId, row }) => boolean | Promise<boolean>>;
-  serverStamp?: Record<table, (ctx, { userId, value }) => Record<string, unknown> | undefined>;
-}): { push; pull; presence; presenceList; serverWriter }
+  changeRetentionMs?: number;                                    // change-log GC horizon, default 30 days
+  serverStamp?: Record<string, { fields: string[]; stamp: (ctx, { userId, value }) => Record<string, unknown> | undefined }>;
+  onWrite?: (ctx, { table, action, before, after, userId, functionName }) => Promise<void>;
+}): { push; pull; presence; presenceList; gc; serverWriter }
 ```
 
-See [Syncing](/docs/syncing#createsyncfunctions).
+See [Syncing](/docs/syncing#createsyncfunctions) and [Permissions](/docs/permissions).
 
-`serverWriter(ctx)` is the trusted server-side writer: call it from your own
-mutations (activity fan-out, importers, crons) to insert/patch/remove rows in
-local-first tables **through the change log**, so every client syncs the write
-like any other change:
+`serverWriter(ctx, userId?)` is the trusted server-side writer — call it from your
+own mutations (activity fan-out, importers, crons) to write local-first tables
+**through the change log**, so every client syncs the write:
 
 ```ts
 const w = serverWriter(ctx);
@@ -220,46 +246,146 @@ await w.patch("issues", issueId, { sub_issues_count: 3 });
 await w.remove("comments", commentId);
 ```
 
+### `createAttachmentFunctions`
+
+```ts
+function createAttachmentFunctions(options: CreateSyncFunctionsOptions & {
+  table: string;                                  // the attachment metadata table
+  storageIdField?: string;                        // default "storageId" (server-controlled)
+  generateUploadUrl: (ctx) => Promise<string>;    // usually ctx.storage.generateUploadUrl()
+}): { getUploadUrl; finalize }
+```
+
+Authorizes through the SAME `access` config as `createSyncFunctions`. See
+[Offline attachments](/docs/attachments).
+
 ### `serverSync` engine (advanced)
 
-For full control you can skip `createSyncFunctions` and drive the pure engine:
+For full control, skip `createSyncFunctions` and drive the pure engine:
 
 ```ts
 function handlePush(store: ServerStore, config: SyncConfig, request): Promise<PushResult>
 function handlePull(store: ServerStore, config: SyncConfig, request): Promise<PullResult>
 ```
 
-Plus the types `ServerStore`, `ServerOperation`, `StoredChange`, `SyncConfig`.
+Plus `ServerStore`, `ServerOperation`, `StoredChange`, `SyncConfig`.
 
-## `convex-localfirst/component`
+## `convex-localfirst/core`
 
-A mountable Convex component. Mount with `app.use(localfirst)` from
-`convex-localfirst/component/convex.config.js`; call its public functions via
-`components.convexLocalFirst.*` (`ops`, `changes`, `idMaps`, `presence`). See
-[Syncing](/docs/syncing#the-component).
+Wiring helpers for a headless (non-hook) engine:
 
-## `convex-localfirst/cli`
+| Export | Role |
+| --- | --- |
+| `createLocalFirstEngine(options)` | Build an engine without React (service layer, worker, store). |
+| `IndexedDbStore({ databaseName, namespace })` | Browser persistence (`namespace` isolates per-user data, I9). |
+| `MemoryLocalStore` | In-memory `LocalStore` — the default in tests/SSR. |
+| `createConvexTransport({ client, push, pull, clientId, userId })` | The default sync transport. |
+| `createClientId()` | A stable id for this device/tab. |
+| `collectManifest(modules, { schemaVersion? })` | The codegen-free client manifest (server twin of `collectTables`). |
 
-`init`, `check` — see [The CLI](/docs/cli).
+Also exported: `SyncStatus`, `RecoveryStatus`, `LocalStore`, `SyncTransport`,
+`LocalFirstManifest`, `ScopeDefinition`, `SyncScope`, `LocalCommit`,
+`MutationStatus`, `AttachmentBackend`.
+
+```ts
+type SyncStatus = {
+  online: boolean;
+  syncing: boolean;
+  pendingMutations: number;
+  lastPushAt: number | null;
+  lastPullAt: number | null;
+  lastError: string | null;
+  blockedBySchemaMismatch: boolean;
+  partial: boolean;
+  recovery: RecoveryStatus;   // { rejectedOperations, olderSchemaOperations, failedAttachments, failedGroups }
+};
+```
+
+## `convex-localfirst/testing`
+
+```ts
+function createTestHarness<Modules>(options: {
+  modules: Modules;
+  schemaVersion?: number;
+  access?: SyncConfig["access"];
+  onWrite?: SyncConfig["onWrite"];
+  serverStamp?: Record<string, { fields; stamp }>;
+  userId?: string | null;
+  clientId?: string;
+  now?: number;                 // starting logical clock, default 1_000_000
+}): {
+  db;                           // typed createLocalDb root
+  engine;                       // current engine (swaps on setUser)
+  Provider;                     // publishes the engine to the local-first hooks
+  server: { seed(table, rows); rows(table); ledger(); store };
+  goOffline(); goOnline(); settled();
+  clock: { now(); advance(ms) };
+  setUser(userId); userId(); dispose();
+}
+```
+
+Runs the REAL `handlePush`/`handlePull` behind a controllable transport and a real
+engine. Also exports `MemoryServerStore`. See [Testing](/docs/testing).
+
+## `convex-localfirst/devtools`
+
+```ts
+function LocalFirstDevtools(props?: {
+  defaultOpen?: boolean;
+  force?: boolean;      // render even in a production build (off by default)
+  pollMs?: number;      // store-tab refresh cadence, default 750
+}): JSX.Element | null
+```
+
+Dev-only inspector (Sync / Outbox / Queries / Storage tabs + simulate-offline).
+Mount it manually inside the provider. See [Devtools](/docs/devtools).
 
 ## `convex-localfirst/yjs`
 
-Wire a Yjs CRDT (rich text, nested lists) onto the local-first log. `react` and `yjs`
-are peer deps. See [Document mode](/docs/document-mode).
-
 ```ts
 function useCollaborativeDoc(options: {
-  docId: string;                                  // must uniquely identify the doc across scopes
-  updates: ReadonlyArray<{ _id: string; update: string }>; // live rows for THIS doc
-  append: (updateBase64: string) => unknown;      // persist a local edit as a row
-  prune?: (rowId: string) => unknown;             // enables compaction; omit to disable
-  compactThreshold?: number;                       // default 50
-}): Y.Doc
+  docId: string;
+  updates: ReadonlyArray<Record<string, unknown>>;   // live rows in scope (filtered to docId internally)
+  append: (updateBase64: string) => MutationLike;
+  prune?: (rowId: string) => MutationLike;            // enables compaction; omit to disable
+  idField?: string;    // default "_id"
+  docField?: string;   // default "doc"
+  updateField?: string;// default "update"
+  compaction?: CompactionOptions | false;
+}): { doc: Y.Doc; status: DocStatus }                 // status: { synced, pendingUpdates, lastError, compacting }
 
-// codec helpers (framework-agnostic)
+// framework-agnostic codec + headless provider
 function bytesToBase64(bytes: Uint8Array): string;
 function base64ToBytes(b64: string): Uint8Array;
 function makeSnapshot(doc: Y.Doc): string;
 function applyUpdateSafe(doc: Y.Doc, base64: string, origin: unknown): boolean;
 const REMOTE_ORIGIN: unique symbol;
+function createCollaborativeDoc(persistence, options): CollaborativeDoc;
 ```
+
+Cursor/selection presence lives at the `convex-localfirst/yjs/awareness` subpath
+(so the main entry never pulls the optional `y-protocols` peer):
+
+```ts
+function useDocAwareness(doc: Y.Doc, options: {
+  docId: string;
+  scope?: { workspace?; project? };
+  state?: Record<string, unknown> | null;
+  heartbeatMs?: number;   // default 250 — cursors want this low
+}): { awareness: Awareness }
+function createDocAwareness(doc, options): DocAwareness;   // headless, y-protocols only
+```
+
+See [Document mode](/docs/document-mode).
+
+## `convex-localfirst/component`
+
+A mountable Convex component holding all sync bookkeeping (ledger, change log, id
+map, row versions, presence). Mount with `app.use(localfirst)` from
+`convex-localfirst/component/convex.config.js`; the parent app calls its public
+functions via `components.convexLocalFirst.*`. See [Syncing](/docs/syncing#the-component).
+
+## `npx convex-localfirst` — the CLI
+
+`init` scaffolds a complete starter; `check` fails if any Convex function writes a
+local-first table directly with `ctx.db`. See [The CLI](/docs/cli).

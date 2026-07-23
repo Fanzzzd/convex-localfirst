@@ -15,5 +15,5 @@ export type IssueStatus = Doc<"issues">["status"];
 export const issueRelations = {
   project: rel.one("projects", "projectId"), // issue.projectId -> projects
   comments: rel.many("comments", "issueId"), // comments.issueId -> issue (1:N)
-  labels: rel.manyToMany("labels", "issue_labels", "issueId", "labelId") // via join table (N:N)
+  labels: rel.manyToMany("labels", "issue_labels", "issueId", "labelId"), // via join table (N:N)
 };
